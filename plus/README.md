@@ -23,8 +23,11 @@ Fork pessoal de [smith89k/claude-swap-status](https://github.com/smith89k/claude
   - na troca, contas com Fable disponível têm preferência;
   - o modelo continua o mesmo depois da troca. A escolha de modelo fica no Claude Code, não na conta.
 - **Tela de Configurações** (aba dentro do VS Code): sliders de “avisar em X%” e “trocar em Y%” para cada limite; estratégia
-  (mais folga, **aproveitar ao máximo** ou por prioridade); por conta: ordem (setas ↑ ↓, que trocam o número da conta com
-  `swap-plus swap`), rotação, linha própria da sessão, prioridade e apelido; histórico; simulação; atualizações da extensão.
+  (mais folga, **aproveitar ao máximo** ou por prioridade); por conta: rotação (contas que participam ficam contornadas de
+  verde), linha própria da sessão, prioridade e apelido; histórico; simulação; atualizações da extensão.
+- **Ordem das contas** (na tela e na lista da barra): primeiro as que participam da troca automática, de quem renova o semanal
+  antes para quem renova depois; no fim, as que não participam, na mesma ordem. Opcional: ordenar pelo número da conta e mudar
+  a posição com as setas ↑ ↓ (`swap-plus swap`).
 
 A decisão de troca é da extensão (`decide()` em `extension.js`); quem executa a troca é o `swap-plus switch N`.
 As regras ficam nas configurações do VS Code (`swapPlus.rules.*`). As configurações `autoswitch.*` do motor não são usadas.

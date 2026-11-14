@@ -10,7 +10,7 @@
   let acctPending = false;
   let toastTimer = null;
   const saved = vscode.getState() || {};
-  let sortByReset = !!saved.sortByReset;
+  let manualOrder = !!saved.manualOrder; // padrão: ordem automática (quem participa e renova antes primeiro)
 
   const STRATS = [
     {
@@ -330,7 +330,7 @@
 
     return h(
       "div",
-      { class: "acct" + (a.active ? " active" : "") + (a.disabled ? " off" : "") },
+      { class: "acct" + (a.active ? " active" : "") + (a.disabled ? " off" : " rot") },
       h(
         "div",
         { class: "ahead" },
@@ -343,7 +343,7 @@
         h(
           "div",
           { class: "badges" },
-          sortByReset
+          !manualOrder
             ? null
             : h(
                 "div",
@@ -361,7 +361,7 @@
       h(
         "div",
         { class: "ctl" },
-        h("label", null, h("input", { type: "checkbox", checked: !a.disabled, onchange: (e) => acct("disabled", !e.target.checked) }), "Participa da troca automática")
+        h("label", null, h("input", { type: "checkbox", class: "rotbox", checked: !a.disabled, onchange: (e) => acct("disabled", !e.target.checked) }), "Participa da troca automática")
       ),
       h(
         "div",
@@ -402,33 +402,32 @@
     }
     acctPending = false;
     const list = [...S.accounts];
-    if (sortByReset) {
-      list.sort((a, b) => {
-        const ra = a.weekly && a.weekly.resetTs ? a.weekly.resetTs : Infinity;
-        const rb = b.weekly && b.weekly.resetTs ? b.weekly.resetTs : Infinity;
-        if (ra !== rb) return ra - rb;
-        return (a.weekly ? a.weekly.pct : 100) - (b.weekly ? b.weekly.pct : 100);
-      });
+    if (manualOrder) {
+      list.sort((a, b) => a.number - b.number);
+    } else {
+      // Primeiro quem participa da troca automática; dentro de cada grupo, quem renova o semanal antes.
+      const reset = (a) => (a.weekly && a.weekly.resetTs ? a.weekly.resetTs : Infinity);
+      list.sort((a, b) => Number(a.disabled) - Number(b.disabled) || reset(a) - reset(b) || (a.weekly ? a.weekly.pct : 100) - (b.weekly ? b.weekly.pct : 100) || a.number - b.number);
     }
     const sortBox = h(
       "label",
       { class: "check" },
       h("input", {
         type: "checkbox",
-        checked: sortByReset,
+        checked: manualOrder,
         onchange: (e) => {
-          sortByReset = e.target.checked;
-          vscode.setState({ ...(vscode.getState() || {}), sortByReset });
+          manualOrder = e.target.checked;
+          vscode.setState({ ...(vscode.getState() || {}), manualOrder });
           renderAccounts(true);
         },
       }),
-      "Ordenar por quem renova o semanal primeiro"
+      "Ordenar pelo número da conta (e mudar a posição com as setas ↑ ↓)"
     );
     const hint = h("p", {
       class: "muted small",
-      text: sortByReset
-        ? "Para mudar a ordem das contas, desmarque a opção acima."
-        : "As setas ↑ ↓ mudam a posição (o número) da conta. Apelido, ajustes e histórico vão junto; a sessão aberta não é afetada.",
+      text: manualOrder
+        ? "As setas ↑ ↓ mudam a posição (o número) da conta. Apelido, ajustes e histórico vão junto; a sessão aberta não é afetada."
+        : "Ordem automática: primeiro as contas que participam da troca automática, de quem renova o semanal antes para quem renova depois; no fim, as que não participam, na mesma ordem.",
     });
     const grid = h("div", { class: "accounts" }, list.length ? list.map((a, i) => accountCard(a, i, list.length)) : h("p", { class: "muted", text: "Nenhuma conta cadastrada ainda." }));
     $("accounts").replaceWith(h("div", { id: "accounts" }, sortBox, hint, grid));
@@ -457,9 +456,13 @@
     const r = S.rules;
     const st = STRATS.find((s) => s.id === r.strategy);
     const models = S.modelNames.length ? `, ${S.modelNames.join("/")} ≥ ${fmt(r.modelPct)}% (quando em uso)` : "";
-    $("autoStatus").textContent = S.auto.enabled
-      ? `Ligada — verifica a cada ${fmt(r.intervalSec)} s · troca em sessão ≥ ${fmt(r.sessionPct)}%, semanal ≥ ${fmt(r.weeklyPct)}%${models} · ${st ? st.name : r.strategy}`
-      : "Desligada — nenhuma troca acontece sozinha. Os avisos continuam funcionando.";
+    $("autoStatus").replaceChildren(
+      h("span", { class: "dot" + (S.auto.enabled ? " on" : "") }),
+      S.auto.enabled ? h("b", { class: "ontext", text: "Ligada" }) : h("b", { text: "Desligada" }),
+      S.auto.enabled
+        ? ` — verifica a cada ${fmt(r.intervalSec)} s · troca em sessão ≥ ${fmt(r.sessionPct)}%, semanal ≥ ${fmt(r.weeklyPct)}%${models} · ${st ? st.name : r.strategy}`
+        : " — nenhuma troca acontece sozinha. Os avisos continuam funcionando."
+    );
     const last = S.auto.last;
     $("autoLast").textContent = last ? `Última verificação (${S.auto.lastWhen || "?"}): ${last.text}` : "";
   }

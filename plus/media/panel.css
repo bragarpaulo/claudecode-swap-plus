@@ -185,8 +185,8 @@ summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
   background: var(--vscode-foreground);
   transition: transform 0.15s;
 }
-.onoff input:checked + .slider { background: var(--accent); border-color: var(--accent); }
-.onoff input:checked + .slider::before { transform: translateX(20px); background: var(--vscode-button-foreground); }
+.onoff input:checked + .slider { background: var(--green); border-color: var(--green); }
+.onoff input:checked + .slider::before { transform: translateX(20px); background: #fff; }
 .onoff input:focus-visible + .slider { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
 
 /* ---------- contas */
@@ -200,7 +200,8 @@ summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
   gap: 8px;
   min-width: 0;
 }
-.acct.active { border-color: var(--vscode-focusBorder); }
+.acct.rot { border-color: var(--green); }
+.acct.active { border-width: 2px; padding: 11px 13px; }
 .acct.off .meters { opacity: 0.5; }
 .ahead { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .aname { font-weight: 600; overflow-wrap: anywhere; }
@@ -222,7 +223,7 @@ summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
 .meters { display: flex; flex-direction: column; gap: 4px; }
 .meter { display: grid; grid-template-columns: 62px 1fr 40px; align-items: center; gap: 8px; }
 .meter .lbl { color: var(--soft); font-size: 0.9em; }
-.bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.bar { height: 6px; border-radius: 3px; background: var(--trackbg); overflow: hidden; }
 .fill { height: 100%; background: var(--ok); }
 .fill.warn { background: var(--warn); }
 .fill.bad { background: var(--bad); }
@@ -323,3 +324,11 @@ summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
 /* ---------- v1.4 */
 .order { display: flex; gap: 4px; }
 button.arrow { padding: 0 8px; min-width: 28px; line-height: 20px; }
+
+/* ---------- v1.4.3: verde para "ligado" e "participa"; trilhas neutras */
+:root { --green: #2ea043; --trackbg: rgba(128, 128, 128, 0.28); }
+input.rotbox { accent-color: var(--green); }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--soft); vertical-align: 0; }
+.dot.on { background: var(--green); }
+.ontext { color: var(--green); }
+.track { background: var(--trackbg); }

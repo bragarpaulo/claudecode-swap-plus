@@ -180,6 +180,12 @@ function partA() {
   d = run([acct(1, { w: 85 }), acct(2, { w: 10, age: 3600 }), acct(3, { w: 50 })], 1);
   check("conta com dados velhos não é destino", d.action === "switch" && d.to === 3, d.text);
 
+  // Ordem: quem participa primeiro, por renovação do semanal; quem não participa no fim, também por renovação.
+  const ord = T.orderForDisplay(
+    [acct(1, { w: 30, wReset: 50 }), acct(2, { w: 10, wReset: 5 }), acct(3, { w: 5, wReset: 1 }), acct(4, { w: 0, wReset: 20 }), acct(5, { w: 40, wReset: 20 }), acct(6, { w: 1, wReset: 3 })],
+    { 3: { disabled: true }, 6: { disabled: true } }
+  ).map((a) => a.number);
+  check("ordem: participantes por renovação, depois os de fora", ord.join(",") === "2,4,5,1,3,6", ord.join(","));
   check("nome do modelo: claude-fable-5-2 → Fable 5.2", T.modelLabel("claude-fable-5-2") === "Fable 5.2");
   check("limite do Fable reconhecido pelo id do modelo", T.watchedModels(["claude-fable-5-2"], ["Fable"]).join() === "Fable");
   check("Opus não liga o limite do Fable", T.watchedModels(["claude-opus-5-5"], ["Fable"]).length === 0);

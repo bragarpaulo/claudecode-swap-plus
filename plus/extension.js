@@ -825,6 +825,23 @@ function pickerTexts(acc, w, disabled) {
   return { description: seg("Sessão (5h)", w.session), detail: parts.join("  ·  ") };
 }
 
+/**
+ * Ordem de exibição: primeiro as contas que participam da troca automática, de
+ * quem renova o semanal antes para quem renova depois; no fim, as que não
+ * participam, na mesma ordem. Empate: menos uso semanal, depois o número.
+ */
+function orderForDisplay(accounts, records) {
+  const key = (acc) => {
+    const w = windows(acc);
+    const t = w && w.weekly && w.weekly.resetsAt ? Date.parse(w.weekly.resetsAt) : NaN;
+    return { off: recordOf(records, acc.number).disabled ? 1 : 0, reset: isNaN(t) ? Infinity : t, pct: w && w.weekly ? w.weekly.pct : 100 };
+  };
+  return [...accounts]
+    .map((acc) => ({ acc, k: key(acc) }))
+    .sort((a, b) => a.k.off - b.k.off || a.k.reset - b.k.reset || a.k.pct - b.k.pct || a.acc.number - b.acc.number)
+    .map((x) => x.acc);
+}
+
 async function switchAccount() {
   await refresh();
   const list = state.list;
@@ -838,7 +855,7 @@ async function switchAccount() {
     else if (choice === "Adicionar conta") addAccount();
     return;
   }
-  const items = list.accounts.map((acc) => {
+  const items = orderForDisplay(list.accounts, state.records).map((acc) => {
     const active = acc.number === list.activeAccountNumber;
     return {
       label: `${active ? "$(check) " : ""}${displayName(acc)}`,
@@ -1510,4 +1527,4 @@ function deactivate() {
   }
 }
 
-module.exports = { activate, deactivate, _test: { readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };
+module.exports = { activate, deactivate, _test: { orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };

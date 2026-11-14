@@ -23,8 +23,16 @@ say() { printf '\n==> %s\n' "$*"; }
 run() { if [ -n "$DRY" ]; then echo "    (simulação) $*"; else "$@"; fi; }
 fail() { printf '\nERRO: %s\n' "$*" >&2; exit 1; }
 
-# Primeiro arquivo de release (plus-vX.Y.Z) cujo nome termina com $2. A API
-# lista as releases da mais nova para a mais antiga.
+# Tag da release mais nova (plus-vX.Y.Z) pelo link /releases/latest do GitHub,
+# que redireciona para ela. Não usa a API, que tem limite de consultas por hora.
+latest_tag() {
+  curl -fsSI "https://github.com/$1/releases/latest" 2>/dev/null | tr -d '\r' |
+    awk 'tolower($1) == "location:" { print $2 }' |
+    sed -n 's#.*/releases/tag/\(plus-v[0-9][0-9.]*\)$#\1#p' | tail -1
+}
+
+# Reserva: primeiro arquivo de release (plus-vX.Y.Z) cujo nome termina com $2,
+# pela API (lista as releases da mais nova para a mais antiga).
 latest_asset() {
   curl -fsSL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$1/releases?per_page=20" |
     grep -o '"browser_download_url": *"[^"]*"' | cut -d'"' -f4 |
@@ -49,7 +57,12 @@ fi
 
 # ------------------------------------------------------------------ motor
 say "Motor (swap-plus)"
-WHEEL=$(latest_asset "$CLI_REPO" '\.whl') || true
+TAG=$(latest_tag "$CLI_REPO") || true
+if [ -n "$TAG" ]; then
+  WHEEL="https://github.com/$CLI_REPO/releases/download/$TAG/claude_swap-${TAG#plus-v}-py3-none-any.whl"
+else
+  WHEEL=$(latest_asset "$CLI_REPO" '\.whl') || true
+fi
 [ -n "$WHEEL" ] || fail "não achei a release do motor em https://github.com/$CLI_REPO/releases"
 echo "    $WHEEL"
 run uv tool install --force --reinstall "$WHEEL"
@@ -66,7 +79,12 @@ done
 if [ -z "$CODE" ]; then
   echo "    VS Code não encontrado. Instale o VS Code e rode este script de novo."
 else
-  VSIX_URL=$(latest_asset "$EXT_REPO" '\.vsix') || true
+  ETAG=$(latest_tag "$EXT_REPO") || true
+  if [ -n "$ETAG" ]; then
+    VSIX_URL="https://github.com/$EXT_REPO/releases/download/$ETAG/swap-plus.vsix"
+  else
+    VSIX_URL=$(latest_asset "$EXT_REPO" '\.vsix') || true
+  fi
   [ -n "$VSIX_URL" ] || fail "não achei a release da extensão em https://github.com/$EXT_REPO/releases"
   echo "    $VSIX_URL"
   TMP=$(mktemp -d)

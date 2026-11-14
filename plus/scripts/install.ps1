@@ -31,8 +31,24 @@ function Invoke-Native([scriptblock]$Block) {
   try { & $Block } finally { $ErrorActionPreference = $old }
 }
 
-# Primeiro arquivo de release plus-vX.Y.Z cujo nome bate com $Pattern. A API
-# lista as releases da mais nova para a mais antiga.
+# Tag da release mais nova (plus-vX.Y.Z) pelo link /releases/latest do GitHub,
+# que redireciona para ela. Não usa a API, que tem limite de consultas por hora.
+function Get-LatestTag([string]$Repo) {
+  try {
+    $req = [System.Net.HttpWebRequest]::Create("https://github.com/$Repo/releases/latest")
+    $req.AllowAutoRedirect = $false
+    $req.Method = "HEAD"
+    $req.UserAgent = "swap-plus-install"
+    $resp = $req.GetResponse()
+    $loc = $resp.Headers["Location"]
+    $resp.Close()
+    if ($loc -match '/releases/tag/(plus-v\d+\.\d+\.\d+)$') { return $Matches[1] }
+  } catch {}
+  return $null
+}
+
+# Reserva: primeiro arquivo de release plus-vX.Y.Z cujo nome bate com $Pattern,
+# pela API (lista as releases da mais nova para a mais antiga).
 function Get-LatestAsset([string]$Repo, [string]$Pattern) {
   $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=20" -Headers $Headers
   foreach ($r in $releases) {
@@ -66,7 +82,12 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 
 # ------------------------------------------------------------------ motor
 Say "Motor (swap-plus)"
-$Wheel = Get-LatestAsset $CliRepo '\.whl$'
+$CliTag = Get-LatestTag $CliRepo
+if ($CliTag) {
+  $Wheel = "https://github.com/$CliRepo/releases/download/$CliTag/claude_swap-$($CliTag.Substring(6))-py3-none-any.whl"
+} else {
+  $Wheel = Get-LatestAsset $CliRepo '\.whl$'
+}
 if (-not $Wheel) { Fail "não achei a release do motor em https://github.com/$CliRepo/releases" }
 Write-Host "    $Wheel"
 if ($DryRun) {
@@ -95,7 +116,12 @@ foreach ($c in $Candidates) {
 if (-not $Code) {
   Write-Host "    VS Code não encontrado. Instale o VS Code (https://code.visualstudio.com) e rode este comando de novo."
 } else {
-  $VsixUrl = Get-LatestAsset $ExtRepo '\.vsix$'
+  $ExtTag = Get-LatestTag $ExtRepo
+  if ($ExtTag) {
+    $VsixUrl = "https://github.com/$ExtRepo/releases/download/$ExtTag/swap-plus.vsix"
+  } else {
+    $VsixUrl = Get-LatestAsset $ExtRepo '\.vsix$'
+  }
   if (-not $VsixUrl) { Fail "não achei a release da extensão em https://github.com/$ExtRepo/releases" }
   Write-Host "    $VsixUrl"
   $Tmp = Join-Path $env:TEMP "swap-plus.vsix"

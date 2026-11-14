@@ -21,7 +21,7 @@ UV="${SWAP_PLUS_UV:-uv}"
 NEW_TAG=""
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
-notify() { /usr/bin/osascript -e "display notification \"$2\" with title \"$1\"" >/dev/null 2>&1 || true; }
+notify() { [ -n "${SWAP_PLUS_QUIET:-}" ] && return 0; /usr/bin/osascript -e "display notification \"$2\" with title \"$1\"" >/dev/null 2>&1 || true; }
 latest_stable() { git -C "$1" tag -l 'v[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1; }
 
 # sync <dir> → 0 = trouxe versão nova (NEW_TAG), 1 = já em dia, 2+ = erro

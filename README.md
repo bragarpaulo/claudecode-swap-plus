@@ -1,3 +1,7 @@
+> **Este é um fork pessoal.** A versão em uso aqui é o **Swap Plus**, que fica em [`plus/`](plus/README.md):
+> barra de status com ícone de e-mail, limite do Fable e tela de regras para troca automática de conta.
+> O conteúdo abaixo é o README do projeto original ([smith89k/claude-swap-status](https://github.com/smith89k/claude-swap-status)), mantido para os merges.
+
 # Claude Swap Status
 
 See your Claude Code usage right in the status bar of Antigravity IDE (or VS Code), and switch between Claude accounts with one click.

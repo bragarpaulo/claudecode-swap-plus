@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{csp}}; img-src {{csp}} data:; script-src 'nonce-{{nonce}}';">
+<link rel="stylesheet" href="{{css}}">
+<title>Swap Plus</title>
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>Swap Plus</h1>
+    <p class="muted">Regras de aviso e de troca automática entre as contas</p>
+  </div>
+  <div class="row gap">
+    <span id="busy" class="busy hidden"></span>
+    <button id="btnRefresh" class="secondary">Atualizar</button>
+  </div>
+</header>
+
+<div id="errorBox" class="errorbox hidden"></div>
+
+<section class="card">
+  <div class="row between start">
+    <div>
+      <h2>Troca automática</h2>
+      <p id="autoStatus" class="muted"></p>
+      <p id="autoLast" class="last"></p>
+    </div>
+    <label class="onoff" title="Ligar/desligar troca automática">
+      <input type="checkbox" id="autoToggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+  <div class="row gap wrap">
+    <button id="btnCheck">Verificar agora</button>
+    <button id="btnSim" class="secondary">Simular (sem trocar)</button>
+  </div>
+  <p class="note">A sessão não para: a troca é feita antes da conta esgotar e o Claude Code aberto passa a usar a conta nova sozinho (até ~30 s). Funciona enquanto o VS Code estiver aberto.</p>
+</section>
+
+<section class="card">
+  <div class="row between">
+    <h2>Regras</h2>
+    <span id="rulesDirty" class="dirty hidden">Alterações não salvas</span>
+  </div>
+  <p class="muted small">Para cada limite: quando a conta ativa chegar em X%, avisar e/ou trocar de conta. A barrinha mostra o uso atual da conta ativa e onde estão as linhas.</p>
+  <div id="rules"></div>
+
+  <h3>Quando trocar, ir para qual conta</h3>
+  <div id="strategies" class="strategies"></div>
+
+  <details id="adv">
+    <summary>Avançado</summary>
+    <div id="advanced"></div>
+  </details>
+
+  <div class="row gap end">
+    <button id="btnUndo" class="secondary">Desfazer</button>
+    <button id="btnSave">Salvar regras</button>
+  </div>
+</section>
+
+<section class="card">
+  <div class="row between">
+    <h2>Contas</h2>
+    <button id="btnAdd" class="secondary">+ Adicionar conta</button>
+  </div>
+  <p class="muted small">Mudanças aqui valem na hora. <b>Limite próprio</b> troca o limite de 5h só daquela conta (ex.: 70% para guardar folga numa conta compartilhada). <b>Prioridade</b> só vale na estratégia “Por prioridade”.</p>
+  <div id="accounts" class="accounts"></div>
+</section>
+
+<section class="card">
+  <h2>Barra de status</h2>
+  <div id="uiBox"></div>
+</section>
+
+<section class="card">
+  <div class="row between">
+    <h2>Histórico</h2>
+    <button id="btnClear" class="secondary">Limpar</button>
+  </div>
+  <ul id="history" class="history"></ul>
+</section>
+
+<div id="toast" class="toast hidden"></div>
+<script nonce="{{nonce}}" src="{{js}}"></script>
+</body>
+</html>

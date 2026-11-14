@@ -1,0 +1,129 @@
+{
+  "name": "swap-plus",
+  "displayName": "Swap Plus",
+  "description": "Uso do Claude Code na barra de status (ícone de e-mail, 5h, semanal e Fable) e tela de regras para avisos e troca automática de conta. Usa o CLI swap-plus. Fork pessoal de smith89k/claude-swap-status (MIT).",
+  "version": "1.0.0",
+  "publisher": "paulo-local",
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bragarpaulo/swap-plus-vscode.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "swapPlus.switchAccount",
+        "title": "Trocar conta",
+        "category": "Swap Plus"
+      },
+      {
+        "command": "swapPlus.openSettings",
+        "title": "Configurar trocas automáticas",
+        "category": "Swap Plus"
+      },
+      {
+        "command": "swapPlus.toggleAuto",
+        "title": "Ligar/desligar troca automática",
+        "category": "Swap Plus"
+      },
+      {
+        "command": "swapPlus.addAccount",
+        "title": "Adicionar conta",
+        "category": "Swap Plus"
+      },
+      {
+        "command": "swapPlus.refreshStatus",
+        "title": "Atualizar uso",
+        "category": "Swap Plus"
+      },
+      {
+        "command": "swapPlus.switchBest",
+        "title": "Trocar para a conta com mais folga",
+        "category": "Swap Plus"
+      }
+    ],
+    "configuration": {
+      "title": "Swap Plus",
+      "properties": {
+        "swapPlus.pollIntervalMinutes": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.5,
+          "description": "De quantos em quantos minutos atualizar o uso na barra de status (mínimo 0,5)."
+        },
+        "swapPlus.autoSwitch.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Troca automática de conta ligada (roda 'swap-plus auto --once' no intervalo configurado)."
+        },
+        "swapPlus.statusBar.showAccountNumber": {
+          "type": "boolean",
+          "default": false,
+          "description": "Mostrar o número da conta ao lado do ícone de e-mail."
+        },
+        "swapPlus.statusBar.showModelWeekly": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mostrar também o limite semanal por modelo (ex.: Fable) na barra de status."
+        },
+        "swapPlus.alerts.fiveHourEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Avisar quando a janela de 5h da conta ativa passar do percentual configurado."
+        },
+        "swapPlus.alerts.fiveHourPct": {
+          "type": "number",
+          "default": 80,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Percentual da janela de 5h que dispara o aviso."
+        },
+        "swapPlus.alerts.weeklyEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Avisar quando o limite semanal da conta ativa passar do percentual configurado."
+        },
+        "swapPlus.alerts.weeklyPct": {
+          "type": "number",
+          "default": 80,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Percentual do limite semanal que dispara o aviso."
+        },
+        "swapPlus.alerts.modelEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Avisar quando o limite semanal por modelo (ex.: Fable) passar do percentual configurado."
+        },
+        "swapPlus.alerts.modelPct": {
+          "type": "number",
+          "default": 80,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Percentual do limite semanal por modelo que dispara o aviso."
+        },
+        "swapPlus.executablePath": {
+          "type": "string",
+          "default": "",
+          "description": "Caminho do executável swap-plus (ou cswap). Vazio = procura ~/.local/bin/swap-plus, depois ~/.local/bin/cswap."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node test/smoke.js",
+    "test:readonly": "node test/smoke.js --readonly",
+    "package": "npx --yes @vscode/vsce package --no-dependencies -o swap-plus.vsix"
+  }
+}

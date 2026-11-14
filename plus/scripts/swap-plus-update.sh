@@ -11,6 +11,7 @@
 #     branch plus → push. A versão Plus vive em plus/ e não muda sozinha: o
 #     script só avisa que o original mudou, para avaliar se vale portar.
 set -u
+main() {
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
 EXT_DIR="${SWAP_PLUS_EXT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
@@ -32,12 +33,14 @@ sync() {
   git -C "$dir" fetch -q upstream --tags 2>>"$LOG" || { log "ERRO: não consegui buscar o original de $dir"; return 2; }
   tag="$(latest_stable "$dir")"
   [ -n "$tag" ] || { log "ERRO: nenhuma tag estável em $dir"; return 2; }
+  local onplus=0
+  [ "$(git -C "$dir" rev-parse --abbrev-ref HEAD)" = "plus" ] && [ -z "$(git -C "$dir" status --porcelain --untracked-files=no)" ] && onplus=1
+  # acompanha o que já foi publicado no próprio fork
+  [ "$CHECK" = 0 ] && [ "$onplus" = 1 ] && git -C "$dir" pull -q --ff-only origin plus 2>>"$LOG"
   if git -C "$dir" merge-base --is-ancestor "$tag" plus; then return 1; fi
   NEW_TAG="$tag"
   [ "$CHECK" = 1 ] && return 0
-  [ "$(git -C "$dir" rev-parse --abbrev-ref HEAD)" = "plus" ] || { log "ERRO: $dir não está no branch plus"; return 3; }
-  [ -z "$(git -C "$dir" status --porcelain --untracked-files=no)" ] || { log "ERRO: $dir tem alterações não commitadas"; return 3; }
-  git -C "$dir" pull -q --ff-only origin plus 2>>"$LOG" || true
+  [ "$onplus" = 1 ] || { log "ERRO: $dir não está no branch plus ou tem alterações não commitadas"; return 3; }
   if ! git -C "$dir" merge -q -X ours --no-edit -m "Merge upstream $tag into plus" "$tag" >>"$LOG" 2>&1; then
     git -C "$dir" merge --abort >/dev/null 2>&1
     log "ERRO: o merge de $tag em $dir deu conflito; nada foi alterado"
@@ -94,4 +97,6 @@ if [ $rc -eq 0 ]; then
 elif [ $rc -eq 1 ]; then log "extensão: em dia ($(latest_stable "$EXT_DIR"))"
 else notify "Swap Plus" "Falha ao sincronizar a extensão com o original. Veja o log."; status=1; fi
 
-exit $status
+return $status
+}
+main "$@"; exit $?

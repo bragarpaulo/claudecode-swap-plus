@@ -44,6 +44,9 @@ plus/scripts/schedule.sh --remove          # desfaz o agendamento
 
 O script espera os dois repositórios lado a lado (`swap-plus/` e `swap-plus-vscode/`). Log em `~/Library/Logs/swap-plus-update.log`.
 
+O agendamento usa cópias próprias dos dois forks em `~/.local/share/swap-plus` (o macOS não deixa tarefas em
+segundo plano lerem `~/Documents`). Elas acompanham o que estiver publicado no branch `plus` de cada fork.
+
 A extensão original é só a parte visual, e a daqui foi reescrita em `plus/`. Por isso, quando o original muda,
 o código dele entra no fork mas a tela do Plus não muda sozinha: o script avisa, para avaliar se há algo a portar.
 

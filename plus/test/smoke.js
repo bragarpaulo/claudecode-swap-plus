@@ -295,6 +295,19 @@ async function partL() {
   fs.rmSync(root, { recursive: true, force: true });
 }
 
+// ------------------------------------------------------------ parte V: versão nova instalada por fora
+function partV() {
+  console.log("\n# V. Versão mais nova já instalada (pede para recarregar)");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-ext-"));
+  for (const v of ["1.6.0", "1.7.0", "1.7.1", "1.10.0"]) fs.mkdirSync(path.join(dir, `paulo-local.swap-plus-${v}`));
+  fs.mkdirSync(path.join(dir, "outra.extensao-9.9.9"));
+  check("acha a mais nova que a que está rodando", T.newerInstalledVersion(dir, "1.7.0") === "1.10.0");
+  fs.writeFileSync(path.join(dir, ".obsolete"), JSON.stringify({ "paulo-local.swap-plus-1.10.0": true }));
+  check("ignora versão marcada como obsoleta pelo VS Code", T.newerInstalledVersion(dir, "1.7.0") === "1.7.1");
+  check("rodando a mais nova: não pede nada", T.newerInstalledVersion(dir, "1.7.1") === null);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 // ------------------------------------------------------------ parte C: preparar o Claude Code
 function partC() {
   console.log("\n# C. Preparar o Claude Code para quando o Fable acabar (arquivos temporários)");
@@ -791,6 +804,7 @@ async function partUpdates(context) {
 (async () => {
   partA();
   partI();
+  partV();
   await partL();
   partC();
   await partF();

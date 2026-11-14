@@ -15,7 +15,7 @@ const { execFile } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { createUpdater } = require("./updater");
+const { createUpdater, cmpVersion } = require("./updater");
 
 const NS = "swapPlus";
 const HISTORY_KEY = "swapPlus.autoHistory";
@@ -510,6 +510,43 @@ async function readRecords() {
   }
 }
 
+/**
+ * Versão mais nova do Swap Plus já instalada nesta máquina (pelo instalador, pelo
+ * terminal ou por outra janela) do que a que está rodando nesta janela. O VS Code
+ * só passa a usar a versão nova depois de recarregar a janela.
+ */
+function newerInstalledVersion(extDir, own) {
+  let obsolete = {};
+  try {
+    obsolete = JSON.parse(fs.readFileSync(path.join(extDir, ".obsolete"), "utf8")) || {};
+  } catch {}
+  let best = null;
+  let names = [];
+  try {
+    names = fs.readdirSync(extDir);
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    const m = name.match(/^paulo-local\.swap-plus-(\d+\.\d+\.\d+)$/);
+    if (!m || obsolete[name]) continue;
+    if (cmpVersion(m[1], own) > 0 && (!best || cmpVersion(m[1], best) > 0)) best = m[1];
+  }
+  return best;
+}
+
+let reloadPrompted = null;
+function checkNewerInstalled() {
+  if (!extContext || !extContext.extensionPath) return;
+  const own = (extContext.extension && extContext.extension.packageJSON.version) || require("./package.json").version;
+  const v = newerInstalledVersion(path.dirname(extContext.extensionPath), own);
+  if (!v || reloadPrompted === v) return;
+  reloadPrompted = v;
+  vscode.window
+    .showInformationMessage(`Swap Plus ${v} já está instalado, mas esta janela ainda usa a ${own}. Recarregue para usar a versão nova.`, "Recarregar agora")
+    .then((c) => c && vscode.commands.executeCommand("workbench.action.reloadWindow"));
+}
+
 function refresh() {
   if (refreshing) return refreshing;
   refreshing = (async () => {
@@ -526,6 +563,7 @@ function refresh() {
     render();
     postState();
     checkAlerts().catch((e) => console.error("[swap-plus] alerts", e));
+    checkNewerInstalled();
   })().finally(() => {
     refreshing = null;
   });
@@ -1867,4 +1905,4 @@ function deactivate() {
   }
 }
 
-module.exports = { activate, deactivate, _test: { scanLimitErrors, checkLimitErrors, limitLabel, syncMotorLines, nearLine, setLimitRoot: (r) => (limitRoot = r), claudeCodeStatus, prepareClaudeCode, orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };
+module.exports = { activate, deactivate, _test: { newerInstalledVersion, scanLimitErrors, checkLimitErrors, limitLabel, syncMotorLines, nearLine, setLimitRoot: (r) => (limitRoot = r), claudeCodeStatus, prepareClaudeCode, orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };

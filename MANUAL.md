@@ -98,7 +98,10 @@ Ainda sem contas, porque elas entram na próxima etapa.
 
 1. Coloque o arquivo da Etapa 1 numa pasta fácil (por exemplo, a Mesa).
 2. Clique na barra do Swap Plus → **Configurações…**
-3. Desça até **Exportar e importar contas** → **Importar contas…** → escolha o arquivo.
+3. Desça até **Exportar e importar contas** → **Importar contas…** → escolha o arquivo `swap-plus-other.cswap`
+   (ou `swap-plus-me.cswap`).
+   > Se aparecer também um arquivo com o mesmo nome e `._` na frente (por exemplo `._swap-plus-other.cswap`),
+   > ignore: é um arquivo auxiliar que o Mac cria ao copiar para pen drive. Escolha o que **não** começa com `._`.
 4. Espere a mensagem **"N contas importadas, com as regras de troca, os avisos e os ajustes de cada conta"**.
    Se o arquivo era um **Export Other**, ela também diz *"Modo privado ligado: aqui aparece só “Conta N”"*.
 5. Na mesma mensagem, clique em **Apagar o arquivo**. Se você copiou o arquivo para outro lugar, apague lá
@@ -145,7 +148,7 @@ trava:
 | Mac: `command not found: swap-plus` no Terminal | Feche e abra o Terminal. |
 | Windows: `swap-plus não é reconhecido` | Feche e abra o PowerShell. |
 | Windows: o comando da Etapa 2 dá erro de "execução de scripts" | Rode antes: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` e tente de novo. |
-| **Importar contas** dá erro | O arquivo pode ter sido corrompido na cópia. Gere outro (Etapa 1). |
+| **Importar contas** dá erro | A mensagem diz o motivo. Os mais comuns: escolher o arquivo `._…` do pen drive (escolha o sem `._`), arquivo vazio porque ainda está só na nuvem (baixe ou copie para outra pasta) ou arquivo que chegou como `.zip` (descompacte). Se nada disso, gere o arquivo de novo (Etapa 1). |
 | A barra não aparece depois de instalar | Recarregue o VS Code (`Cmd/Ctrl + Shift + P` → **Developer: Reload Window**). |
 
 ## Remover

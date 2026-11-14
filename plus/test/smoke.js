@@ -195,6 +195,43 @@ function partA() {
   check("lista: sessão sem uso não mostra renovação", T.pickerTexts(idle, T.windows(idle), false).description === "Sessão (5h): 0% usado");
 }
 
+// ------------------------------------------------------------ parte I: leitura do arquivo de import
+function partI() {
+  console.log("\n# I. Leitura do arquivo de import (transferências entre Mac e Windows)");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-read-"));
+  const good = { version: 1, accounts: [{ email: "a@exemplo.com", credentials: {}, config: {} }], swapPlus: { hideEmails: true } };
+  const json = JSON.stringify(good, null, 2);
+  const put = (name, data) => { const f = path.join(dir, name); fs.writeFileSync(f, data); return f; };
+  const ok = (name, data, wantNorm) => {
+    const r = T.readExportFile(put(name, data));
+    check(`aceita: ${name}`, !r.error && r.env.accounts.length === 1 && r.normalized === wantNorm && JSON.parse(r.text).version === 1, r.error || "");
+  };
+  const bad = (name, data, re, fname) => {
+    const r = T.readExportFile(put(fname || name, data));
+    check(`recusa com motivo: ${name}`, !!r.error && re.test(r.error), r.error || "aceitou");
+    return r;
+  };
+  ok("UTF-8 normal", json, false);
+  ok("UTF-8 com BOM (Bloco de Notas)", "\uFEFF" + json, true);
+  ok("quebras de linha do Windows (CRLF)", json.replace(/\n/g, "\r\n"), false);
+  ok("espaços e linha em branco no fim", json + "\n\n  ", false);
+  ok("UTF-16 LE com BOM", Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(json, "utf16le")]), true);
+  ok("UTF-16 LE sem BOM", Buffer.from(json, "utf16le"), true);
+  const be = Buffer.from(json, "utf16le"); be.swap16();
+  ok("UTF-16 BE com BOM", Buffer.concat([Buffer.from([0xfe, 0xff]), be]), true);
+  bad("arquivo “._” do Mac no pen drive", Buffer.concat([Buffer.from([0x00, 0x05, 0x16, 0x07, 0x00, 0x02, 0x00, 0x00]), Buffer.from("Mac OS X        ")]), /arquivo auxiliar.*“swap-plus-other\.cswap”/, "._swap-plus-other.cswap");
+  bad("vazio (nuvem não baixada)", "", /vazio/);
+  bad("zip", Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0]), /\.zip/);
+  bad("texto colado com aspas curvas", json.replace(/"/g, "”"), /aspas curvas/);
+  const r = bad("outro tipo de arquivo", "olá, isto não é json", /não é um export/);
+  check("mensagem não mostra o arquivo inteiro", r.error.length < 400);
+  bad("JSON sem contas (ex.: swap-plus list)", JSON.stringify({ schemaVersion: 1, activeAccountNumber: 1 }), /lista de contas/);
+  bad("export criptografado", JSON.stringify({ version: 1, encrypted: true, accounts: [] }), /criptografado/);
+  bad("formato desconhecido", JSON.stringify({ version: 9, accounts: [{}] }), /versão 9/);
+  bad("export sem nenhuma conta", JSON.stringify({ version: 1, accounts: [] }), /nenhuma conta/);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 // ------------------------------------------------------------ parte U: atualizador
 function partU() {
   console.log("\n# U. Atualizador (dados simulados)");
@@ -381,6 +418,8 @@ async function partB() {
     const envO = JSON.parse(fs.readFileSync(fileOther, "utf8"));
     check("Export Other gera o arquivo com todas as contas", Array.isArray(envO.accounts) && envO.accounts.length === raw.accounts.length, `${envO.accounts.length} contas`);
     check("arquivo marcado para modo privado", envO.swapPlus && envO.swapPlus.hideEmails === true);
+    const rd = T.readExportFile(fileOther);
+    check("o export real deste Mac é aceito na importação, sem conversão", !rd.error && rd.normalized === false, rd.error || "");
     const es = envO.swapPlus.settings || {};
     check("leva regras de troca, avisos, exibição e troca automática", es["swapPlus.rules.weeklySwitchPct"] === 80 && es["swapPlus.rules.modelSwitchPct"] === 95 && "swapPlus.alerts.weeklyPct" in es && "swapPlus.statusBar.showModelWeekly" in es && "swapPlus.autoSwitch.enabled" in es, `${Object.keys(es).length} configurações`);
     check("não leva caminho do executável nem modo privado", !("swapPlus.executablePath" in es) && !("swapPlus.privacy.hideEmails" in es));
@@ -439,6 +478,17 @@ async function partB() {
       `priority ${other.number} ${(Number(otherRec.priority) || 0) === 4 ? 5 : 4}`,
     ];
     check("aplica os ajustes da conta, achando-a pelo e-mail", want.every((w) => lines.includes(w)), lines.slice(1).join(" | "));
+
+    // Arquivo que chegou com BOM do Windows: o motor recebe uma cópia limpa, apagada no fim.
+    const bomFile = path.join(SCRATCH, "com-bom.cswap");
+    fs.writeFileSync(bomFile, "\uFEFF" + fs.readFileSync(fakeFile, "utf8"), { mode: 0o600 });
+    fs.writeFileSync(fakeLog, "");
+    vscodeMock.nextOpen = bomFile;
+    await sendAndWait({ type: "import" }, 600);
+    const first = (fs.readFileSync(fakeLog, "utf8").trim().split("\n")[0] || "").replace(/^import /, "");
+    check("arquivo com BOM: o motor recebe uma cópia limpa", !!first && first !== bomFile && first.endsWith(".cswap"), path.basename(first));
+    check("a cópia limpa é apagada depois", !!first && !fs.existsSync(first));
+    check("o arquivo original continua lá (até a pessoa mandar apagar)", fs.existsSync(bomFile));
   } finally {
     vscodeMock.nextOpen = null;
     await vscodeMock.workspace.getConfiguration("swapPlus").update("executablePath", "");
@@ -524,6 +574,7 @@ async function partUpdates(context) {
 
 (async () => {
   partA();
+  partI();
   partU();
   if (UNIT) {
     console.log(failed ? `\n${failed} verificação(ões) falharam.` : "\nTudo certo.");

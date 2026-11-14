@@ -998,15 +998,98 @@ async function importAccounts() {
     title: "Importar contas do Swap Plus",
   });
   if (!uris || !uris.length) return null;
-  const file = uris[0].fsPath;
-  let env = null;
-  try {
-    env = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {}
-  if (!env || !Array.isArray(env.accounts)) {
-    vscode.window.showErrorMessage("Swap Plus: esse arquivo não é um export de contas.");
+  const picked = uris[0].fsPath;
+  const read = readExportFile(picked);
+  if (read.error) {
+    vscode.window.showErrorMessage(`Swap Plus: não deu para importar “${path.basename(picked)}”: ${read.error}`);
     return null;
   }
+  const env = read.env;
+  // Se o arquivo chegou com outra codificação, o motor recebe uma cópia limpa (UTF-8), que é apagada no fim.
+  let file = picked;
+  let tempCopy = null;
+  if (read.normalized) {
+    tempCopy = path.join(os.tmpdir(), `swap-plus-import-${process.pid}-${Date.now()}.cswap`);
+    fs.writeFileSync(tempCopy, read.text, { mode: 0o600 });
+    file = tempCopy;
+  }
+  try {
+    return await importEnvelope(env, file, picked);
+  } finally {
+    if (tempCopy) {
+      try {
+        fs.unlinkSync(tempCopy);
+      } catch {}
+    }
+  }
+}
+
+/**
+ * Lê um arquivo de export tolerando o que costuma acontecer na transferência
+ * entre computadores: marca BOM do Windows, UTF-16, espaços nas pontas. Quando
+ * não dá, diz exatamente o motivo (sem mostrar credenciais).
+ */
+function readExportFile(file) {
+  let buf;
+  try {
+    buf = fs.readFileSync(file);
+  } catch (e) {
+    return { error: `não consegui ler o arquivo (${e.code || e.message}).` };
+  }
+  if (!buf.length) {
+    return { error: "o arquivo está vazio (0 bytes). Se ele está numa pasta do OneDrive, iCloud ou Google Drive, baixe-o para o computador ou copie para outra pasta e tente de novo." };
+  }
+  // Arquivo auxiliar que o macOS cria ao copiar para pen drive ou disco de Windows:
+  // "._nome.cswap", com a mesma extensão do verdadeiro.
+  if (path.basename(file).startsWith("._") || (buf.length >= 4 && buf.readUInt32BE(0) === 0x00051607)) {
+    const real = path.basename(file).replace(/^\._/, "");
+    return { error: `esse é um arquivo auxiliar que o Mac cria ao copiar para pen drive (começa com “._”). Escolha o arquivo “${real}”, sem o “._” no começo.` };
+  }
+  if (buf[0] === 0x50 && buf[1] === 0x4b) {
+    return { error: "o arquivo é um .zip. Descompacte e escolha o arquivo .cswap que está dentro." };
+  }
+  let text;
+  let normalized = false;
+  if (buf[0] === 0xff && buf[1] === 0xfe) {
+    text = buf.subarray(2).toString("utf16le");
+    normalized = true;
+  } else if (buf[0] === 0xfe && buf[1] === 0xff) {
+    const le = Buffer.from(buf.subarray(2));
+    le.swap16();
+    text = le.toString("utf16le");
+    normalized = true;
+  } else if (buf.length > 3 && buf[1] === 0 && buf[3] === 0) {
+    text = buf.toString("utf16le");
+    normalized = true;
+  } else {
+    text = buf.toString("utf8");
+  }
+  if (text.charCodeAt(0) === 0xfeff) {
+    text = text.slice(1);
+    normalized = true;
+  }
+  // Espaços e quebras de linha nas pontas não atrapalham (nem aqui nem no motor).
+  let env;
+  try {
+    env = JSON.parse(text);
+  } catch (e) {
+    if (/[“”]/.test(text.slice(0, 400))) {
+      return { error: "o conteúdo foi alterado no caminho (as aspas viraram aspas curvas). Transfira o próprio arquivo, sem copiar e colar o texto." };
+    }
+    const start = text.slice(0, 24).replace(/\s+/g, " ");
+    return { error: `o conteúdo não é um export do Swap Plus (${buf.length} bytes, começa com “${start}”). Gere o arquivo de novo no computador principal (Configurações → Export Other ou Export Me).` };
+  }
+  if (!env || typeof env !== "object" || Array.isArray(env)) return { error: "o conteúdo não é um export do Swap Plus." };
+  if (env.encrypted === true) return { error: "o arquivo está criptografado; o Swap Plus importa só exports sem criptografia." };
+  if (!Array.isArray(env.accounts)) {
+    return { error: "o arquivo não tem a lista de contas. Ele parece ser outro tipo de arquivo; gere o export de novo no computador principal." };
+  }
+  if (!env.accounts.length) return { error: "o arquivo não tem nenhuma conta." };
+  if (env.version !== 1) return { error: `o arquivo é de um formato que esta versão não conhece (versão ${env.version}).` };
+  return { env, text, normalized };
+}
+
+async function importEnvelope(env, file, picked) {
   const hide = !!(env.swapPlus && env.swapPlus.hideEmails);
   // Liga o modo privado antes, para nenhuma mensagem do import mostrar e-mail.
   if (hide) await cfg().update("privacy.hideEmails", true, vscode.ConfigurationTarget.Global);
@@ -1036,7 +1119,7 @@ async function importAccounts() {
     .then((c) => {
       if (c) {
         try {
-          fs.unlinkSync(file);
+          fs.unlinkSync(picked); // o arquivo que a pessoa escolheu, não a cópia temporária
         } catch {}
       }
     });
@@ -1342,4 +1425,4 @@ function deactivate() {
   }
 }
 
-module.exports = { activate, deactivate, _test: { decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };
+module.exports = { activate, deactivate, _test: { readExportFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };

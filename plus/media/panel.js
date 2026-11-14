@@ -16,13 +16,12 @@
     {
       id: "headroom",
       name: "Mais folga",
-      tag: "padrão",
       desc: "Troca só quando a conta ativa chega numa linha de troca e vai para a conta com mais folga.",
     },
     {
       id: "max",
       name: "Aproveitar ao máximo",
-      tag: "menos desperdício",
+      tag: "padrão · menos desperdício",
       desc: "Usa primeiro a conta cuja cota semanal zera antes. Também troca antes da linha quando outra conta está prestes a zerar com cota sobrando.",
     },
     {
@@ -404,7 +403,8 @@
               ),
           a.active ? h("span", { class: "badge on", text: "Em uso" }) : null,
           a.disabled ? h("span", { class: "badge plain", text: "Fora da rotação" }) : null,
-          a.status && a.status !== "ok" ? h("span", { class: "badge plain", text: a.statusLabel }) : null
+          a.status && a.status !== "ok" ? h("span", { class: "badge plain", text: a.statusLabel }) : null,
+          a.stale && a.ageMin !== null ? h("span", { class: "badge plain", title: "O motor atualiza cada conta de alguns em alguns minutos (a Anthropic limita as consultas).", text: `dados de ${a.ageMin} min` }) : null
         )
       ),
       h("div", { class: "meters" }, meter("Sessão 5h", a.session), meter("Semanal", a.weekly), a.models.map((m) => meter(m.name, m))),

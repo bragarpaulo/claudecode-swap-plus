@@ -25,7 +25,8 @@ const ALERTED_KEY = "swapPlus.alerted";
 const AUTO_LOCK = path.join(os.tmpdir(), "swap-plus-auto.lock");
 const HISTORY_MAX = 40;
 const MODEL_WINDOW_MS = 30 * 60 * 1000; // modelo "em uso" = usado nos últimos 30 min
-const STALE_USAGE_SEC = 20 * 60; // dados de uso mais velhos que isso não decidem troca
+const STALE_USAGE_SEC = 20 * 60; // conta em uso: dados mais velhos que isso não decidem troca
+const CAND_STALE_SEC = 60 * 60; // contas de destino: o semanal delas muda devagar, vale até 1 h
 const YELLOW_AT = 70;
 
 const STRATEGY_LABELS = {
@@ -77,7 +78,7 @@ function rules() {
     weeklyPct: numSetting("rules.weeklySwitchPct", 80, 50, 100),
     modelPct: numSetting("rules.modelSwitchPct", 95, 50, 100),
     preferModel: typeof pref === "string" ? pref.trim() : "Fable",
-    strategy: STRATEGY_LABELS[st] ? st : "headroom",
+    strategy: STRATEGY_LABELS[st] ? st : "max", // padrão: aproveitar ao máximo (fila por renovação)
     expiringHours: numSetting("rules.expiringHours", 24, 1, 168),
     cooldownMin: numSetting("rules.cooldownMinutes", 5, 0, 240),
     marginPct: numSetting("rules.marginPct", 5, 0, 30),
@@ -410,7 +411,8 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
     if (acc.number === active.number) continue;
     if (recordOf(records, acc.number).disabled) continue;
     const w = windows(acc);
-    if (!w || (w.stale && !limitHit)) continue;
+    const tooOld = !w || !(typeof w.ageSeconds === "number") || w.ageSeconds > CAND_STALE_SEC;
+    if (!w || (tooOld && !limitHit)) continue;
     const l = linesFor(acc, r, records);
     const rows = rowsOf(w, l);
     let prefOk = true;
@@ -427,7 +429,7 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
       resetTs: w.weekly && w.weekly.resetsAt ? Date.parse(w.weekly.resetsAt) : Infinity,
       unused: w.weekly ? 100 - w.weekly.pct : 100,
       priority: Number(recordOf(records, acc.number).priority) || 0,
-      stale: !!w.stale,
+      stale: tooOld,
     });
   }
 
@@ -1595,6 +1597,7 @@ function buildPayload() {
           status: acc.usageStatus,
           statusLabel: statusLabel(acc.usageStatus),
           stale: w ? w.stale : false,
+          ageMin: w && typeof w.ageSeconds === "number" ? Math.round(w.ageSeconds / 60) : null,
           lines: l,
           session: w ? winPayload(w.session, l.session) : null,
           weekly: w && w.weekly ? winPayload(w.weekly, l.weekly) : null,
@@ -1721,7 +1724,13 @@ async function handleMessage(m) {
       syncMotorLines().catch(() => {});
       render();
       postState();
-      post({ type: "toast", kind: "info", text: "Regras salvas." });
+      if (autoEnabled()) {
+        // Aplica as regras novas na hora, em vez de esperar o próximo ciclo.
+        const res = await autoTick({ manual: true });
+        post({ type: "toast", kind: res && res.kind === "error" ? "error" : "info", text: `Regras salvas. ${res ? res.text : ""}`.trim() });
+      } else {
+        post({ type: "toast", kind: "info", text: "Regras salvas." });
+      }
       return;
     }
 

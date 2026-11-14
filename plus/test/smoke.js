@@ -181,8 +181,16 @@ function partA() {
   check("“mais folga” não antecipa troca", d.action === "none", d.text);
   d = run([acct(1, { w: 85, age: 3600 }), acct(2, { w: 10 })], 1);
   check("dados velhos da conta ativa → não decide", d.action === "none", d.text);
-  d = run([acct(1, { w: 85 }), acct(2, { w: 10, age: 3600 }), acct(3, { w: 50 })], 1);
-  check("conta com dados velhos não é destino", d.action === "switch" && d.to === 3, d.text);
+  d = run([acct(1, { w: 85 }), acct(2, { w: 10, age: 7200 }), acct(3, { w: 50 })], 1);
+  check("conta com dados de mais de 1 h não é destino", d.action === "switch" && d.to === 3, d.text);
+  d = run([acct(1, { w: 85 }), acct(2, { w: 10, age: 1800 }), acct(3, { w: 50 })], 1);
+  check("conta com dados de 30 min ainda vale como destino", d.action === "switch" && d.to === 2, d.text);
+  // O print do Windows (14/11 18:19): conta 7 em uso; a 8 renova o semanal em 2h41 com 70% sobrando.
+  const print = [acct(7, { s: 13, w: 10, f: 4, wReset: 89 }), acct(8, { s: 0, w: 30, f: 4, wReset: 2.7 }), acct(5, { s: 0, w: 31, f: 15, wReset: 67 }), acct(6, { s: 100, w: 40, f: 30, wReset: 50 })];
+  d = run(print, 7, { r: { strategy: "max", onModelLimit: "sameAccount" }, models: FABLE, lastSwitchAt: Date.now() - 15 * 60e3 });
+  check("print do Windows, “aproveitar ao máximo”: vai para a conta 8", d.action === "switch" && d.to === 8, d.text);
+  d = run(print, 7, { r: { strategy: "headroom", onModelLimit: "sameAccount" }, models: FABLE });
+  check("print do Windows, “mais folga”: fica (só troca na linha)", d.action === "none", d.text);
 
   // Ordem: quem participa primeiro, por renovação do semanal; quem não participa no fim, também por renovação.
   const ord = T.orderForDisplay(
@@ -442,6 +450,7 @@ async function partB() {
   check("modelo em uso detectado", st.modelsInUse.length > 0, st.modelsInUse.map((m) => m.label).join(", "));
   check("avisos 10 pontos antes da troca", st.alerts.weeklyPct === 70 && st.alerts.modelPct === 85 && st.alerts.fiveHourPct === 80);
   check("padrão: quando o Fable acaba, segue na mesma conta", st.rules.onModelLimit === "sameAccount");
+  check("padrão: estratégia “aproveitar ao máximo”", st.rules.strategy === "max");
   check("Claude Code deste Mac já está pronto (Opus 5.5 no mesmo esforço do Fable)", !!st.claudeCode && st.claudeCode.ready === true, JSON.stringify(st.claudeCode));
 
   console.log("\n# B4. Simulação (não troca)");

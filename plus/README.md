@@ -38,6 +38,10 @@ Fork pessoal de [smith89k/claude-swap-status](https://github.com/smith89k/claude
 - **Tela de Configurações** (aba dentro do VS Code): sliders de “avisar em X%” e “trocar em Y%” para cada limite; estratégia
   (mais folga, **aproveitar ao máximo** ou por prioridade); por conta: rotação (contas que participam ficam contornadas de
   verde), linha própria da sessão, prioridade e apelido; histórico; simulação; atualizações da extensão.
+- **Estratégia padrão: aproveitar ao máximo.** O Swap Plus usa primeiro a conta cuja cota semanal zera antes (em até
+  24 h, com pelo menos 20% sobrando), mesmo antes de bater uma linha de troca; nas outras horas, troca na linha.
+  Ao salvar as regras, a decisão roda na hora. Contas que não estão em uso valem como destino com dados de até 1 h
+  (o semanal delas muda devagar); a conta em uso precisa de dados de até 20 min.
 - **Ordem das contas** (na tela e na lista da barra): primeiro as que participam da troca automática, de quem renova o semanal
   antes para quem renova depois; no fim, as que não participam, na mesma ordem. Opcional: ordenar pelo número da conta e mudar
   a posição com as setas ↑ ↓ (`swap-plus swap`).

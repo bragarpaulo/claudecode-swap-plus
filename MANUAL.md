@@ -129,9 +129,11 @@ Pronto. Se a troca automática estava ligada no computador principal, ela já ve
 - **Atualizações:** automáticas. A extensão verifica ao abrir e ao fechar o VS Code e a cada 2 dias, e
   instala sozinha, do mesmo jeito que as outras extensões. Tudo acontece dentro do VS Code. Para ver ou
   forçar: **Configurações → Atualizações da extensão → Verificar agora**.
-- **Ordem das contas:** em **Configurações → Contas** e na lista da barra, primeiro vêm as contas que participam da
-  troca automática (contornadas de verde), de quem renova o semanal antes para quem renova depois; no fim, as que
-  não participam, na mesma ordem. Para ordenar à mão, marque **Ordenar pelo número da conta** e use as setas ↑ ↓.
+- **Ordem das contas = fila de uso:** em **Configurações → Contas** e na lista da barra, primeiro vêm as contas que
+  participam da troca automática (contornadas de verde), de quem renova o semanal antes para quem renova depois; no
+  fim, as que não participam. Com a estratégia **Aproveitar ao máximo** (o padrão), o Swap Plus usa essa fila: vai para
+  a conta cuja cota semanal zera antes e ainda tem pelo menos 20% sobrando, para não desperdiçar cota. Para ordenar à
+  mão, marque **Ordenar pelo número da conta** e use as setas ↑ ↓.
 - **Se a conta bater o limite antes da troca** (por exemplo, com vários agentes rodando ao mesmo tempo): o Swap Plus
   percebe na hora, pelo aviso que o próprio Claude Code grava, e troca de conta. O Claude Code pode ficar parado
   esperando: **mande uma mensagem (por exemplo, "continue")** e ele segue na conta nova.

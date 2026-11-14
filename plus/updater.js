@@ -76,8 +76,9 @@ function pickStableTag(tags) {
 const RATE_LIMIT_MSG = "o GitHub limitou as consultas desta rede por agora (60 por hora sem login, somando todos os computadores da rede); a próxima verificação tenta de novo";
 
 /**
- * GET simples. Com `etag`, pede "só se mudou": a resposta 304 (nada mudou) não
- * gasta o limite de consultas do GitHub e volta como { notModified: true }.
+ * GET simples. Com `etag`, pede "só se mudou" e a resposta 304 volta como
+ * { notModified: true }. Sem login, o GitHub conta essa consulta no limite do
+ * mesmo jeito; por isso a API é só a reserva (veja latestReleaseTag).
  */
 function request(url, { timeout = 10000, json = true, dest = null, redirects = 5, etag = null, withMeta = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -135,6 +136,45 @@ function request(url, { timeout = 10000, json = true, dest = null, redirects = 5
 const IS_WIN = process.platform === "win32";
 
 /** Acha um executável (no Windows também com .exe/.cmd). */
+/** HEAD sem seguir o redirecionamento; devolve o endereço para onde o GitHub manda. */
+function headLocation(url, timeout = 10000) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { method: "HEAD", headers: { "User-Agent": UA }, timeout }, (res) => {
+      res.resume();
+      resolve(res.headers.location || null);
+    });
+    req.on("timeout", () => req.destroy(new Error("sem resposta do GitHub")));
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/**
+ * Tag da release mais nova pelo link /releases/latest do site do GitHub, que
+ * redireciona para ela. Não usa a API, então não gasta o limite de 60
+ * consultas por hora (que vale para a rede inteira, sem login).
+ */
+async function latestReleaseTag(repo, timeout) {
+  const loc = await headLocation(`https://github.com/${repo}/releases/latest`, timeout);
+  const m = loc && loc.match(/\/releases\/tag\/([^/?#]+)$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+/** Release plus-vX.Y.Z montada a partir da tag; os arquivos têm endereço previsível. */
+function plusReleaseFromTag(repo, tag, assetName) {
+  const version = tag.slice("plus-v".length);
+  const name = assetName(version);
+  return {
+    tag,
+    version,
+    url: `https://github.com/${repo}/releases/tag/${tag}`,
+    assets: [{ name, url: `https://github.com/${repo}/releases/download/${tag}/${name}` }],
+  };
+}
+
+const WHEEL_NAME = (v) => `claude_swap-${v}-py3-none-any.whl`;
+const VSIX_NAME = () => "swap-plus.vsix";
+
 function findBin(name) {
   const home = os.homedir();
   const dirs = [path.join(home, ".local", "bin"), path.join(home, ".cargo", "bin")];
@@ -213,10 +253,7 @@ function createUpdater(deps) {
     return v !== false && v !== "off";
   };
 
-  /**
-   * Consulta a API guardando a última resposta (já resumida) com a ETag. Se nada
-   * mudou, o GitHub responde 304, que não gasta o limite de consultas.
-   */
+  /** Reserva (só se o link de "última release" falhar): API, guardando a última resposta com a ETag. */
   async function apiGet(url, pick, timeout) {
     const cache = getState().http || {};
     const hit = cache[url];
@@ -230,12 +267,28 @@ function createUpdater(deps) {
     return value;
   }
 
+  async function latestPlus(repo, assetName, timeout) {
+    try {
+      const tag = await latestReleaseTag(repo, timeout);
+      if (tag && /^plus-v\d+\.\d+\.\d+$/.test(tag)) return plusReleaseFromTag(repo, tag, assetName);
+    } catch {}
+    return apiGet(`https://api.github.com/repos/${repo}/releases?per_page=20`, pickPlusRelease, timeout);
+  }
+
+  async function latestStable(repo, timeout) {
+    try {
+      const tag = await latestReleaseTag(repo, timeout);
+      if (tag && /^v\d+\.\d+\.\d+$/.test(tag)) return tag.slice(1);
+    } catch {}
+    return apiGet(`https://api.github.com/repos/${repo}/tags?per_page=100`, pickStableTag, timeout);
+  }
+
   async function check({ reason = "manual", timeout = 10000 } = {}) {
     const [cliRel, extRel, upCli, upExt, installed] = await Promise.allSettled([
-      apiGet(`https://api.github.com/repos/${REPOS.cli}/releases?per_page=20`, pickPlusRelease, timeout),
-      apiGet(`https://api.github.com/repos/${REPOS.ext}/releases?per_page=20`, pickPlusRelease, timeout),
-      apiGet(`https://api.github.com/repos/${REPOS.upstreamCli}/tags?per_page=100`, pickStableTag, timeout),
-      apiGet(`https://api.github.com/repos/${REPOS.upstreamExt}/tags?per_page=100`, pickStableTag, timeout),
+      latestPlus(REPOS.cli, WHEEL_NAME, timeout),
+      latestPlus(REPOS.ext, VSIX_NAME, timeout),
+      latestStable(REPOS.upstreamCli, timeout),
+      latestStable(REPOS.upstreamExt, timeout),
       deps.cliVersion(),
     ]);
     const val = (p) => (p.status === "fulfilled" ? p.value : null);
@@ -403,4 +456,4 @@ function createUpdater(deps) {
   return { start, stop, runCheck, onClose, check, summary, applyCli, applyExt };
 }
 
-module.exports = { createUpdater, cmpVersion, pickPlusRelease, pickStableTag, findBin, request, RATE_LIMIT_MSG, REPOS };
+module.exports = { createUpdater, cmpVersion, pickPlusRelease, pickStableTag, findBin, request, latestReleaseTag, RATE_LIMIT_MSG, REPOS };

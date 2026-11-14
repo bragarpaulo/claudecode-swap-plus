@@ -609,9 +609,10 @@ async function partUpdates(context) {
   const after = await remaining();
   console.log(`     motor:    aqui ${res.cli.installed} · fork ${res.cli.latest} · original ${res.cli.upstream}`);
   console.log(`     extensão: aqui ${res.ext.installed} · fork ${res.ext.latest} · original ${res.ext.upstream} (base ${res.ext.base})`);
-  console.log(`     consultas restantes: ${before} → ${mid} (1ª verificação) → ${after} (2ª)`);
+  console.log(`     consultas restantes na API: ${before} → ${mid} (1ª verificação) → ${after} (2ª)`);
   check("consulta o GitHub sem erro", !res.error && !res2.error, res.error || res2.error || "");
-  check("2ª verificação não gasta o limite (GitHub responde “nada mudou”)", mid !== null && after !== null && mid - after <= 0, `${mid} → ${after}`);
+  check("verificações não gastam o limite da API do GitHub", before !== null && after !== null && before - after <= 0, `${before} → ${after}`);
+  check("acha as versões do original também", !!res.cli.upstream && !!res.ext.upstream, `${res.cli.upstream} / ${res.ext.upstream}`);
   check("2ª verificação dá o mesmo resultado", res2.cli.latest === res.cli.latest && res2.ext.latest === res.ext.latest && res2.cli.upstream === res.cli.upstream);
   check("motor desta máquina = última release do fork", !!res.cli.latest && U.cmpVersion(res.cli.latest, res.cli.installed) === 0);
   check("fork do motor em dia com o original", !!res.cli.upstream && U.cmpVersion(res.cli.upstream, res.cli.latest) === 0);

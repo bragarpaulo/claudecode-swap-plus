@@ -13,8 +13,10 @@ Leva uns 10 minutos.
 
 ## Antes de começar
 
-**No computador principal**, o Swap Plus já precisa estar funcionando, com as contas cadastradas. A barra
-embaixo, à esquerda do VS Code, mostra `│ ✉ Sessão (5h): …`.
+**No computador principal**, o Swap Plus já precisa estar funcionando, com as contas cadastradas.
+
+**A "barra do Swap Plus"** é a linha de baixo da janela do VS Code (o rodapé), no canto esquerdo: o trecho que
+começa com um envelope, `│ ✉ Sessão (5h): …`. Clicar nela abre a lista de contas e as configurações.
 
 **No outro computador** você vai precisar de:
 
@@ -96,18 +98,23 @@ Ainda sem contas, porque elas entram na próxima etapa.
 
 ## Etapa 3 — No outro computador: importar as contas e conferir
 
-1. Coloque o arquivo da Etapa 1 numa pasta fácil (por exemplo, a Mesa).
-2. Clique na barra do Swap Plus → **Configurações…**
-3. Desça até **Exportar e importar contas** → **Importar contas…** → escolha o arquivo `swap-plus-other.cswap`
-   (ou `swap-plus-me.cswap`).
+> **Dica: a paleta de comandos.** Todos os comandos do Swap Plus também abrem pelo teclado, sem precisar
+> achar a barra: aperte `Ctrl + Shift + P` (no Mac, `Cmd + Shift + P`), digite o nome do comando e aperte
+> Enter. Os principais: **Swap Plus: Importar contas**, **Swap Plus: Trocar conta** e
+> **Swap Plus: Configurar trocas automáticas**.
+
+1. Coloque o arquivo da Etapa 1 numa pasta fácil (por exemplo, a Mesa). Pasta de rede também funciona.
+2. Abra a importação: `Ctrl/Cmd + Shift + P` → **Swap Plus: Importar contas**.
+   Ou: clique na barra do Swap Plus → **Configurações…** → **Exportar e importar contas** → **Importar contas…**
+3. Escolha o arquivo `swap-plus-other.cswap` (ou `swap-plus-me.cswap`).
    > Se aparecer também um arquivo com o mesmo nome e `._` na frente (por exemplo `._swap-plus-other.cswap`),
    > ignore: é um arquivo auxiliar que o Mac cria ao copiar para pen drive. Escolha o que **não** começa com `._`.
 4. Espere a mensagem **"N contas importadas, com as regras de troca, os avisos e os ajustes de cada conta"**.
    Se o arquivo era um **Export Other**, ela também diz *"Modo privado ligado: aqui aparece só “Conta N”"*.
 5. Na mesma mensagem, clique em **Apagar o arquivo**. Se você copiou o arquivo para outro lugar, apague lá
    também e esvazie a Lixeira.
-6. **Escolha a conta:** clique na barra do Swap Plus e escolha uma conta. O ✓ marca a que está em uso, e o
-   Claude Code passa a usar essa conta em até 30 segundos.
+6. **Escolha a conta:** `Ctrl/Cmd + Shift + P` → **Swap Plus: Trocar conta** (ou clique na barra do Swap Plus)
+   e escolha uma conta. O ✓ marca a que está em uso, e o Claude Code passa a usar essa conta em até 30 segundos.
 7. **Confira:**
    - a barra mostra `│ ✉ Sessão (5h): X% usado — renova … · Semanal: … · Fable: … │`;
    - em **Configurações → Contas** estão todas as contas, com os mesmos ajustes do computador principal;

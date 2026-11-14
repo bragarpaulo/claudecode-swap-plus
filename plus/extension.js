@@ -899,18 +899,24 @@ async function exportAccounts(mode) {
   });
   if (!uri) return null;
   const file = uri.fsPath;
-  try {
-    if (fs.statSync(file).isFile()) fs.unlinkSync(file); // o diálogo já confirmou a substituição
-  } catch {}
   await refresh(); // ajustes por conta atualizados
-  const r = await runCswap(["export", file], 120000);
+  // Gera numa pasta temporária local e só no fim grava no destino: assim funciona
+  // também quando o destino é uma pasta de rede (que o VS Code bloqueia no Windows).
+  const tmpOut = path.join(os.tmpdir(), `swap-plus-export-${process.pid}-${Date.now()}.cswap`);
   let env = null;
   try {
-    env = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {}
-  if (r.code !== 0 || !env || !Array.isArray(env.accounts)) {
-    vscode.window.showErrorMessage(`Swap Plus: falha no ${name}: ${lastLine(r.stderr) || r.spawnError || "arquivo não foi gerado"}`);
-    return null;
+    const r = await runCswap(["export", tmpOut], 120000);
+    try {
+      env = JSON.parse(fs.readFileSync(tmpOut, "utf8"));
+    } catch {}
+    if (r.code !== 0 || !env || !Array.isArray(env.accounts)) {
+      vscode.window.showErrorMessage(`Swap Plus: falha no ${name}: ${lastLine(r.stderr) || r.spawnError || "arquivo não foi gerado"}`);
+      return null;
+    }
+  } finally {
+    try {
+      fs.unlinkSync(tmpOut);
+    } catch {}
   }
   env.swapPlus = {
     hideEmails: other,
@@ -921,8 +927,10 @@ async function exportAccounts(mode) {
       return { email: a.email, organizationUuid: a.organizationUuid || "", disabled: !!rec.disabled, threshold: rec.threshold ?? null, priority: Number(rec.priority) || 0 };
     }),
   };
-  fs.writeFileSync(file, JSON.stringify(env, null, 2) + "\n");
-  fs.chmodSync(file, 0o600);
+  if (!(await writeFileAny(file, JSON.stringify(env, null, 2) + "\n"))) {
+    vscode.window.showErrorMessage(`Swap Plus: não consegui salvar o arquivo em “${file}”. Escolha uma pasta deste computador (por exemplo, a Área de Trabalho).`);
+    return null;
+  }
   const n = env.accounts.length;
   await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `${name}: ${n} contas exportadas` }]);
   postState();
@@ -999,28 +1007,99 @@ async function importAccounts() {
   });
   if (!uris || !uris.length) return null;
   const picked = uris[0].fsPath;
-  const read = readExportFile(picked);
-  if (read.error) {
-    vscode.window.showErrorMessage(`Swap Plus: não deu para importar “${path.basename(picked)}”: ${read.error}`);
-    return null;
-  }
-  const env = read.env;
-  // Se o arquivo chegou com outra codificação, o motor recebe uma cópia limpa (UTF-8), que é apagada no fim.
-  let file = picked;
-  let tempCopy = null;
-  if (read.normalized) {
-    tempCopy = path.join(os.tmpdir(), `swap-plus-import-${process.pid}-${Date.now()}.cswap`);
-    fs.writeFileSync(tempCopy, read.text, { mode: 0o600 });
-    file = tempCopy;
-  }
+  const temps = [];
+  const tmpName = (tag) => path.join(os.tmpdir(), `swap-plus-import-${tag}-${process.pid}-${Date.now()}.cswap`);
   try {
-    return await importEnvelope(env, file, picked);
+    let source = picked;
+    let read = readExportFile(picked);
+    if (read.code === UNC_ERR) {
+      // Pasta de rede: o VS Code não deixa a extensão ler, mas o Windows copia normalmente.
+      const local = tmpName("rede");
+      temps.push(local);
+      if (await copyFileAny(picked, local)) {
+        read = readExportFile(local);
+        source = local;
+      }
+    }
+    if (read.error) {
+      vscode.window.showErrorMessage(`Swap Plus: não deu para importar “${path.basename(picked)}”: ${read.error}`);
+      return null;
+    }
+    // Se o arquivo chegou com outra codificação, o motor recebe uma cópia limpa (UTF-8).
+    let file = source;
+    if (read.normalized) {
+      file = tmpName("limpo");
+      temps.push(file);
+      fs.writeFileSync(file, read.text, { mode: 0o600 });
+    }
+    return await importEnvelope(read.env, file, picked);
   } finally {
-    if (tempCopy) {
+    for (const t of temps) {
       try {
-        fs.unlinkSync(tempCopy);
+        fs.unlinkSync(t);
       } catch {}
     }
+  }
+}
+
+// ---------------------------------------------------------------- arquivos (inclusive pasta de rede no Windows)
+
+const UNC_ERR = "ERR_UNC_HOST_NOT_ALLOWED";
+const IS_WIN = process.platform === "win32";
+
+/** Roda um comando de arquivo no PowerShell, com os caminhos em variáveis de ambiente (sem problema de aspas). */
+function shellFile(command, src, dst) {
+  return new Promise((resolve) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", command],
+      { env: { ...process.env, SWAP_PLUS_SRC: src || "", SWAP_PLUS_DST: dst || "" }, timeout: 60000, windowsHide: true },
+      (err) => resolve(!err)
+    );
+  });
+}
+
+/** Copia um arquivo. No Windows, se o VS Code bloquear (pasta de rede), o próprio Windows copia. */
+async function copyFileAny(src, dst) {
+  try {
+    fs.copyFileSync(src, dst);
+    return true;
+  } catch {
+    if (!IS_WIN) return false;
+    const ok = await shellFile("Copy-Item -LiteralPath $env:SWAP_PLUS_SRC -Destination $env:SWAP_PLUS_DST -Force", src, dst);
+    return ok && fs.existsSync(dst);
+  }
+}
+
+/** Grava o arquivo só com permissão para o seu usuário; pasta de rede no Windows via cópia local. */
+async function writeFileAny(dst, content) {
+  try {
+    fs.writeFileSync(dst, content, { mode: 0o600 });
+    try {
+      fs.chmodSync(dst, 0o600);
+    } catch {}
+    return true;
+  } catch {
+    if (!IS_WIN) return false;
+    const tmp = path.join(os.tmpdir(), `swap-plus-out-${process.pid}-${Date.now()}.cswap`);
+    try {
+      fs.writeFileSync(tmp, content, { mode: 0o600 });
+      return await shellFile("Copy-Item -LiteralPath $env:SWAP_PLUS_SRC -Destination $env:SWAP_PLUS_DST -Force", tmp, dst);
+    } finally {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {}
+    }
+  }
+}
+
+async function removeFileAny(p) {
+  try {
+    fs.unlinkSync(p);
+    return true;
+  } catch {
+    if (!IS_WIN) return false;
+    return shellFile("Remove-Item -LiteralPath $env:SWAP_PLUS_SRC -Force", p, "");
   }
 }
 
@@ -1034,7 +1113,13 @@ function readExportFile(file) {
   try {
     buf = fs.readFileSync(file);
   } catch (e) {
-    return { error: `não consegui ler o arquivo (${e.code || e.message}).` };
+    if (e.code === UNC_ERR) {
+      return {
+        code: UNC_ERR,
+        error: "o arquivo está numa pasta de rede, que o VS Code não deixa extensões lerem. Copie o arquivo para uma pasta deste computador (por exemplo, a Área de Trabalho) e importe de lá.",
+      };
+    }
+    return { code: e.code, error: `não consegui ler o arquivo (${e.code || e.message}).` };
   }
   if (!buf.length) {
     return { error: "o arquivo está vazio (0 bytes). Se ele está numa pasta do OneDrive, iCloud ou Google Drive, baixe-o para o computador ou copie para outra pasta e tente de novo." };
@@ -1118,9 +1203,9 @@ async function importEnvelope(env, file, picked) {
     )
     .then((c) => {
       if (c) {
-        try {
-          fs.unlinkSync(picked); // o arquivo que a pessoa escolheu, não a cópia temporária
-        } catch {}
+        removeFileAny(picked).then((ok) => {
+          if (!ok) vscode.window.showWarningMessage(`Swap Plus: não consegui apagar “${picked}”. Apague à mão.`);
+        });
       }
     });
   return { ok: true, hide, n };
@@ -1425,4 +1510,4 @@ function deactivate() {
   }
 }
 
-module.exports = { activate, deactivate, _test: { readExportFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };
+module.exports = { activate, deactivate, _test: { readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };

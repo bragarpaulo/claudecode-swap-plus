@@ -149,6 +149,7 @@ trava:
 | Windows: `swap-plus não é reconhecido` | Feche e abra o PowerShell. |
 | Windows: o comando da Etapa 2 dá erro de "execução de scripts" | Rode antes: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` e tente de novo. |
 | **Importar contas** dá erro | A mensagem diz o motivo. Os mais comuns: escolher o arquivo `._…` do pen drive (escolha o sem `._`), arquivo vazio porque ainda está só na nuvem (baixe ou copie para outra pasta) ou arquivo que chegou como `.zip` (descompacte). Se nada disso, gere o arquivo de novo (Etapa 1). |
+| Windows: erro com **pasta de rede** ou `ERR_UNC_HOST_NOT_ALLOWED` | O arquivo está numa pasta de rede (caminho começando com `\\`, como a pasta do Mac compartilhada). A partir da versão 1.4.2 a extensão copia o arquivo sozinha; se ainda der erro, copie o arquivo para a Área de Trabalho do Windows e importe de lá. |
 | A barra não aparece depois de instalar | Recarregue o VS Code (`Cmd/Ctrl + Shift + P` → **Developer: Reload Window**). |
 
 ## Remover

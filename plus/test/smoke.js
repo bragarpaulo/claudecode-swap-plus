@@ -229,6 +229,70 @@ function partI() {
   bad("export criptografado", JSON.stringify({ version: 1, encrypted: true, accounts: [] }), /criptografado/);
   bad("formato desconhecido", JSON.stringify({ version: 9, accounts: [{}] }), /versão 9/);
   bad("export sem nenhuma conta", JSON.stringify({ version: 1, accounts: [] }), /nenhuma conta/);
+
+  // Pasta de rede bloqueada pelo VS Code no Windows (simulada).
+  const netFile = put("na-rede.cswap", json);
+  const origRead = fs.readFileSync;
+  fs.readFileSync = function (f, ...rest) {
+    if (f === netFile) { const e = new Error("UNC host not allowed"); e.code = "ERR_UNC_HOST_NOT_ALLOWED"; throw e; }
+    return origRead.call(this, f, ...rest);
+  };
+  try {
+    const rn = T.readExportFile(netFile);
+    check("pasta de rede: avisa e explica o que fazer", rn.code === "ERR_UNC_HOST_NOT_ALLOWED" && /pasta de rede/.test(rn.error), rn.error || "");
+  } finally {
+    fs.readFileSync = origRead;
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// ------------------------------------------------------------ parte F: gravar e copiar arquivos
+async function partF() {
+  console.log("\n# F. Gravar e copiar arquivos" + (process.platform === "win32" ? " (Windows: com PowerShell e pasta de rede de verdade)" : ""));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-files-"));
+  const content = '{"version":1,"accounts":[{}]}\n';
+  const out = path.join(dir, "saida.cswap");
+  check("grava o export", (await T.writeFileAny(out, content)) && fs.readFileSync(out, "utf8") === content);
+  if (process.platform !== "win32") check("export só legível pelo seu usuário (600)", (fs.statSync(out).mode & 0o777) === 0o600);
+  const cp = path.join(dir, "copia.cswap");
+  check("copia arquivo local", (await T.copyFileAny(out, cp)) && fs.readFileSync(cp, "utf8") === content);
+  if (process.platform === "win32") {
+    // Força o caminho do PowerShell, que é o usado quando o VS Code bloqueia a pasta de rede.
+    const origCopy = fs.copyFileSync;
+    const origWrite = fs.writeFileSync;
+    fs.copyFileSync = () => { const e = new Error("UNC host not allowed"); e.code = "ERR_UNC_HOST_NOT_ALLOWED"; throw e; };
+    try {
+      const viaShell = path.join(dir, "via-powershell.cswap");
+      check("Windows: PowerShell copia quando o VS Code bloqueia", (await T.copyFileAny(out, viaShell)) && fs.readFileSync(viaShell, "utf8") === content);
+      const m = dir.match(/^([A-Za-z]):\\(.*)$/);
+      const unc = m ? `\\\\localhost\\${m[1]}$\\${m[2]}\\saida.cswap` : null;
+      if (unc && fs.existsSync(unc)) {
+        const fromNet = path.join(dir, "da-rede.cswap");
+        check(`Windows: copia de uma pasta de rede de verdade (${unc.slice(0, 22)}…)`, (await T.copyFileAny(unc, fromNet)) && fs.readFileSync(fromNet, "utf8") === content);
+        const r = T.readExportFile(fromNet);
+        check("Windows: o arquivo copiado da rede é aceito", !r.error);
+      } else {
+        console.log("     (pasta de rede \\\\localhost\\C$ indisponível nesta máquina; teste de rede pulado)");
+      }
+      fs.writeFileSync = function (f, ...rest) {
+        if (f === path.join(dir, "rede-destino.cswap")) { const e = new Error("UNC host not allowed"); e.code = "ERR_UNC_HOST_NOT_ALLOWED"; throw e; }
+        return origWrite.call(this, f, ...rest);
+      };
+      check("Windows: grava export em pasta bloqueada via PowerShell", (await T.writeFileAny(path.join(dir, "rede-destino.cswap"), content)) && fs.readFileSync(path.join(dir, "rede-destino.cswap"), "utf8") === content);
+    } finally {
+      fs.copyFileSync = origCopy;
+      fs.writeFileSync = origWrite;
+    }
+    const del = path.join(dir, "apagar.cswap");
+    fs.writeFileSync(del, "x");
+    const origUnlink = fs.unlinkSync;
+    fs.unlinkSync = () => { const e = new Error("UNC host not allowed"); e.code = "ERR_UNC_HOST_NOT_ALLOWED"; throw e; };
+    try {
+      check("Windows: apaga via PowerShell quando o VS Code bloqueia", (await T.removeFileAny(del)) && !fs.existsSync(del));
+    } finally {
+      fs.unlinkSync = origUnlink;
+    }
+  }
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
@@ -520,10 +584,29 @@ async function partB() {
 async function partUpdates(context) {
   console.log("\n# B12. Atualizações (GitHub de verdade; nada é instalado de fato)");
   const U = require(path.join(root, "updater.js"));
+  const remaining = async () => {
+    try {
+      const r = await U.request("https://api.github.com/rate_limit", { timeout: 8000 });
+      return r.resources.core.remaining;
+    } catch { return null; }
+  };
+  const before = await remaining();
+  if (before === 0) {
+    const r0 = await T.getUpdater().check({ reason: "manual" });
+    check("limite do GitHub estourado: mensagem clara, sem “403”", r0.error === U.RATE_LIMIT_MSG, r0.error || "");
+    console.log("     (limite de consultas do GitHub esgotado nesta rede; o resto do B12 fica para depois)");
+    return;
+  }
   const res = await T.getUpdater().check({ reason: "manual" });
+  const mid = await remaining();
+  const res2 = await T.getUpdater().check({ reason: "manual" });
+  const after = await remaining();
   console.log(`     motor:    aqui ${res.cli.installed} · fork ${res.cli.latest} · original ${res.cli.upstream}`);
   console.log(`     extensão: aqui ${res.ext.installed} · fork ${res.ext.latest} · original ${res.ext.upstream} (base ${res.ext.base})`);
-  check("consulta o GitHub sem erro", !res.error, res.error || "");
+  console.log(`     consultas restantes: ${before} → ${mid} (1ª verificação) → ${after} (2ª)`);
+  check("consulta o GitHub sem erro", !res.error && !res2.error, res.error || res2.error || "");
+  check("2ª verificação não gasta o limite (GitHub responde “nada mudou”)", mid !== null && after !== null && mid - after <= 0, `${mid} → ${after}`);
+  check("2ª verificação dá o mesmo resultado", res2.cli.latest === res.cli.latest && res2.ext.latest === res.ext.latest && res2.cli.upstream === res.cli.upstream);
   check("motor desta máquina = última release do fork", !!res.cli.latest && U.cmpVersion(res.cli.latest, res.cli.installed) === 0);
   check("fork do motor em dia com o original", !!res.cli.upstream && U.cmpVersion(res.cli.upstream, res.cli.latest) === 0);
   check("release da extensão existe no fork", !!res.ext.latest);
@@ -575,6 +658,7 @@ async function partUpdates(context) {
 (async () => {
   partA();
   partI();
+  await partF();
   partU();
   if (UNIT) {
     console.log(failed ? `\n${failed} verificação(ões) falharam.` : "\nTudo certo.");

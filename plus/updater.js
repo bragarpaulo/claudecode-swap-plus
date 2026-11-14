@@ -73,15 +73,33 @@ function pickStableTag(tags) {
 
 // ---------------------------------------------------------------- rede e processos
 
-function request(url, { timeout = 10000, json = true, dest = null, redirects = 5 } = {}) {
+const RATE_LIMIT_MSG = "o GitHub limitou as consultas desta rede por agora (60 por hora sem login, somando todos os computadores da rede); a próxima verificação tenta de novo";
+
+/**
+ * GET simples. Com `etag`, pede "só se mudou": a resposta 304 (nada mudou) não
+ * gasta o limite de consultas do GitHub e volta como { notModified: true }.
+ */
+function request(url, { timeout = 10000, json = true, dest = null, redirects = 5, etag = null, withMeta = false } = {}) {
   return new Promise((resolve, reject) => {
+    const headers = { "User-Agent": UA, Accept: json ? "application/vnd.github+json" : "application/octet-stream" };
+    if (etag) headers["If-None-Match"] = etag;
     const req = https.get(
       url,
-      { headers: { "User-Agent": UA, Accept: json ? "application/vnd.github+json" : "application/octet-stream" }, timeout },
+      { headers, timeout },
       (res) => {
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
           res.resume();
           resolve(request(new URL(res.headers.location, url).toString(), { timeout, json, dest, redirects: redirects - 1 }));
+          return;
+        }
+        if (res.statusCode === 304 && etag) {
+          res.resume();
+          resolve({ notModified: true });
+          return;
+        }
+        if ((res.statusCode === 403 || res.statusCode === 429) && (res.headers["x-ratelimit-remaining"] === "0" || res.headers["retry-after"])) {
+          res.resume();
+          reject(new Error(RATE_LIMIT_MSG));
           return;
         }
         if (res.statusCode !== 200) {
@@ -101,7 +119,8 @@ function request(url, { timeout = 10000, json = true, dest = null, redirects = 5
         res.on("end", () => {
           try {
             const s = Buffer.concat(chunks).toString("utf8");
-            resolve(json ? JSON.parse(s) : s);
+            const body = json ? JSON.parse(s) : s;
+            resolve(withMeta ? { body, etag: res.headers.etag || null } : body);
           } catch (e) {
             reject(e);
           }
@@ -194,12 +213,29 @@ function createUpdater(deps) {
     return v !== false && v !== "off";
   };
 
+  /**
+   * Consulta a API guardando a última resposta (já resumida) com a ETag. Se nada
+   * mudou, o GitHub responde 304, que não gasta o limite de consultas.
+   */
+  async function apiGet(url, pick, timeout) {
+    const cache = getState().http || {};
+    const hit = cache[url];
+    const res = await request(url, { timeout, etag: hit && hit.etag, withMeta: true });
+    if (res.notModified) return hit.value;
+    const value = pick(res.body);
+    if (res.etag) {
+      const fresh = { ...(getState().http || {}), [url]: { etag: res.etag, value } };
+      await setState({ http: fresh });
+    }
+    return value;
+  }
+
   async function check({ reason = "manual", timeout = 10000 } = {}) {
     const [cliRel, extRel, upCli, upExt, installed] = await Promise.allSettled([
-      request(`https://api.github.com/repos/${REPOS.cli}/releases?per_page=20`, { timeout }).then(pickPlusRelease),
-      request(`https://api.github.com/repos/${REPOS.ext}/releases?per_page=20`, { timeout }).then(pickPlusRelease),
-      request(`https://api.github.com/repos/${REPOS.upstreamCli}/tags?per_page=100`, { timeout }).then(pickStableTag),
-      request(`https://api.github.com/repos/${REPOS.upstreamExt}/tags?per_page=100`, { timeout }).then(pickStableTag),
+      apiGet(`https://api.github.com/repos/${REPOS.cli}/releases?per_page=20`, pickPlusRelease, timeout),
+      apiGet(`https://api.github.com/repos/${REPOS.ext}/releases?per_page=20`, pickPlusRelease, timeout),
+      apiGet(`https://api.github.com/repos/${REPOS.upstreamCli}/tags?per_page=100`, pickStableTag, timeout),
+      apiGet(`https://api.github.com/repos/${REPOS.upstreamExt}/tags?per_page=100`, pickStableTag, timeout),
       deps.cliVersion(),
     ]);
     const val = (p) => (p.status === "fulfilled" ? p.value : null);
@@ -367,4 +403,4 @@ function createUpdater(deps) {
   return { start, stop, runCheck, onClose, check, summary, applyCli, applyExt };
 }
 
-module.exports = { createUpdater, cmpVersion, pickPlusRelease, pickStableTag, findBin, REPOS };
+module.exports = { createUpdater, cmpVersion, pickPlusRelease, pickStableTag, findBin, request, RATE_LIMIT_MSG, REPOS };

@@ -46,7 +46,10 @@ const vscodeMock = {
   ViewColumn: { One: 1 },
   ProgressLocation: { Notification: 15 },
   QuickPickItemKind: { Separator: -1 },
-  Uri: { joinPath: (base, ...p) => ({ fsPath: path.join(base.fsPath, ...p), toString() { return this.fsPath; } }) },
+  Uri: {
+    joinPath: (base, ...p) => ({ fsPath: path.join(base.fsPath, ...p), toString() { return this.fsPath; } }),
+    file: (p) => ({ fsPath: p, toString() { return p; } }),
+  },
   window: {
     createStatusBarItem: (id) => { const it = { id, text: "", tooltip: "", shown: false, show() { this.shown = true; }, hide() { this.shown = false; } }; items.push(it); return it; },
     showInformationMessage: (m) => { notifications.push(["info", m]); return Promise.resolve(undefined); },
@@ -54,6 +57,8 @@ const vscodeMock = {
     showErrorMessage: (m) => { notifications.push(["error", m]); return Promise.resolve(undefined); },
     withProgress: (_o, fn) => fn(),
     showQuickPick: (list) => { vscodeMock.lastPick = list; return Promise.resolve(undefined); },
+    showSaveDialog: () => Promise.resolve(vscodeMock.nextSave ? { fsPath: vscodeMock.nextSave } : undefined),
+    showOpenDialog: () => Promise.resolve(vscodeMock.nextOpen ? [{ fsPath: vscodeMock.nextOpen }] : undefined),
     createTerminal: () => ({ show() {}, sendText() {} }),
     createWebviewPanel: () => {
       panel = {
@@ -82,7 +87,7 @@ const vscodeMock = {
     }),
     onDidChangeConfiguration: (fn) => { cfgListeners.push(fn); return { dispose() {} }; },
   },
-  commands: { registerCommand: (id, fn) => { commands[id] = fn; return { dispose() {} }; } },
+  commands: { registerCommand: (id, fn) => { commands[id] = fn; return { dispose() {} }; }, executeCommand: () => Promise.resolve() },
 };
 const origLoad = Module._load;
 Module._load = function (request) {
@@ -106,6 +111,8 @@ async function sendAndWait(msg, ms = 400) { await panel.receive(msg); await slee
 const home = os.homedir();
 const cswapBin = ["swap-plus", "cswap"].map((n) => path.join(home, ".local/bin", n)).find((p) => fs.existsSync(p)) || "swap-plus";
 const cswap = (...args) => execFileSync(cswapBin, args, { encoding: "utf8" });
+const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-test-"));
+const EMOJI = /\p{Extended_Pictographic}/u;
 
 // ------------------------------------------------------------ parte A: decisão
 const HOUR = 3600e3;
@@ -173,14 +180,14 @@ function partA() {
   check("Opus não liga o limite do Fable", T.watchedModels(["claude-opus-5-5"], ["Fable"]).length === 0);
 
   const a = acct(9, { s: 20, w: 71, f: 57, wReset: 6 });
-  const det = T.pickerDetail(a, T.windows(a), { session: 90, weekly: 80, model: 95 }, false);
-  console.log("     linha de baixo da lista: " + det);
-  check("lista: sessão diz quanto sobra", /Sessão 5h sobra 80%/.test(det));
-  check("lista: semanal e Fable com % usado e renovação", /Semanal 71%.*Fable 57% usados, renovam /.test(det));
-  check("lista: semanal em 71% fica amarelo, Fable em 57% verde", /🟡 Semanal/.test(det) && /🟢 Fable/.test(det));
-  const b = acct(9, { w: 81, f: 96 });
-  const det2 = T.pickerDetail(b, T.windows(b), { session: 90, weekly: 80, model: 95 }, false);
-  check("lista: na linha de troca fica vermelho", /🔴 Semanal/.test(det2) && /🔴 Fable/.test(det2));
+  const pt = T.pickerTexts(a, T.windows(a), false);
+  console.log("     ao lado do nome: " + pt.description);
+  console.log("     linha de baixo : " + pt.detail);
+  check("lista: sessão no formato “X% usado — renova …”", /^Sessão \(5h\): 20% usado — renova (hoje|amanhã) \d+h/.test(pt.description));
+  check("lista: semanal e Fable no mesmo formato", /^Semanal: 71% usado — renova .+ {2}· {2}Fable: 57% usado — renova /.test(pt.detail));
+  check("lista: sem emojis", !EMOJI.test(pt.description + pt.detail));
+  const idle = acct(9, { s: null, w: 3 });
+  check("lista: sessão sem uso não mostra renovação", T.pickerTexts(idle, T.windows(idle), false).description === "Sessão (5h): 0% usado");
 }
 
 // ------------------------------------------------------------ parte B: integração
@@ -194,26 +201,26 @@ async function partB() {
 
   console.log("\n# B1. Barra de status (swap-plus real)");
   ext.activate(context);
-  for (let i = 0; i < 80 && !(items[0] && items[0].shown && items[1] && items[1].text.startsWith("Sessão")); i++) await sleep(250);
+  for (let i = 0; i < 80 && !(items[0] && items[0].shown && /Sessão/.test(items[0].text)); i++) await sleep(250);
   const raw = JSON.parse(cswap("list", "--json"));
   const active = raw.accounts.find((a) => a.number === raw.activeAccountNumber);
-  const byId = (id) => items.find((it) => it.id === id);
-  const mail = byId("swapPlus.mail"), sess = byId("swapPlus.session"), week = byId("swapPlus.weekly");
-  const model = items.find((it) => it.id.startsWith("swapPlus.model."));
-  const shown = items.filter((it) => it.shown).map((it) => it.text);
-  console.log("     barra:", shown.map((t) => JSON.stringify(t)).join("  "));
-  check("ícone de e-mail sem endereço", mail.text === "$(mail)");
-  check("nenhum e-mail no texto da barra", !shown.some((t) => /@/.test(t)));
-  check("hover do ícone mostra o e-mail em negrito", String(mail.tooltip.value).includes(`**${active.email}**`) || String(mail.tooltip.value).includes(active.email));
-  check("sessão, semanal e Fable em itens separados", sess.text.startsWith("Sessão") && week.text.startsWith("Semanal") && !!model && model.text.startsWith("Fable"));
-  const colorOk = (it, pct, line) => { const want = pct >= line ? "charts.red" : pct >= 70 ? "charts.yellow" : undefined; return (it.color && it.color.id) === want; };
+  const main = items.find((it) => it.id === "swapPlus.main");
+  const shown = items.filter((it) => it.shown);
+  console.log("     barra:", JSON.stringify(main.text));
+  check("um único item na barra", shown.length === 1 && shown[0] === main, `${shown.length} item(ns)`);
+  check("moldura nas pontas e ícone de e-mail", /^│ {2}\$\(mail\) {2}/.test(main.text) && / {2}│$/.test(main.text));
+  check("nenhum e-mail no texto da barra", !/@/.test(main.text));
+  check("formato “Sessão (5h): X% usado — renova …”", /Sessão \(5h\): \d+% usado( — renova \S+ \S+)?/.test(main.text));
+  check("semanal e Fable no mesmo formato", /Semanal: \d+% usado — renova /.test(main.text) && /Fable: \d+% usado — renova /.test(main.text));
   const u = active.usage || {};
-  check("cor de cada item segue o uso", colorOk(week, u.sevenDay.pct, 80) && colorOk(sess, u.fiveHour ? u.fiveHour.pct : 0, 90), `semanal ${u.sevenDay.pct}% → ${week.color ? week.color.id : "normal"}`);
-  check("hover sem “troca automática”", !/[Tt]roca automática/.test(sess.tooltip.value));
-  console.log("     hover:\n" + redact(sess.tooltip.value).split("\n").map((l) => "       | " + l).join("\n"));
+  const pcts = [[u.fiveHour ? u.fiveHour.pct : 0, 90], [u.sevenDay.pct, 80], ...(u.scoped || []).map((x) => [x.pct, 95])];
+  const want = pcts.some(([p, l]) => p >= l) ? "charts.red" : pcts.some(([p]) => p >= 70) ? "charts.yellow" : undefined;
+  check("cor do item = limite mais perto do fim", (main.color && main.color.id) === want, want || "normal");
+  check("clique abre a lista", main.command === "swapPlus.switchAccount");
+  check("hover mostra o e-mail em negrito, sem emojis", String(main.tooltip.value).includes(`**${active.email}**`) && !EMOJI.test(main.tooltip.value));
+  console.log("     hover:\n" + redact(main.tooltip.value).split("\n").map((l) => "       | " + l).join("\n"));
 
   console.log("\n# B2. Clique na barra: lista de contas");
-  check("todos os itens abrem a lista", [mail, sess, week].every((it) => it.command === "swapPlus.switchAccount"));
   await commands["swapPlus.switchAccount"]();
   const menu = vscodeMock.lastPick || [];
   check("“Configurações” é a primeira opção", /Configurações/.test(menu[0].label));
@@ -222,8 +229,10 @@ async function partB() {
   check("lista todas as contas", accRows.length === raw.accounts.length, `${accRows.length} contas`);
   check("só a conta em uso tem o check", accRows.filter((m) => m.label.startsWith("$(check)")).length === 1 && accRows.find((m) => m.label.startsWith("$(check)")).accountNum === raw.activeAccountNumber);
   check("linha de cima: conta e e-mail", accRows.every((m) => /Conta \d+.* — .+@/.test(m.label)));
-  check("linha de baixo: sobra da sessão, semanal e renovação", accRows.every((m) => /Sessão 5h sobra \d+%/.test(m.detail) && /Semanal \d+%/.test(m.detail) && /renova/.test(m.detail)));
-  accRows.slice(0, 3).forEach((m) => console.log("       › " + redact(m.label) + "\n         " + m.detail));
+  check("sessão ao lado do nome, no formato pedido", accRows.every((m) => /^Sessão \(5h\): \d+% usado/.test(m.description)));
+  check("linha de baixo: semanal e Fable, com renovação", accRows.every((m) => /^Semanal: \d+% usado — renova /.test(m.detail) && /Fable: \d+% usado — renova /.test(m.detail)));
+  check("lista sem emojis", !menu.some((m) => EMOJI.test(`${m.label} ${m.description || ""} ${m.detail || ""}`)));
+  accRows.slice(0, 3).forEach((m) => console.log("       › " + redact(m.label) + "   " + m.description + "\n         " + m.detail));
 
   console.log("\n# B3. Tela de configurações");
   commands["swapPlus.openSettings"]();
@@ -292,6 +301,65 @@ async function partB() {
   }
   check("conta em uso não mudou durante o teste", JSON.parse(cswap("list", "--json")).activeAccountNumber === before);
 
+  console.log("\n# B9. Modo privado");
+  await sendAndWait({ type: "ui", key: "privacy.hideEmails", value: true }, 300);
+  await commands["swapPlus.refreshStatus"]();
+  const sp = lastState();
+  check("tela não recebe e-mails nem organização", sp.privacy === true && sp.accounts.every((a) => a.email === null && a.org === "" && a.alias === null));
+  check("hover da barra sem e-mail", !/@/.test(main.tooltip.value) && /\*\*Conta \d+\*\*/.test(main.tooltip.value));
+  await commands["swapPlus.switchAccount"]();
+  const privRows = (vscodeMock.lastPick || []).filter((m) => m.accountNum > 0);
+  check("lista mostra só “Conta N”", privRows.length === raw.accounts.length && privRows.every((m) => /^(\$\(check\) )?Conta \d+$/.test(m.label)), privRows.slice(0, 3).map((m) => m.label).join(", "));
+  check("nenhum e-mail em lugar nenhum da lista", !(vscodeMock.lastPick || []).some((m) => /@/.test(`${m.label} ${m.description || ""} ${m.detail || ""}`)));
+
+  console.log("\n# B10. Export Other / Export Me (arquivo temporário, apagado em seguida)");
+  const fileOther = path.join(SCRATCH, "other.cswap");
+  const fileMe = path.join(SCRATCH, "me.cswap");
+  try {
+    vscodeMock.nextSave = fileMe;
+    const nBefore = notifications.length;
+    await sendAndWait({ type: "export", mode: "me" }, 300);
+    check("em modo privado, Export Me fica bloqueado", !fs.existsSync(fileMe) && notifications.slice(nBefore).some((n) => /só o Export Other/.test(n[1])));
+    vscodeMock.nextSave = fileOther;
+    await sendAndWait({ type: "export", mode: "other" }, 300);
+    const envO = JSON.parse(fs.readFileSync(fileOther, "utf8"));
+    check("Export Other gera o arquivo com todas as contas", Array.isArray(envO.accounts) && envO.accounts.length === raw.accounts.length, `${envO.accounts.length} contas`);
+    check("arquivo marcado para modo privado", envO.swapPlus && envO.swapPlus.hideEmails === true);
+    check("arquivo só legível pelo seu usuário (600)", (fs.statSync(fileOther).mode & 0o777) === 0o600);
+    check("aviso do export sem e-mail", !notifications.slice(-2).some((n) => /@/.test(n[1])));
+    await sendAndWait({ type: "ui", key: "privacy.hideEmails", value: false }, 300);
+    vscodeMock.nextSave = fileMe;
+    await sendAndWait({ type: "export", mode: "me" }, 300);
+    const envM = JSON.parse(fs.readFileSync(fileMe, "utf8"));
+    check("Export Me sem a marca de modo privado", envM.swapPlus && envM.swapPlus.hideEmails === false && envM.accounts.length === raw.accounts.length);
+  } finally {
+    for (const f of [fileOther, fileMe]) try { fs.unlinkSync(f); } catch {}
+    vscodeMock.nextSave = null;
+  }
+  check("arquivos de teste apagados", !fs.existsSync(fileOther) && !fs.existsSync(fileMe));
+
+  console.log("\n# B11. Importar (com um swap-plus de mentira: nada é gravado de verdade)");
+  const fakeLog = path.join(SCRATCH, "fake.log");
+  const fake = path.join(SCRATCH, "fake-swap-plus");
+  fs.writeFileSync(fake, `#!/bin/bash\nif [ "$1" = "import" ]; then echo "$@" >> "${fakeLog}"; echo "Imported 2 accounts"; exit 0; fi\nexec "${cswapBin}" "$@"\n`, { mode: 0o755 });
+  const fakeFile = path.join(SCRATCH, "vindo-do-outro.cswap");
+  fs.writeFileSync(fakeFile, JSON.stringify({ version: 1, accounts: [{}, {}], swapPlus: { hideEmails: true } }), { mode: 0o600 });
+  try {
+    await vscodeMock.workspace.getConfiguration("swapPlus").update("executablePath", fake);
+    await sleep(300);
+    vscodeMock.nextOpen = fakeFile;
+    await sendAndWait({ type: "import" }, 600);
+    const logged = fs.existsSync(fakeLog) ? fs.readFileSync(fakeLog, "utf8").trim() : "";
+    check("rodou “swap-plus import <arquivo>”", logged === `import ${fakeFile}`, logged);
+    check("arquivo de Export Other liga o modo privado", lastState().privacy === true);
+  } finally {
+    vscodeMock.nextOpen = null;
+    await vscodeMock.workspace.getConfiguration("swapPlus").update("executablePath", "");
+    await vscodeMock.workspace.getConfiguration("swapPlus").update("privacy.hideEmails", false);
+    await sleep(300);
+  }
+  check("configurações de teste desfeitas", lastState().privacy === false);
+
   if (DUMP) {
     await commands["swapPlus.refreshStatus"]();
     const s = JSON.parse(JSON.stringify(lastState()));
@@ -301,6 +369,7 @@ async function partB() {
     console.log(`\nestado salvo em ${DUMP}`);
   }
   ext.deactivate();
+  fs.rmSync(SCRATCH, { recursive: true, force: true });
 }
 
 (async () => {

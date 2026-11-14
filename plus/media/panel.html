@@ -73,8 +73,27 @@
 </section>
 
 <section class="card">
-  <h2>Barra de status</h2>
+  <h2>Exibição</h2>
   <div id="uiBox"></div>
+</section>
+
+<section class="card">
+  <h2>Exportar e importar contas</h2>
+  <p class="muted small">Para usar as mesmas contas no seu outro computador sem logar de novo. O arquivo leva as credenciais de todas as contas em texto puro: transfira com cuidado e apague depois de importar.</p>
+  <div class="xport">
+    <div class="xrow">
+      <button id="btnExportOther">Export Other</button>
+      <span class="muted small">No outro computador aparece só “Conta 1”, “Conta 2”… sem e-mail. Ele entra em modo privado ao importar.</span>
+    </div>
+    <div class="xrow" id="rowExportMe">
+      <button id="btnExportMe" class="secondary">Export Me</button>
+      <span class="muted small">Com os e-mails, como aqui.</span>
+    </div>
+    <div class="xrow">
+      <button id="btnImport" class="secondary">Importar contas…</button>
+      <span class="muted small">No outro computador: abre o arquivo .cswap e cadastra as contas.</span>
+    </div>
+  </div>
 </section>
 
 <section class="card">

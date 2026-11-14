@@ -337,7 +337,7 @@
         h(
           "div",
           null,
-          h("div", { class: "aname" }, h("span", { class: "n", text: `Conta ${a.number}` }), a.alias ? `“${a.alias}” — ` : "", a.email),
+          h("div", { class: "aname" }, h("span", { class: "n", text: `Conta ${a.number}` }), S.privacy ? "" : a.alias ? `“${a.alias}” — ` : "", S.privacy ? "" : a.email),
           h("div", { class: "sub", text: [a.plan, a.org].filter(Boolean).join(" · ") })
         ),
         h(
@@ -375,7 +375,7 @@
       h(
         "div",
         { class: "afoot" },
-        h("input", {
+        S.privacy ? h("span") : h("input", {
           type: "text",
           placeholder: "apelido",
           value: a.alias || "",
@@ -453,9 +453,14 @@
   function renderUi() {
     const set = (key, value) => send({ type: "ui", key, value });
     $("uiBox").replaceChildren(
+      h("label", { class: "check" }, h("input", { type: "checkbox", checked: S.privacy, onchange: (e) => set("privacy.hideEmails", e.target.checked) }), "Modo privado: mostrar só “Conta N”, sem e-mail"),
+      h("p", {
+        class: "muted small privnote",
+        text: "Vale para a barra, a lista de contas, esta tela e os avisos do Swap Plus. Não é uma trava: o painel de conta do próprio Claude Code e o comando swap-plus list continuam mostrando o e-mail, e quem usa este computador usa as contas.",
+      }),
       h("label", { class: "check" }, h("input", { type: "checkbox", checked: S.ui.showAccountNumber, onchange: (e) => set("statusBar.showAccountNumber", e.target.checked) }), "Mostrar o número da conta ao lado do ícone de e-mail"),
       h("label", { class: "check" }, h("input", { type: "checkbox", checked: S.ui.showModelWeekly, onchange: (e) => set("statusBar.showModelWeekly", e.target.checked) }), "Mostrar o semanal por modelo (ex.: Fable) na barra"),
-      h("p", { class: "muted small", text: "Cores na barra e na lista: verde abaixo de 70%, amarelo a partir de 70%, vermelho na linha de troca." }),
+      h("p", { class: "muted small", text: "Cor do item na barra: normal abaixo de 70%, amarelo a partir de 70% e vermelho na linha de troca — vale o limite mais perto do fim." }),
       h(
         "div",
         { class: "uirule" },
@@ -496,6 +501,7 @@
     renderAccounts();
     renderUi();
     renderHistory();
+    $("rowExportMe").classList.toggle("hidden", !!S.privacy);
   }
 
   // ------------------------------------------------------------ eventos
@@ -526,6 +532,9 @@
   });
   $("btnAdd").addEventListener("click", () => send({ type: "add" }));
   $("btnClear").addEventListener("click", () => send({ type: "clearHistory" }));
+  $("btnExportOther").addEventListener("click", () => send({ type: "export", mode: "other" }));
+  $("btnExportMe").addEventListener("click", () => send({ type: "export", mode: "me" }));
+  $("btnImport").addEventListener("click", () => send({ type: "import" }));
 
   send({ type: "ready" });
 })();

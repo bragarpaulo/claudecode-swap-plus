@@ -6,10 +6,15 @@ Fork pessoal de [smith89k/claude-swap-status](https://github.com/smith89k/claude
 
 ## O que tem
 
-- **Barra de status**: `✉  Sessão █░░░░ 20%  Semanal █░░░░ 29%  Fable ░░░░░ 4%`. O e-mail não aparece; passe o mouse no ícone para ver.
-  Cada item muda de cor sozinho: verde abaixo de 70%, amarelo a partir de 70%, vermelho na linha de troca.
-- **Clique na barra**: lista as contas (a em uso com ✓). Em cima, conta e e-mail; embaixo, menor:
-  `🟢 Sessão 5h sobra 80% · 🟡 Semanal 71% · 🟢 Fable 57% usados, renovam hoje 18h`. **Configurações** é a primeira opção.
+- **Barra de status**: um único item, com uma barra fina de cada lado:
+  `│  ✉  Sessão (5h): 2% usado — renova hoje 15h  ·  Semanal: 30% usado — renova hoje 18h  ·  Fable: 57% usado — renova hoje 18h  │`.
+  O e-mail não aparece; passe o mouse para ver. O item fica amarelo a partir de 70% e vermelho na linha de troca (vale o limite mais perto do fim).
+- **Clique na barra**: lista as contas (a em uso com ✓), com **Configurações** em primeiro. Em cima: `Conta 1 — e-mail` e, mais claro, a sessão;
+  embaixo: `Semanal: 30% usado — renova hoje 18h  ·  Fable: 57% usado — renova hoje 18h`. As três partes juntas não cabem numa linha da lista do VS Code.
+- **Modo privado**: mostra só “Conta 1”, “Conta 2”… sem e-mail, apelido ou organização. Liga sozinho ao importar um **Export Other**.
+  Só muda o que o Swap Plus mostra: o painel de conta do Claude Code e o `swap-plus list` continuam mostrando o e-mail.
+- **Exportar / importar** (em Configurações): **Export Other** (o outro computador entra em modo privado), **Export Me** (com e-mails)
+  e **Importar contas…**. O arquivo `.cswap` leva as credenciais em texto puro, com permissão só para o seu usuário: transfira e apague.
 - **Troca automática** (começa desligada; liga na tela de Configurações). Padrão:
   - sessão de 5h em **90%**, semanal em **80%**, Fable em **95%**;
   - o limite do Fable só conta enquanto o Fable está em uso. O modelo em uso é lido das transcrições locais do Claude Code (últimos 30 min);

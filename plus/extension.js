@@ -1,9 +1,10 @@
 "use strict";
 // Swap Plus — fork pessoal de smith89k/claude-swap-status (MIT).
 //
-// - Barra de status: ícone de e-mail (endereço no hover), sessão de 5h, semanal
-//   e limites semanais por modelo (ex.: Fable), cada um com sua cor.
+// - Barra de status: um único item, com ícone de e-mail (endereço no hover),
+//   sessão de 5h, semanal e limites semanais por modelo (ex.: Fable).
 // - Clique na barra: lista de contas, com "Configurações" em primeiro.
+// - Modo privado: mostra só "Conta N", sem e-mail (Export Other liga sozinho).
 // - Regras de aviso e de troca automática, com linhas separadas para sessão,
 //   semanal e por modelo. A decisão é tomada aqui, olhando o modelo que está em
 //   uso no Claude Code; a troca em si é feita pelo CLI `swap-plus`
@@ -44,10 +45,7 @@ const STATUS_LABELS = {
 };
 
 let extContext;
-let mailItem;
-let sessItem;
-let weekItem;
-const modelItems = new Map();
+let mainItem;
 let panel;
 let pollTimer;
 let autoTimer;
@@ -85,6 +83,24 @@ function rules() {
   };
 }
 
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+
+function privateMode() {
+  return !!cfg().get("privacy.hideEmails");
+}
+
+/** Em modo privado, nenhum e-mail sai em mensagens, histórico ou tela. */
+function safe(text) {
+  return privateMode() ? String(text).replace(EMAIL_RE, "(e-mail oculto)") : String(text);
+}
+
+/** "Conta 3" (modo privado) ou "Conta 3 “apelido” — email". */
+function displayName(acc) {
+  if (privateMode()) return `Conta ${acc.number}`;
+  const alias = accountAlias(acc);
+  return `Conta ${acc.number}${alias ? ` “${alias}”` : ""} — ${acc.email}`;
+}
+
 function cswapPath() {
   const configured = (cfg().get("executablePath") || "").trim();
   if (configured) return configured;
@@ -120,7 +136,7 @@ function parseJson(s) {
 
 function lastLine(s) {
   const lines = String(s || "").trim().split("\n").filter(Boolean);
-  return lines.length ? lines[lines.length - 1] : "";
+  return safe(lines.length ? lines[lines.length - 1] : "");
 }
 
 function statusLabel(s) {
@@ -191,7 +207,18 @@ function level(pct, line) {
   return "ok";
 }
 
-const DOTS = { ok: "🟢", warn: "🟡", bad: "🔴", none: "⚪" };
+/** "Semanal: 30% usado — renova hoje 18h" */
+function seg(label, win) {
+  let s = `${label}: ${fmtPct(win.pct)} usado`;
+  if (win.resetsAt) s += ` — renova ${shortWhen(win.resetsAt)}`;
+  return s;
+}
+
+function worstLevel(levels) {
+  if (levels.includes("bad")) return "bad";
+  if (levels.includes("warn")) return "warn";
+  return "ok";
+}
 
 function levelColor(lv) {
   if (lv === "bad") return new vscode.ThemeColor("charts.red");
@@ -490,29 +517,21 @@ function refresh() {
 
 // ---------------------------------------------------------------- barra de status
 
-function ensureModelItem(name, idx) {
-  let it = modelItems.get(name);
-  if (!it) {
-    it = vscode.window.createStatusBarItem(`${NS}.model.${name}`, vscode.StatusBarAlignment.Left, 102 - idx);
-    it.name = `Swap Plus — ${name}`;
-    it.command = `${NS}.switchAccount`;
-    modelItems.set(name, it);
-    extContext.subscriptions.push(it);
-  }
-  return it;
-}
-
 function usageTooltip(acc, w, l) {
   const t = new vscode.MarkdownString(undefined, true);
-  const alias = accountAlias(acc);
+  const priv = privateMode();
   t.appendMarkdown(`**Conta ${acc.number}**`);
-  if (alias) t.appendText(` (${alias})`);
-  t.appendMarkdown(" — **");
-  t.appendText(acc.email || "");
-  t.appendMarkdown("**  \n");
+  if (!priv) {
+    const alias = accountAlias(acc);
+    if (alias) t.appendText(` (${alias})`);
+    t.appendMarkdown(" — **");
+    t.appendText(acc.email || "");
+    t.appendMarkdown("**");
+  }
+  t.appendMarkdown("  \n");
   const meta = [];
   if (acc.plan && acc.plan.label) meta.push(`plano ${acc.plan.label}`);
-  if (acc.organizationName) meta.push(acc.organizationName);
+  if (!priv && acc.organizationName) meta.push(acc.organizationName);
   if (meta.length) t.appendText(meta.join(" · "));
   t.appendMarkdown("\n\n");
 
@@ -523,20 +542,20 @@ function usageTooltip(acc, w, l) {
       t.appendText(`Dados de ${Math.round((w.ageSeconds || 0) / 60)} min atrás (${statusLabel(acc.usageStatus)}).`);
       t.appendMarkdown("\n\n");
     }
-    const line = (label, win, ln, withLeft) => {
-      t.appendMarkdown(`${DOTS[level(win.pct, ln)]} **${label}:** `);
+    const line = (label, win, withLeft) => {
+      t.appendMarkdown(`**${label}:** `);
       let s = `${fmtPct(win.pct)} usado`;
-      if (withLeft) s += ` · sobra ${fmtPct(100 - win.pct)}`;
-      if (win.resetsAt) s += ` · renova ${fmtWhen(win.resetsAt)} (em ${resetIn(win.resetsAt)})`;
-      else if (win.idle) s += " · sem uso nas últimas 5h";
+      if (withLeft) s += ` (sobra ${fmtPct(100 - win.pct)})`;
+      if (win.resetsAt) s += ` — renova ${fmtWhen(win.resetsAt)}, em ${resetIn(win.resetsAt)}`;
+      else if (win.idle) s += " — sem uso nas últimas 5h";
       t.appendText(s);
       t.appendMarkdown("  \n");
     };
-    line("Sessão (5h)", w.session, l.session, true);
-    if (w.weekly) line("Semanal", w.weekly, l.weekly, true);
-    for (const m of w.models) line(`${m.name} (semanal)`, m, l.model, false);
+    line("Sessão (5h)", w.session, true);
+    if (w.weekly) line("Semanal", w.weekly, true);
+    for (const m of w.models) line(m.name, m, true);
     if (w.weekly && w.weekly.willLast === false && w.weekly.exhaustAt) {
-      t.appendText(`⚠ No ritmo atual, o semanal acaba ${fmtWhen(w.weekly.exhaustAt)}`);
+      t.appendText(`No ritmo atual, o semanal acaba ${fmtWhen(w.weekly.exhaustAt)}`);
       t.appendMarkdown("  \n");
     }
   }
@@ -548,81 +567,62 @@ function usageTooltip(acc, w, l) {
   return t;
 }
 
-function setItem(item, text, lv, tooltip) {
-  item.text = text;
-  item.color = levelColor(lv);
-  item.tooltip = tooltip;
-  item.show();
-}
+/** Moldura do item: o VS Code não desenha borda em item da barra; as barras finas fazem esse papel. */
+const frame = (s) => `│  ${s}  │`;
 
 function render() {
-  if (!mailItem) return;
-  const others = [weekItem, ...modelItems.values()];
-  for (const it of [sessItem, ...others]) {
-    it.color = undefined;
-    it.backgroundColor = undefined;
-  }
+  if (!mainItem) return;
+  mainItem.color = undefined;
+  mainItem.backgroundColor = undefined;
   const list = state.list;
 
   if (!list) {
-    mailItem.text = "$(mail)";
-    mailItem.tooltip = "Swap Plus: não consegui executar o swap-plus.";
-    sessItem.text = "$(warning) Swap Plus: erro";
-    sessItem.tooltip = `Falha ao executar o swap-plus.\n${state.error || ""}\n\nVerifique se 'swap-plus list --json' funciona no terminal.`;
-    sessItem.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
-    mailItem.show();
-    sessItem.show();
-    others.forEach((it) => it.hide());
+    mainItem.text = frame("$(mail)  $(warning) Swap Plus: erro");
+    mainItem.tooltip = `Falha ao executar o swap-plus.\n${state.error || ""}\n\nVerifique se 'swap-plus list --json' funciona no terminal.`;
+    mainItem.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+    mainItem.show();
     return;
   }
 
   const acc = list.accounts.find((a) => a.number === list.activeAccountNumber);
   if (!acc) {
-    mailItem.text = "$(mail)";
-    mailItem.tooltip = "Nenhuma conta ativa. Clique para escolher.";
-    sessItem.text = "Claude: sem conta ativa";
-    sessItem.tooltip = "Clique para escolher uma conta ou abrir as configurações.";
-    mailItem.show();
-    sessItem.show();
-    others.forEach((it) => it.hide());
+    mainItem.text = frame("$(mail)  sem conta ativa");
+    mainItem.tooltip = "Clique para escolher uma conta ou abrir as configurações.";
+    mainItem.show();
     return;
   }
 
   const r = rules();
   const l = linesFor(acc, r, state.records);
   const w = windows(acc);
-  const tip = usageTooltip(acc, w, l);
-
-  // ícone de e-mail: o endereço só aparece no hover
-  mailItem.text = cfg().get("statusBar.showAccountNumber") ? `$(mail) ${acc.number}` : "$(mail)";
-  const mt = new vscode.MarkdownString(undefined, true);
-  mt.appendMarkdown(`**Conta ${acc.number}** — **`);
-  mt.appendText(acc.email || "");
-  mt.appendMarkdown("**\n\n_Clique para trocar de conta ou abrir as configurações_");
-  mailItem.tooltip = mt;
-  mailItem.show();
+  const icon = cfg().get("statusBar.showAccountNumber") ? `$(mail) ${acc.number}` : "$(mail)";
+  mainItem.tooltip = usageTooltip(acc, w, l);
 
   if (!w) {
-    setItem(sessItem, `Sessão: ${statusLabel(acc.usageStatus)}`, "none", tip);
-    if (needsAttention(acc.usageStatus)) sessItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-    others.forEach((it) => it.hide());
+    mainItem.text = frame(`${icon}  Uso: ${statusLabel(acc.usageStatus)}`);
+    if (needsAttention(acc.usageStatus)) mainItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+    mainItem.show();
     return;
   }
 
-  setItem(sessItem, `Sessão ${progressBar(w.session.pct)} ${fmtPct(w.session.pct)}`, level(w.session.pct, l.session), tip);
-  if (needsAttention(acc.usageStatus)) sessItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-  if (w.weekly) {
-    setItem(weekItem, `Semanal ${progressBar(w.weekly.pct)} ${fmtPct(w.weekly.pct)}${w.stale ? " $(history)" : ""}`, level(w.weekly.pct, l.weekly), tip);
-  } else {
-    weekItem.hide();
-  }
   const showModels = !!cfg().get("statusBar.showModelWeekly");
-  const present = new Set();
-  w.models.forEach((m, i) => {
-    present.add(m.name);
-    if (showModels) setItem(ensureModelItem(m.name, i), `${m.name} ${progressBar(m.pct)} ${fmtPct(m.pct)}`, level(m.pct, l.model), tip);
-  });
-  for (const [name, it] of modelItems) if (!showModels || !present.has(name)) it.hide();
+  const segs = [seg("Sessão (5h)", w.session)];
+  const levels = [level(w.session.pct, l.session)];
+  if (w.weekly) {
+    segs.push(seg("Semanal", w.weekly));
+    levels.push(level(w.weekly.pct, l.weekly));
+  }
+  if (showModels) {
+    for (const m of w.models) {
+      segs.push(seg(m.name, m));
+      levels.push(level(m.pct, l.model));
+    }
+  }
+  // Um item só tem uma cor: vale a do limite mais perto do fim.
+  mainItem.text = frame(`${icon}  ${segs.join("  ·  ")}${w.stale ? "  $(history)" : ""}`);
+  mainItem.color = levelColor(worstLevel(levels));
+  if (needsAttention(acc.usageStatus)) mainItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+  mainItem.show();
 }
 
 // ---------------------------------------------------------------- polling
@@ -806,24 +806,19 @@ async function switchBest() {
 
 // ---------------------------------------------------------------- lista de contas
 
-/** Linha de baixo (menor) de cada conta na lista. */
-function pickerDetail(acc, w, l, disabled) {
-  if (!w) return `⚪ uso indisponível (${statusLabel(acc.usageStatus)})`;
-  const dot = (win, line) => DOTS[level(win.pct, line)];
-  const parts = [`${dot(w.session, l.session)} Sessão 5h sobra ${fmtPct(100 - w.session.pct)}`];
-  const wk = w.weekly;
-  const sameReset =
-    wk && wk.resetsAt && w.models.length && w.models.every((m) => m.resetsAt && Math.abs(Date.parse(m.resetsAt) - Date.parse(wk.resetsAt)) <= 5 * 60000);
-  if (sameReset) {
-    const models = w.models.map((m) => `${dot(m, l.model)} ${m.name} ${fmtPct(m.pct)}`).join(" · ");
-    parts.push(`${dot(wk, l.weekly)} Semanal ${fmtPct(wk.pct)} · ${models} usados, renovam ${shortWhen(wk.resetsAt)}`);
-  } else {
-    if (wk) parts.push(`${dot(wk, l.weekly)} Semanal ${fmtPct(wk.pct)} usado${wk.resetsAt ? `, renova ${shortWhen(wk.resetsAt)}` : ""}`);
-    for (const m of w.models) parts.push(`${dot(m, l.model)} ${m.name} ${fmtPct(m.pct)} usado${m.resetsAt ? `, renova ${shortWhen(m.resetsAt)}` : ""}`);
-  }
+/**
+ * Textos de cada conta na lista: a sessão vai ao lado do nome (texto mais
+ * claro) e semanal + modelos na linha de baixo. As três partes juntas não
+ * cabem numa linha só da lista do VS Code (~570 px).
+ */
+function pickerTexts(acc, w, disabled) {
+  if (!w) return { description: "", detail: `Uso indisponível (${statusLabel(acc.usageStatus)})` };
+  const parts = [];
+  if (w.weekly) parts.push(seg("Semanal", w.weekly));
+  for (const m of w.models) parts.push(seg(m.name, m));
   if (disabled) parts.push("fora da troca automática");
   if (w.stale) parts.push("dados antigos");
-  return parts.join(" · ");
+  return { description: seg("Sessão (5h)", w.session), detail: parts.join("  ·  ") };
 }
 
 async function switchAccount() {
@@ -839,13 +834,11 @@ async function switchAccount() {
     else if (choice === "Adicionar conta") addAccount();
     return;
   }
-  const r = rules();
   const items = list.accounts.map((acc) => {
     const active = acc.number === list.activeAccountNumber;
-    const alias = accountAlias(acc);
     return {
-      label: `${active ? "$(check) " : ""}Conta ${acc.number}${alias ? ` “${alias}”` : ""} — ${acc.email}`,
-      detail: pickerDetail(acc, windows(acc), linesFor(acc, r, state.records), accountRecord(acc.number).disabled),
+      label: `${active ? "$(check) " : ""}${displayName(acc)}`,
+      ...pickerTexts(acc, windows(acc), accountRecord(acc.number).disabled),
       accountNum: acc.number,
     };
   });
@@ -857,7 +850,7 @@ async function switchAccount() {
     { label: "$(add) Adicionar conta...", description: "logar uma nova conta Claude Code", accountNum: -1 },
   ];
 
-  const picked = await vscode.window.showQuickPick(menu, { placeHolder: "Escolha a conta Claude ou abra as configurações", matchOnDescription: true, matchOnDetail: false });
+  const picked = await vscode.window.showQuickPick(menu, { placeHolder: "Escolha a conta Claude ou abra as configurações" });
   if (!picked) return;
   if (picked.accountNum === -1) return addAccount();
   if (picked.accountNum === -2) return openSettings();
@@ -876,6 +869,105 @@ async function doSwitch(num) {
     vscode.window.showErrorMessage(`Falha ao trocar de conta: ${lastLine(r.stderr) || r.spawnError || "erro desconhecido"}`);
   }
   await refresh();
+}
+
+// ---------------------------------------------------------------- exportar / importar
+
+/**
+ * Export Other: todas as contas, e o outro computador entra em modo privado ao
+ * importar (mostra só "Conta N"). Export Me: igual, mas sem ligar o modo privado.
+ * O arquivo leva as credenciais em texto puro; o outro lado importa com o
+ * botão "Importar contas" (ou `swap-plus import`, que ignora a marca).
+ */
+async function exportAccounts(mode) {
+  const other = mode === "other";
+  const name = other ? "Export Other" : "Export Me";
+  if (!other && privateMode()) {
+    vscode.window.showInformationMessage("Swap Plus: em modo privado só o Export Other fica disponível.");
+    return null;
+  }
+  const def = path.join(os.homedir(), "Desktop", other ? "swap-plus-other.cswap" : "swap-plus-me.cswap");
+  const uri = await vscode.window.showSaveDialog({
+    defaultUri: vscode.Uri.file(def),
+    filters: { "Swap Plus": ["cswap"] },
+    saveLabel: name,
+    title: `${name}: onde salvar o arquivo com as contas`,
+  });
+  if (!uri) return null;
+  const file = uri.fsPath;
+  try {
+    if (fs.statSync(file).isFile()) fs.unlinkSync(file); // o diálogo já confirmou a substituição
+  } catch {}
+  const r = await runCswap(["export", file], 120000);
+  let env = null;
+  try {
+    env = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {}
+  if (r.code !== 0 || !env || !Array.isArray(env.accounts)) {
+    vscode.window.showErrorMessage(`Swap Plus: falha no ${name}: ${lastLine(r.stderr) || r.spawnError || "arquivo não foi gerado"}`);
+    return null;
+  }
+  env.swapPlus = { hideEmails: other };
+  fs.writeFileSync(file, JSON.stringify(env, null, 2) + "\n");
+  fs.chmodSync(file, 0o600);
+  const n = env.accounts.length;
+  await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `${name}: ${n} contas exportadas` }]);
+  postState();
+  vscode.window
+    .showInformationMessage(
+      `Swap Plus: ${n} contas exportadas (${name})${other ? ". No outro computador vai aparecer só “Conta 1”, “Conta 2”…" : ""}. O arquivo tem as credenciais das contas: leve para o outro computador, importe e apague.`,
+      "Mostrar no Finder"
+    )
+    .then((c) => c && vscode.commands.executeCommand("revealFileInOS", uri));
+  return { file, n };
+}
+
+async function importAccounts() {
+  const uris = await vscode.window.showOpenDialog({
+    canSelectMany: false,
+    canSelectFolders: false,
+    filters: { "Swap Plus": ["cswap", "json"] },
+    openLabel: "Importar",
+    title: "Importar contas do Swap Plus",
+  });
+  if (!uris || !uris.length) return null;
+  const file = uris[0].fsPath;
+  let env = null;
+  try {
+    env = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {}
+  if (!env || !Array.isArray(env.accounts)) {
+    vscode.window.showErrorMessage("Swap Plus: esse arquivo não é um export de contas.");
+    return null;
+  }
+  const hide = !!(env.swapPlus && env.swapPlus.hideEmails);
+  // Liga o modo privado antes, para nenhuma mensagem do import mostrar e-mail.
+  if (hide) await cfg().update("privacy.hideEmails", true, vscode.ConfigurationTarget.Global);
+  const r = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "Importando contas...", cancellable: false },
+    () => runCswap(["import", file], 180000)
+  );
+  await refresh();
+  if (r.code !== 0) {
+    vscode.window.showErrorMessage(`Swap Plus: falha ao importar: ${lastLine(r.stderr) || r.spawnError || "erro desconhecido"}`);
+    return { ok: false, hide };
+  }
+  const n = env.accounts.length;
+  await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `Importadas ${n} contas${hide ? " (modo privado)" : ""}` }]);
+  postState();
+  vscode.window
+    .showInformationMessage(
+      `Swap Plus: ${n} contas importadas${hide ? ". Modo privado ligado: aqui aparece só “Conta N”." : "."} Apague o arquivo agora que ele não é mais necessário.`,
+      "Apagar o arquivo"
+    )
+    .then((c) => {
+      if (c) {
+        try {
+          fs.unlinkSync(file);
+        } catch {}
+      }
+    });
+  return { ok: true, hide, n };
 }
 
 function addAccount() {
@@ -907,6 +999,7 @@ function winPayload(win, line) {
 function buildPayload() {
   const list = state.list;
   const r = rules();
+  const priv = privateMode();
   const accounts = list
     ? list.accounts.map((acc) => {
         const w = windows(acc);
@@ -914,9 +1007,9 @@ function buildPayload() {
         const rec = accountRecord(acc.number);
         return {
           number: acc.number,
-          email: acc.email,
-          alias: accountAlias(acc),
-          org: acc.organizationName || "",
+          email: priv ? null : acc.email,
+          alias: priv ? null : accountAlias(acc),
+          org: priv ? "" : acc.organizationName || "",
           plan: (acc.plan && acc.plan.label) || "",
           active: acc.number === list.activeAccountNumber,
           status: acc.usageStatus,
@@ -936,7 +1029,7 @@ function buildPayload() {
   const last = extContext.globalState.get(LAST_TICK_KEY) || null;
   return {
     type: "state",
-    error: state.error,
+    error: state.error ? safe(state.error) : null,
     fetchedAt: state.fetchedAt,
     accounts,
     modelNames: names,
@@ -948,8 +1041,9 @@ function buildPayload() {
       enabled: autoEnabled(),
       last,
       lastWhen: last && last.ts ? fmtWhen(last.ts) : null,
-      history: (extContext.globalState.get(HISTORY_KEY) || []).map((h) => ({ ...h, when: fmtWhen(h.ts) })),
+      history: (extContext.globalState.get(HISTORY_KEY) || []).map((h) => ({ ...h, text: safe(h.text), when: fmtWhen(h.ts) })),
     },
+    privacy: priv,
     ui: {
       showAccountNumber: !!cfg().get("statusBar.showAccountNumber"),
       showModelWeekly: !!cfg().get("statusBar.showModelWeekly"),
@@ -1070,11 +1164,19 @@ async function handleMessage(m) {
       return;
 
     case "ui": {
-      const allowed = ["statusBar.showAccountNumber", "statusBar.showModelWeekly", "pollIntervalMinutes"];
+      const allowed = ["statusBar.showAccountNumber", "statusBar.showModelWeekly", "pollIntervalMinutes", "privacy.hideEmails"];
       if (!allowed.includes(m.key)) return;
       await cfg().update(m.key, m.value, vscode.ConfigurationTarget.Global);
       return;
     }
+
+    case "export":
+      await exportAccounts(m.mode === "other" ? "other" : "me");
+      return;
+
+    case "import":
+      await importAccounts();
+      return;
 
     case "clearHistory":
       await extContext.globalState.update(HISTORY_KEY, []);
@@ -1088,14 +1190,10 @@ async function handleMessage(m) {
 function activate(context) {
   extContext = context;
 
-  mailItem = vscode.window.createStatusBarItem(`${NS}.mail`, vscode.StatusBarAlignment.Left, 105);
-  mailItem.name = "Swap Plus — conta";
-  sessItem = vscode.window.createStatusBarItem(`${NS}.session`, vscode.StatusBarAlignment.Left, 104);
-  sessItem.name = "Swap Plus — sessão de 5h";
-  weekItem = vscode.window.createStatusBarItem(`${NS}.weekly`, vscode.StatusBarAlignment.Left, 103);
-  weekItem.name = "Swap Plus — semanal";
-  for (const it of [mailItem, sessItem, weekItem]) it.command = `${NS}.switchAccount`;
-  context.subscriptions.push(mailItem, sessItem, weekItem);
+  mainItem = vscode.window.createStatusBarItem(`${NS}.main`, vscode.StatusBarAlignment.Left, 105);
+  mainItem.name = "Swap Plus";
+  mainItem.command = `${NS}.switchAccount`;
+  context.subscriptions.push(mainItem);
 
   context.subscriptions.push(
     vscode.commands.registerCommand(`${NS}.switchAccount`, switchAccount),
@@ -1103,7 +1201,10 @@ function activate(context) {
     vscode.commands.registerCommand(`${NS}.toggleAuto`, toggleAuto),
     vscode.commands.registerCommand(`${NS}.addAccount`, addAccount),
     vscode.commands.registerCommand(`${NS}.refreshStatus`, refresh),
-    vscode.commands.registerCommand(`${NS}.switchBest`, switchBest)
+    vscode.commands.registerCommand(`${NS}.switchBest`, switchBest),
+    vscode.commands.registerCommand(`${NS}.exportOther`, () => exportAccounts("other")),
+    vscode.commands.registerCommand(`${NS}.exportMe`, () => exportAccounts("me")),
+    vscode.commands.registerCommand(`${NS}.importAccounts`, importAccounts)
   );
 
   context.subscriptions.push(
@@ -1126,4 +1227,4 @@ function deactivate() {
   if (autoTimer) clearTimeout(autoTimer);
 }
 
-module.exports = { activate, deactivate, _test: { decide, pickerDetail, windows, linesFor, level, watchedModels, modelLabel, detectModels } };
+module.exports = { activate, deactivate, _test: { decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels } };

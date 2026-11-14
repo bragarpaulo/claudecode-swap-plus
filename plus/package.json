@@ -2,7 +2,7 @@
   "name": "swap-plus",
   "displayName": "Swap Plus",
   "description": "Uso do Claude Code na barra de status (ícone de e-mail, 5h, semanal e Fable) e tela de regras para avisos e troca automática de conta. Usa o CLI swap-plus. Fork pessoal de smith89k/claude-swap-status (MIT).",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "paulo-local",
   "license": "MIT",
   "icon": "icon.png",
@@ -50,6 +50,21 @@
       {
         "command": "swapPlus.switchBest",
         "title": "Trocar para a conta com mais folga",
+        "category": "Swap Plus"
+      },
+      {
+        "command": "swapPlus.exportOther",
+        "title": "Export Other — exportar contas sem mostrar e-mails no outro computador",
+        "category": "Swap Plus"
+      },
+      {
+        "command": "swapPlus.exportMe",
+        "title": "Export Me — exportar contas com e-mails",
+        "category": "Swap Plus"
+      },
+      {
+        "command": "swapPlus.importAccounts",
+        "title": "Importar contas",
         "category": "Swap Plus"
       }
     ],
@@ -107,6 +122,11 @@
           "default": 1,
           "minimum": 0.5,
           "description": "De quantos em quantos minutos atualizar o uso na barra de status (mínimo 0,5)."
+        },
+        "swapPlus.privacy.hideEmails": {
+          "type": "boolean",
+          "default": false,
+          "description": "Modo privado: o Swap Plus mostra só “Conta N”, sem e-mail, apelido ou organização. Liga sozinho ao importar um Export Other. Só muda o que o Swap Plus mostra."
         },
         "swapPlus.rules.cooldownMinutes": {
           "type": "number",

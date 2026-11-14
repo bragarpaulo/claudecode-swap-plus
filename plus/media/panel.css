@@ -344,3 +344,7 @@ input.rotbox { accent-color: var(--green); }
 
 /* ---------- v1.6: conta em uso em destaque */
 .inuse { margin: 10px 0 8px; padding: 8px 12px; border: 1px solid var(--green); border-radius: var(--radius); }
+
+/* ---------- v1.8: conta logada não cadastrada */
+.notreg { margin: 10px 0 8px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.notreg button { margin-left: auto; }

@@ -144,8 +144,14 @@ Pronto. Se a troca automática estava ligada no computador principal, ela já ve
   (trocar de conta para continuar no Fable) e, se aparecer **Deixar pronto**, clicar nele uma vez para o Claude
   Code oferecer o Opus 5.5 no mesmo esforço do Fable.
 - **Ligar ou desligar o modo privado:** **Configurações → Exibição**.
-- **Adicionar uma conta só neste computador:** logue a conta no Claude Code, clique na barra →
-  **Adicionar conta…**
+- **Adicionar uma conta nova:**
+  1. No Claude Code, entre com a conta nova. **Não faça logout da conta anterior** antes: o logout pode invalidar o
+     acesso que o Swap Plus guardou dela. Basta entrar com a outra conta.
+  2. O Swap Plus percebe que a conta logada não está cadastrada (a barra mostra *conta logada não cadastrada*) e
+     pergunta **Cadastrar agora?**. Ou: clique na barra → **Cadastrar a conta logada no Claude Code** (ou
+     **Adicionar conta…**).
+  3. A conta entra na fila e já participa da troca automática. Se outra conta renovar antes, o Swap Plus pode trocar
+     para ela em seguida — é a fila funcionando.
 - **Levar mudanças para o outro computador de novo:** repita as Etapas 1 e 3; a Etapa 2 não precisa.
   As configurações e os ajustes de cada conta são atualizados e as contas novas entram. As contas que já
   existiam lá continuam como estão (o login delas não é trocado).
@@ -165,6 +171,7 @@ trava:
 | O que aparece | O que fazer |
 | --- | --- |
 | A barra mostra **Swap Plus: erro** | O motor não foi encontrado. Rode o comando da Etapa 2 de novo e recarregue o VS Code. |
+| A barra mostra **sem conta ativa** ou **conta logada não cadastrada** | O Claude Code está logado numa conta que não está no Swap Plus. Clique na barra → **Cadastrar a conta logada no Claude Code**. Enquanto isso, o Swap Plus não acompanha o uso nem troca de conta. |
 | Mac: `command not found: swap-plus` no Terminal | Feche e abra o Terminal. |
 | Windows: `swap-plus não é reconhecido` | Feche e abra o PowerShell. |
 | Windows: o comando da Etapa 2 dá erro de "execução de scripts" | Rode antes: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` e tente de novo. |

@@ -491,7 +491,16 @@
       act && act.session ? ` · sessão ${fmt(act.session.pct)}%` : "",
       act && act.weekly ? ` · semanal ${fmt(act.weekly.pct)}%` : ""
     );
-    $("accounts").replaceWith(h("div", { id: "accounts" }, inUse, sortBox, hint, grid));
+    const notReg = S.unmanaged
+      ? h(
+          "div",
+          { class: "notreg" },
+          h("b", { text: "Conta logada não cadastrada: " }),
+          `o Claude Code está logado em ${S.unmanaged.email || "uma conta"} que ainda não está no Swap Plus. Sem isso, o Swap Plus não acompanha o uso nem troca de conta.`,
+          h("button", { text: "Cadastrar agora", onclick: () => send({ type: "add" }) })
+        )
+      : null;
+    $("accounts").replaceWith(h("div", { id: "accounts" }, notReg, notReg ? null : inUse, sortBox, hint, grid));
     wireAccountHold();
   }
 

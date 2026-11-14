@@ -55,7 +55,7 @@ let autoGen = 0;
 let refreshing = null;
 let lastBlockedWarnAt = 0;
 let updater = null;
-let state = { list: null, records: {}, models: [], error: null, fetchedAt: 0 };
+let state = { list: null, records: {}, models: [], error: null, fetchedAt: 0, unmanaged: null };
 
 // ---------------------------------------------------------------- utilitários
 
@@ -553,15 +553,24 @@ function refresh() {
     const [l, models, records] = await Promise.all([runCswap(["list", "--json"]), detectModels(), readRecords()]);
     const list = parseJson(l.stdout);
     const ok = list && Array.isArray(list.accounts);
+    // Sem conta em uso entre as cadastradas: o Claude Code pode estar logado numa conta nova.
+    let unmanaged = null;
+    if (ok && !list.accounts.some((a) => a.number === list.activeAccountNumber)) {
+      const st = parseJson((await runCswap(["status", "--json"], 30000)).stdout);
+      const a = st && st.active;
+      if (a && a.managed === false && a.email) unmanaged = { email: a.email, org: a.organizationName || "" };
+    }
     state = {
       list: ok ? list : null,
       records,
       models,
+      unmanaged,
       error: ok ? null : l.spawnError || lastLine(l.stderr) || "não foi possível ler 'swap-plus list --json'",
       fetchedAt: Date.now(),
     };
     render();
     postState();
+    if (unmanaged) offerRegister(unmanaged);
     checkAlerts().catch((e) => console.error("[swap-plus] alerts", e));
     checkNewerInstalled();
   })().finally(() => {
@@ -641,8 +650,14 @@ function render() {
 
   const acc = list.accounts.find((a) => a.number === list.activeAccountNumber);
   if (!acc) {
-    mainItem.text = frame("$(mail)  sem conta ativa");
-    mainItem.tooltip = "Clique para escolher uma conta ou abrir as configurações.";
+    if (state.unmanaged) {
+      mainItem.text = frame("$(mail)  conta logada não cadastrada — clique para cadastrar");
+      mainItem.tooltip = `O Claude Code está logado em ${privateMode() ? "uma conta" : state.unmanaged.email} que ainda não está no Swap Plus. Enquanto ela não for cadastrada, o Swap Plus não acompanha o uso nem troca de conta. Clique para cadastrar.`;
+      mainItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+    } else {
+      mainItem.text = frame("$(mail)  sem conta ativa");
+      mainItem.tooltip = "Nenhuma conta logada no Claude Code. Clique para escolher uma conta ou abrir as configurações.";
+    }
     mainItem.show();
     return;
   }
@@ -1219,16 +1234,19 @@ async function switchAccount() {
     };
   });
   const menu = [
+    ...(state.unmanaged
+      ? [{ label: "$(add) Cadastrar a conta logada no Claude Code", description: privateMode() ? "conta nova" : state.unmanaged.email, accountNum: -3 }]
+      : []),
     { label: "$(gear) Configurações...", description: "regras de aviso e de troca automática", accountNum: -2 },
     { label: "Contas", kind: vscode.QuickPickItemKind.Separator },
     ...items,
     { label: "", kind: vscode.QuickPickItemKind.Separator },
-    { label: "$(add) Adicionar conta...", description: "logar uma nova conta Claude Code", accountNum: -1 },
+    { label: "$(add) Adicionar conta...", description: "cadastra a conta logada agora no Claude Code", accountNum: -1 },
   ];
 
   const picked = await vscode.window.showQuickPick(menu, { placeHolder: "Escolha a conta Claude ou abra as configurações" });
   if (!picked) return;
-  if (picked.accountNum === -1) return addAccount();
+  if (picked.accountNum === -1 || picked.accountNum === -3) return addAccount();
   if (picked.accountNum === -2) return openSettings();
   if (picked.accountNum !== list.activeAccountNumber) await doSwitch(picked.accountNum);
 }
@@ -1589,11 +1607,48 @@ async function cliVersion() {
   return r.code === 0 && m ? m[1] : null;
 }
 
-function addAccount() {
-  const term = vscode.window.createTerminal("Swap Plus");
-  term.show();
-  // No PowerShell um caminho entre aspas precisa do & para ser executado.
-  term.sendText(process.platform === "win32" ? `& "${cswapPath()}" add` : `"${cswapPath()}" add`);
+/**
+ * Cadastra no Swap Plus a conta que está logada agora no Claude Code (é o que o
+ * `swap-plus add` faz; sem número de posição ele não faz perguntas).
+ */
+async function addAccount() {
+  const before = state.list ? state.list.accounts.map((a) => a.number) : [];
+  const r = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "Swap Plus: cadastrando a conta logada no Claude Code...", cancellable: false },
+    () => runCswap(["add"], 120000)
+  );
+  await refresh();
+  if (r.code !== 0) {
+    const err = lastLine(r.stderr) || lastLine(r.stdout) || r.spawnError || "erro desconhecido";
+    const noLogin = /log in first|No active Claude account|No credentials/i.test(`${r.stderr} ${r.stdout}`);
+    vscode.window.showErrorMessage(
+      noLogin
+        ? "Swap Plus: não há conta logada no Claude Code. Entre com a conta nova no Claude Code (sem fazer logout da anterior) e clique em Adicionar conta de novo."
+        : `Swap Plus: não consegui cadastrar a conta: ${err}`
+    );
+    return { ok: false };
+  }
+  const list = state.list;
+  const acc = list && list.accounts.find((a) => a.number === list.activeAccountNumber);
+  const isNew = acc && !before.includes(acc.number);
+  const text = acc ? `${isNew ? "Conta nova cadastrada" : "Conta atualizada"}: ${displayName(acc)}, em uso agora` : "Conta cadastrada";
+  await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: safe(text) }]);
+  postState();
+  vscode.window.showInformationMessage(`Swap Plus: ${safe(text)}.${autoEnabled() ? " Ela já participa da troca automática." : ""}`);
+  return { ok: true, number: acc ? acc.number : null };
+}
+
+let registerOffered = null;
+/** Pergunta uma vez por conta se é para cadastrar a conta logada que o Swap Plus não conhece. */
+function offerRegister(u) {
+  if (registerOffered === u.email) return;
+  registerOffered = u.email;
+  vscode.window
+    .showWarningMessage(
+      `Swap Plus: o Claude Code está logado em ${privateMode() ? "uma conta" : u.email} que ainda não está cadastrada. Sem isso, o Swap Plus não acompanha o uso nem troca de conta.`,
+      "Cadastrar agora"
+    )
+    .then((c) => c && addAccount());
 }
 
 async function toggleAuto() {
@@ -1665,6 +1720,7 @@ function buildPayload() {
       history: (extContext.globalState.get(HISTORY_KEY) || []).map((h) => ({ ...h, text: safe(h.text), when: fmtWhen(h.ts) })),
     },
     privacy: priv,
+    unmanaged: state.unmanaged ? { email: priv ? null : state.unmanaged.email } : null,
     claudeCode: claudeCodeStatus(),
     updates: updater ? (() => { const u = updater.summary(); if (u.last) u.last.when = fmtWhen(u.last.ts); return u; })() : null,
     ui: {
@@ -1905,4 +1961,4 @@ function deactivate() {
   }
 }
 
-module.exports = { activate, deactivate, _test: { newerInstalledVersion, scanLimitErrors, checkLimitErrors, limitLabel, syncMotorLines, nearLine, setLimitRoot: (r) => (limitRoot = r), claudeCodeStatus, prepareClaudeCode, orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };
+module.exports = { activate, deactivate, _test: { addAccount, newerInstalledVersion, scanLimitErrors, checkLimitErrors, limitLabel, syncMotorLines, nearLine, setLimitRoot: (r) => (limitRoot = r), claudeCodeStatus, prepareClaudeCode, orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };

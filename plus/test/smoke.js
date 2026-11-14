@@ -694,6 +694,44 @@ async function partB() {
     check("conta em uso não mudou (motor de mentira)", JSON.parse(cswap("list", "--json")).activeAccountNumber === before);
   }
 
+  console.log("\n# B14. Conta logada não cadastrada (motor de mentira)");
+  {
+    const log14 = path.join(SCRATCH, "fake14.log");
+    const fake14 = path.join(SCRATCH, "fake14");
+    const list14 = JSON.stringify({ schemaVersion: 1, activeAccountNumber: null, accounts: [{ number: 1, email: "um@exemplo.com", usageStatus: "ok", usageAgeSeconds: 10, usage: { fiveHour: { pct: 5, resetsAt: new Date(Date.now() + 3600e3).toISOString() }, sevenDay: { pct: 10, resetsAt: new Date(Date.now() + 86400e3).toISOString() } } }] });
+    const status14 = JSON.stringify({ schemaVersion: 1, active: { number: null, email: "nova@exemplo.com", managed: false }, totalManagedAccounts: 1 });
+    fs.writeFileSync(path.join(SCRATCH, "list14.json"), list14);
+    fs.writeFileSync(path.join(SCRATCH, "status14.json"), status14);
+    fs.writeFileSync(
+      fake14,
+      `#!/bin/bash\ncase "$1" in\n  list) cat "${path.join(SCRATCH, "list14.json")}";;\n  status) cat "${path.join(SCRATCH, "status14.json")}";;\n  --version) echo "swap-plus 1.1.0";;\n  *) echo "$@" >> "${log14}";;\nesac\nexit 0\n`,
+      { mode: 0o755 }
+    );
+    const cfg14 = vscodeMock.workspace.getConfiguration("swapPlus");
+    const nWarn = notifications.length;
+    try {
+      await cfg14.update("executablePath", fake14);
+      await sleep(400);
+      await commands["swapPlus.refreshStatus"]();
+      await sleep(300);
+      check("barra avisa “conta logada não cadastrada”", /conta logada não cadastrada — clique para cadastrar/.test(main.text), main.text);
+      check("aviso pergunta se é para cadastrar", notifications.slice(nWarn).some((n) => n[0] === "warn" && /nova@exemplo\.com.*ainda não está cadastrada/.test(n[1])));
+      await commands["swapPlus.switchAccount"]();
+      const m14 = vscodeMock.lastPick || [];
+      check("lista: primeira opção é cadastrar a conta logada", m14[0] && m14[0].accountNum === -3 && /Cadastrar a conta logada/.test(m14[0].label));
+      const st14 = lastState();
+      check("tela recebe o aviso", st14 && st14.unmanaged && st14.unmanaged.email === "nova@exemplo.com");
+      await T.addAccount();
+      const logged = fs.existsSync(log14) ? fs.readFileSync(log14, "utf8") : "";
+      check("“Adicionar conta” cadastra direto (swap-plus add), sem terminal", /^add$/m.test(logged), logged.trim());
+    } finally {
+      await cfg14.update("executablePath", "");
+      await sleep(400);
+      await commands["swapPlus.refreshStatus"]();
+    }
+    check("de volta ao motor de verdade: conta em uso normal", !/não cadastrada/.test(main.text));
+  }
+
   if (NO_GITHUB) {
     console.log("\n# B12. Atualizações puladas (--no-github)");
   } else {

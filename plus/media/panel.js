@@ -310,7 +310,7 @@
     return h("div", { class: "waste", text: `Zera em ${w.in} com ${fmt(left)}% do semanal sem usar` });
   }
 
-  function accountCard(a) {
+  function accountCard(a, idx, total) {
     const strategy = draft ? draft.strategy : S.rules.strategy;
     const prioMatters = strategy === "priority";
     const globalTh = draft ? draft.sessionPct : S.rules.sessionPct;
@@ -343,6 +343,14 @@
         h(
           "div",
           { class: "badges" },
+          sortByReset
+            ? null
+            : h(
+                "div",
+                { class: "order" },
+                h("button", { class: "secondary arrow", title: "Subir uma posição", disabled: idx === 0, text: "↑", onclick: () => send({ type: "move", number: a.number, dir: "up" }) }),
+                h("button", { class: "secondary arrow", title: "Descer uma posição", disabled: idx === total - 1, text: "↓", onclick: () => send({ type: "move", number: a.number, dir: "down" }) })
+              ),
           a.active ? h("span", { class: "badge on", text: "Em uso" }) : null,
           a.disabled ? h("span", { class: "badge plain", text: "Fora da rotação" }) : null,
           a.status && a.status !== "ok" ? h("span", { class: "badge plain", text: a.statusLabel }) : null
@@ -416,8 +424,14 @@
       }),
       "Ordenar por quem renova o semanal primeiro"
     );
-    const grid = h("div", { class: "accounts" }, list.length ? list.map(accountCard) : h("p", { class: "muted", text: "Nenhuma conta cadastrada ainda." }));
-    $("accounts").replaceWith(h("div", { id: "accounts" }, sortBox, grid));
+    const hint = h("p", {
+      class: "muted small",
+      text: sortByReset
+        ? "Para mudar a ordem das contas, desmarque a opção acima."
+        : "As setas ↑ ↓ mudam a posição (o número) da conta. Apelido, ajustes e histórico vão junto; a sessão aberta não é afetada.",
+    });
+    const grid = h("div", { class: "accounts" }, list.length ? list.map((a, i) => accountCard(a, i, list.length)) : h("p", { class: "muted", text: "Nenhuma conta cadastrada ainda." }));
+    $("accounts").replaceWith(h("div", { id: "accounts" }, sortBox, hint, grid));
     wireAccountHold();
   }
 
@@ -510,7 +524,7 @@
       }),
       h("p", {
         class: "muted small",
-        text: `Verifica ao abrir e ao fechar o VS Code e a cada 12 h. ${u.autoUpdate ? "Instala sozinho, como as outras extensões (Extensions: Auto Update ligado)." : "Só avisa, porque o Auto Update de extensões do VS Code está desligado."} Versão nova do original: o GitHub roda os testes do original e só então prepara o motor no seu fork.`,
+        text: `Verifica ao abrir e ao fechar o VS Code e a cada 2 dias, tudo dentro do VS Code. ${u.autoUpdate ? "Instala sozinho, como as outras extensões (Extensions: Auto Update ligado)." : "Só avisa, porque o Auto Update de extensões do VS Code está desligado."} Ao fechar, só verifica: se houver versão nova, ela é instalada na próxima abertura. Versão nova do original: o GitHub roda os testes do original e só então prepara o motor no seu fork.${u.pendingOnOpen ? " Há versão nova esperando a próxima abertura do VS Code." : ""}`,
       })
     );
   }

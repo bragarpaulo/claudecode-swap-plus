@@ -2,7 +2,9 @@
 # Instala o Swap Plus nesta máquina: o motor (comando swap-plus) e a extensão
 # do VS Code, a partir das releases dos forks no GitHub. Não precisa clonar nada.
 #
-#   curl -fsSL https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/plus/plus/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.sh | bash
+#
+# No Windows, use install.ps1 (veja o MANUAL.md).
 #
 # Rodar de novo reinstala as versões mais novas. Depois de instalado, a própria
 # extensão se atualiza ao abrir e ao fechar o VS Code.

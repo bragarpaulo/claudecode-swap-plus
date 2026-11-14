@@ -107,11 +107,13 @@ function cswapPath() {
   const configured = (cfg().get("executablePath") || "").trim();
   if (configured) return configured;
   // swap-plus é o comando do fork; cswap (o original) fica como reserva.
+  // No Windows o uv instala os comandos como .exe na mesma pasta.
+  const ext = process.platform === "win32" ? ".exe" : "";
   for (const name of ["swap-plus", "cswap"]) {
-    const local = path.join(os.homedir(), ".local", "bin", name);
+    const local = path.join(os.homedir(), ".local", "bin", name + ext);
     if (fs.existsSync(local)) return local;
   }
-  return "swap-plus";
+  return "swap-plus" + ext;
 }
 
 function runCswap(args, timeout = 90000) {
@@ -927,7 +929,7 @@ async function exportAccounts(mode) {
   vscode.window
     .showInformationMessage(
       `Swap Plus: ${n} contas exportadas (${name}), com as regras de troca, os avisos e os ajustes de cada conta${other ? ". No outro computador vai aparecer só “Conta 1”, “Conta 2”…" : ""}. O arquivo tem as credenciais das contas: leve para o outro computador, importe e apague.`,
-      "Mostrar no Finder"
+      "Mostrar a pasta"
     )
     .then((c) => c && vscode.commands.executeCommand("revealFileInOS", uri));
   return { file, n };
@@ -1050,7 +1052,8 @@ async function cliVersion() {
 function addAccount() {
   const term = vscode.window.createTerminal("Swap Plus");
   term.show();
-  term.sendText(`"${cswapPath()}" add`);
+  // No PowerShell um caminho entre aspas precisa do & para ser executado.
+  term.sendText(process.platform === "win32" ? `& "${cswapPath()}" add` : `"${cswapPath()}" add`);
 }
 
 async function toggleAuto() {
@@ -1236,6 +1239,22 @@ async function handleMessage(m) {
     case "switch":
       await doSwitch(m.number);
       return;
+
+    case "move": {
+      // Reordenar: troca a posição (número) com a conta vizinha. O swap-plus leva
+      // junto apelido, ajustes, cópias e histórico; a sessão aberta não é tocada.
+      const nums = state.list ? state.list.accounts.map((a) => a.number).sort((a, b) => a - b) : [];
+      const i = nums.indexOf(Number(m.number));
+      const j = m.dir === "up" ? i - 1 : i + 1;
+      if (i < 0 || j < 0 || j >= nums.length) return;
+      post({ type: "busy", on: true, text: "Reordenando..." });
+      const r = await runCswap(["swap", String(nums[i]), String(nums[j])], 60000);
+      post({ type: "busy", on: false });
+      if (r.code !== 0) post({ type: "toast", kind: "error", text: `Não consegui reordenar: ${lastLine(r.stderr) || lastLine(r.stdout) || r.spawnError || "erro"}` });
+      else await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `Contas ${nums[i]} e ${nums[j]} trocaram de posição` }]);
+      await refresh();
+      return;
+    }
 
     case "add":
       addAccount();

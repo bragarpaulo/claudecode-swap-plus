@@ -43,7 +43,6 @@ jobs:
             --title "Swap Plus — extensão ${VER}" \
             --notes "Extensão Swap Plus ${VER} para o VS Code. As instalações existentes se atualizam sozinhas ao abrir ou fechar o VS Code.
 
-          Instalar numa máquina nova (motor + extensão):
-          \`\`\`
-          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/plus/plus/scripts/install.sh | bash
-          \`\`\`"
+          Instalar numa máquina nova (motor + extensão) — passo a passo no [MANUAL](https://github.com/${GITHUB_REPOSITORY}/blob/main/MANUAL.md):
+          - Mac: \`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/plus/scripts/install.sh | bash\`
+          - Windows (PowerShell): \`irm https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/plus/scripts/install.ps1 | iex\`"

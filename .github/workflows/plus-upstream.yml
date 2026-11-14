@@ -5,7 +5,7 @@ name: Swap Plus — avisar sobre a extensão original
 
 on:
   schedule:
-    - cron: "41 10 * * *"
+    - cron: "41 10 */2 * *"   # a cada 2 dias
   workflow_dispatch:
 
 permissions:

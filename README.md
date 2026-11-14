@@ -1,148 +1,56 @@
-> **Este é um fork pessoal.** A versão em uso aqui é o **Swap Plus**, que fica em [`plus/`](plus/README.md):
-> barra de status com ícone de e-mail, limite do Fable e tela de regras para troca automática de conta.
-> O conteúdo abaixo é o README do projeto original ([smith89k/claude-swap-status](https://github.com/smith89k/claude-swap-status)), mantido para os merges.
+# Swap Plus — extensão do VS Code
 
-# Claude Swap Status
+Mostra o uso das suas contas do Claude Code na barra de status do VS Code e troca de conta sozinha quando
+uma delas chega perto do limite: sessão de 5 horas, limite semanal e limite semanal do Fable.
 
-See your Claude Code usage right in the status bar of Antigravity IDE (or VS Code), and switch between Claude accounts with one click.
-
-This extension is a small visual add-on for [claude-swap](https://github.com/realiti4/claude-swap). **It needs claude-swap installed to work.**
-
-> **Unofficial add-on.** This extension is not made by or affiliated with the author of [claude-swap](https://github.com/realiti4/claude-swap), or with Anthropic. "Claude" is a trademark of Anthropic.
-
-## Step 1: Install claude-swap first
-
-> ⚠️ **This extension does nothing on its own.** It only shows what the `cswap` tool reports. Install claude-swap and add an account **before** you install this extension. Otherwise the status bar will show `Claude: cswap error`.
-
-1. Install the `claude-swap` command line tool:
-
-   ```bash
-   uv tool install claude-swap
-   # or
-   pipx install claude-swap
-   ```
-
-2. Add at least one Claude account:
-
-   ```bash
-   cswap add
-   ```
-
-3. Check that it works:
-
-   ```bash
-   cswap list --json
-   ```
-
-   You should see your accounts. If you see `command not found`, close and reopen your terminal, then try again.
-
-For more help, see the [claude-swap page](https://github.com/realiti4/claude-swap).
-
-## Step 2: Install this extension
-
-**From the extension store (recommended)**
-
-1. Open the Extensions panel.
-2. Search for **Claude Swap Status** and click **Install**.
-
-It is published on [Open VSX](https://open-vsx.org/extension/smith89k/claude-swap-status) (used by Antigravity IDE and other VS Code-based editors) and the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=smith89k.claude-swap-status). Updates install automatically.
-
-**From a `.vsix` file**
-
-1. Download the latest `.vsix` file from the [Releases](https://github.com/smith89k/claude-swap-status/releases) page.
-2. In Antigravity IDE, open the Extensions panel.
-3. Click the `...` menu and choose **Install from VSIX...**.
-4. Pick the file you downloaded.
-
-The status bar item appears once the editor finishes starting up.
-
-## Features
-
-### Usage at a glance
-
-The status bar shows the active account and how much of your limits you have used:
-
-```text
-👤 Claude 1: work | 5h: █░░░░ 25% R:3h12m | 7d: █░░░░ 16% R:1d4h
+```
+│  ✉  Sessão (5h): 2% usado — renova hoje 15h  ·  Semanal: 30% usado — renova hoje 18h  ·  Fable: 57% usado — renova hoje 18h  │
 ```
 
-- **5h** is your 5-hour usage limit.
-- **7d** is your 7-day usage limit.
-- **R:** is how long until that limit resets (`45m`, `3h12m`, `1d4h`).
-- Hover over it to see the account email, status, and the exact reset times.
-- A clock icon (🕒) at the end means claude-swap could not check usage just now (for example, the login token expired for a moment), so you are seeing the last known numbers. Hover to see how old they are.
+- **Clique na barra:** lista as contas, com a que está em uso marcada, e as **Configurações**.
+- **Configurações:** regras de aviso e de troca com sliders, estratégia (mais folga, aproveitar ao máximo ou
+  por prioridade), ordem e ajustes de cada conta, modo privado, exportar e importar contas, atualizações.
+- **Funciona no Mac e no Windows** e se atualiza sozinha, dentro do VS Code.
 
-### Warning colors
+## Instalar
 
-The status bar changes color so you notice before you run out:
+O passo a passo completo, incluindo como levar as contas para outro computador, está no
+**[MANUAL](MANUAL.md)**. Em resumo, um comando instala o motor e a extensão:
 
-| Usage          | Color  |
-| -------------- | ------ |
-| Below 70%      | Normal |
-| 70% or more    | Yellow |
-| 85% or more    | Red    |
+- **Mac** (Terminal):
 
-### Switch accounts in one click
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.sh | bash
+  ```
 
-Click the status bar to see all your accounts with their usage, then pick one to switch to.
+- **Windows** (PowerShell):
 
-### Add a new account
+  ```powershell
+  irm https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.ps1 | iex
+  ```
 
-Pick **Add New Account...** from the list, or run **Claude Swap: Add Account** from the Command Palette. A terminal opens and walks you through logging in.
+## Como o projeto está organizado
 
-## Commands
+| Repositório | O que é |
+| --- | --- |
+| **este** — [bragarpaulo/swap-plus-vscode](https://github.com/bragarpaulo/swap-plus-vscode) | a extensão Swap Plus (código em [`plus/`](plus/)), o manual e os instaladores |
+| [bragarpaulo/swap-plus](https://github.com/bragarpaulo/swap-plus) | o motor: o comando `swap-plus`, que guarda as contas e faz a troca |
 
-Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and type **Claude Swap**:
+Os dois são forks e acompanham os projetos originais:
 
-| Command                        | What it does                                   |
-| ------------------------------ | ---------------------------------------------- |
-| `Claude Swap: Switch Account`  | Show all accounts and switch the active one.   |
-| `Claude Swap: Add Account`     | Open a terminal to log in to a new account.    |
-| `Claude Swap: Refresh Usage`   | Update the usage numbers right now.            |
+- o **motor** vem do [claude-swap](https://github.com/realiti4/claude-swap). A cada 2 dias o GitHub confere se
+  saiu versão estável nova; se saiu, roda os testes do original e publica a versão do Swap Plus, que a extensão
+  instala sozinha;
+- a **extensão** começou do [claude-swap-status](https://github.com/smith89k/claude-swap-status) e foi
+  reescrita em [`plus/`](plus/). Quando o original lança versão nova, o GitHub abre um aviso (issue) aqui para
+  avaliar se há algo a trazer.
 
-## Settings
+Detalhes da extensão, regras de troca e como publicar uma versão nova: [`plus/README.md`](plus/README.md).
 
-| Setting                           | Default | Description                                                          |
-| --------------------------------- | ------- | -------------------------------------------------------------------- |
-| `claudeSwap.pollIntervalMinutes`  | `1`     | How often to check usage, in minutes (minimum `0.5`).                |
-| `claudeSwap.cswapExecutablePath`  | `cswap` | Full path to the `cswap` tool, if it is not in your system's PATH.   |
+Os arquivos na raiz fora de `plus/` (`src/`, `dist/`, `package.json`…) são o código do claude-swap-status
+original, mantidos como referência para comparar com as versões novas dele. O Swap Plus não usa esses arquivos.
 
-## Troubleshooting
+## Licença
 
-**The status bar says `Claude: cswap error`**
-
-The extension could not run `cswap`.
-
-1. Open a terminal and run `cswap list --json`.
-2. If the command is not found, install claude-swap (see [Step 1](#step-1-install-claude-swap-first)).
-3. If it works in the terminal but not in the editor, set `claudeSwap.cswapExecutablePath` to the full path of `cswap`, then restart the editor.
-
-   Find the path with `where cswap` (Windows) or `which cswap` (macOS / Linux).
-
-**The status bar says `Claude: No Active Account`**
-
-Click it and choose an account, or add one with **Add New Account...**.
-
-**The status bar shows a clock icon or `token expired`**
-
-The login token ran out for a moment. Claude Code renews it on its own, and the numbers update on the next check. Nothing to do. If it says `re-login needed` instead, log in to that account in Claude Code again, then run `cswap add`.
-
-**The usage shows something other than a percentage**
-
-claude-swap could not read usage for that account right now. Try **Claude Swap: Refresh Usage**, or run `cswap list` in a terminal to see more detail.
-
-## Development
-
-1. Clone this repository and open the folder in Antigravity IDE.
-2. Run `npm install`.
-3. Press `F5` to launch the Extension Development Host.
-4. Run `npm run build` to bundle the extension.
-5. Run `npx @vscode/vsce package` to create a `.vsix` file.
-
-## Credits
-
-- [claude-swap](https://github.com/realiti4/claude-swap) by realiti4, which does all the real account and usage work.
-
-## License
-
-[MIT](LICENSE)
+MIT, como os dois projetos originais: claude-swap-status (smith89k) e claude-swap (realiti4). Não é um
+produto da Anthropic; "Claude" é marca da Anthropic.

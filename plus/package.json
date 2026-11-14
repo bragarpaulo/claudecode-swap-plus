@@ -2,7 +2,7 @@
   "name": "swap-plus",
   "displayName": "Swap Plus",
   "description": "Uso do Claude Code na barra de status (ícone de e-mail, 5h, semanal e Fable) e tela de regras para avisos e troca automática de conta. Usa o CLI swap-plus. Fork pessoal de smith89k/claude-swap-status (MIT).",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "paulo-local",
   "license": "MIT",
   "icon": "icon.png",
@@ -215,7 +215,7 @@
         "swapPlus.updates.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Verificar atualizações do motor e da extensão ao abrir e ao fechar o VS Code e a cada 12 h. Instala sozinho quando a opção do VS Code “Extensions: Auto Update” estiver ligada; senão só avisa."
+          "description": "Verificar atualizações do motor e da extensão ao abrir e ao fechar o VS Code e a cada 2 dias. Instala sozinho (dentro do VS Code) quando a opção “Extensions: Auto Update” estiver ligada; senão só avisa. Ao fechar, só verifica: o que houver de novo é instalado na próxima abertura."
         }
       }
     }

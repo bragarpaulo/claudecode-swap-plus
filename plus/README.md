@@ -23,43 +23,43 @@ Fork pessoal de [smith89k/claude-swap-status](https://github.com/smith89k/claude
   - na troca, contas com Fable disponível têm preferência;
   - o modelo continua o mesmo depois da troca. A escolha de modelo fica no Claude Code, não na conta.
 - **Tela de Configurações** (aba dentro do VS Code): sliders de “avisar em X%” e “trocar em Y%” para cada limite; estratégia
-  (mais folga, **aproveitar ao máximo** ou por prioridade); por conta: rotação, linha própria da sessão, prioridade e apelido;
-  histórico; simulação.
+  (mais folga, **aproveitar ao máximo** ou por prioridade); por conta: ordem (setas ↑ ↓, que trocam o número da conta com
+  `swap-plus swap`), rotação, linha própria da sessão, prioridade e apelido; histórico; simulação; atualizações da extensão.
 
 A decisão de troca é da extensão (`decide()` em `extension.js`); quem executa a troca é o `swap-plus switch N`.
 As regras ficam nas configurações do VS Code (`swapPlus.rules.*`). As configurações `autoswitch.*` do motor não são usadas.
 
-## Instalar (em qualquer Mac)
+## Instalar
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/plus/plus/scripts/install.sh | bash
-```
+Passo a passo completo, com Mac e Windows e como levar as contas para outro computador: **[MANUAL](../MANUAL.md)**.
 
-O script instala o `uv` se faltar, o motor (`swap-plus`, da última release de
+- Mac: `curl -fsSL https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.sh | bash`
+- Windows (PowerShell): `irm https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.ps1 | iex`
+
+Os scripts instalam o `uv` se faltar, o motor (`swap-plus`, da última release de
 [bragarpaulo/swap-plus](https://github.com/bragarpaulo/swap-plus/releases)) e a extensão (da última release
-[daqui](https://github.com/bragarpaulo/swap-plus-vscode/releases)), e remove a extensão original se estiver instalada.
-`--dry-run` mostra o que faria sem instalar. Depois:
-
-1. VS Code: `Cmd+Shift+P` → **Developer: Reload Window**.
-2. Contas: **Configurações → Importar contas…** com o arquivo do Export Other/Me, ou `swap-plus add` com a conta logada no Claude Code.
+[daqui](https://github.com/bragarpaulo/swap-plus-vscode/releases)), e removem a extensão original se estiver instalada.
+Para simular sem instalar: `--dry-run` no Mac; `$env:SWAP_PLUS_DRY_RUN = "1"` antes do comando no Windows.
 
 ## Atualizações
 
-Seguem o esquema das extensões do VS Code e não instalam nada fora dele:
+Seguem o esquema das extensões do VS Code. **Nada roda fora do VS Code**:
 
-- **Na sua máquina**, a extensão verifica **ao abrir e ao fechar o VS Code** e a cada 12 h. Com **Extensions: Auto Update** ligado
-  no VS Code, instala sozinha: o motor na hora; a extensão nova vale depois de recarregar a janela. Com ele desligado, só avisa.
-  Ao fechar, o que houver de novo é instalado em segundo plano e já está pronto na próxima abertura.
-  Dá para verificar à mão em **Configurações → Atualizações → Verificar agora**.
+- **Na sua máquina**, a extensão verifica **ao abrir e ao fechar o VS Code** e a cada **2 dias**. Com **Extensions: Auto Update**
+  ligado no VS Code, instala sozinha: o motor na hora; a extensão nova vale depois de recarregar a janela. Com ele desligado,
+  só avisa. Ao fechar, só verifica: se houver versão nova, ela é instalada logo na próxima abertura.
+  Dá para verificar à mão em **Configurações → Atualizações da extensão → Verificar agora**.
 - **No GitHub**, o workflow `plus-sync.yml` do [fork do motor](https://github.com/bragarpaulo/swap-plus/actions) olha o
-  claude-swap original a cada 6 h. Quando sai uma versão **estável** (betas ficam de fora), ele monta o original + o comando
+  claude-swap original a cada 2 dias. Quando sai uma versão **estável** (betas ficam de fora), ele monta o original + o comando
   `swap-plus`, roda a bateria de testes do original e só então publica a release `plus-vX.Y.Z`. Se a extensão percebe a versão
   nova antes, e o `gh` estiver logado na máquina, ela pede ao GitHub para rodar na hora.
-- O workflow `plus-upstream.yml` daqui olha a extensão original todo dia e abre uma issue quando sai versão nova.
+- O workflow `plus-upstream.yml` daqui olha a extensão original a cada 2 dias e abre uma issue quando sai versão nova.
   O Swap Plus foi reescrito em `plus/`, então nada entra sozinho: a issue é para avaliar se há algo a portar.
+- O workflow `plus-install-test.yml` instala tudo num Mac e num Windows limpos do GitHub (com o VS Code) sempre que os
+  instaladores mudam ou sai versão nova da extensão.
 
 Publicar uma versão nova da extensão: subir a `version` em `plus/package.json`, commit, e
-`git tag plus-vX.Y.Z && git push origin plus plus-vX.Y.Z`. O workflow `plus-release.yml` testa, empacota e publica;
+`git tag plus-vX.Y.Z && git push origin main plus-vX.Y.Z`. O workflow `plus-release.yml` testa, empacota e publica;
 as instalações se atualizam sozinhas.
 
 ## Estrutura
@@ -70,9 +70,10 @@ as instalações se atualizam sozinhas.
 | `plus/updater.js` | as atualizações (motor e extensão) |
 | `plus/media/` | a tela de Configurações |
 | `plus/test/smoke.js` | `--unit`: regra de troca, textos e atualizador com dados simulados; sem flag: também contra o `swap-plus` real (grava e desfaz) |
-| `plus/scripts/install.sh` | instalação a partir das releases |
+| `plus/scripts/install.sh` / `install.ps1` | instalação a partir das releases (Mac / Windows) |
 | `plus/scripts/dev-install.sh` | empacota a partir deste código e instala (desenvolvimento) |
-| `.github/workflows/plus-*.yml` | publicar a extensão e avisar sobre a original |
-| raiz do repositório | código do projeto original, sem alterações |
+| `.github/workflows/plus-*.yml` | publicar a extensão, testar a instalação e avisar sobre a original |
+| `../MANUAL.md` | o passo a passo para instalar e levar as contas para outro computador |
+| raiz do repositório | código do claude-swap-status original, só como referência |
 
-Branches: `main` é o original; `plus` (padrão) é esta versão.
+Branch único: `main`.

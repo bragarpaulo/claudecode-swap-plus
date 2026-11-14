@@ -1,7 +1,9 @@
 "use strict";
 // Atualizações do Swap Plus, no mesmo esquema das extensões do VS Code:
-// verifica ao abrir o VS Code, a cada 12 h e ao fechar; instala sozinho se a
+// verifica ao abrir o VS Code, a cada 2 dias e ao fechar; instala sozinho se a
 // opção do VS Code "extensions.autoUpdate" estiver ligada, senão só avisa.
+// Tudo roda dentro do VS Code: ao fechar, só verifica e anota; a instalação
+// acontece na próxima abertura. Nada fica rodando depois que ele fecha.
 //
 //   motor     → releases "plus-vX.Y.Z" de bragarpaulo/swap-plus (wheel montado e
 //               testado pelo GitHub Actions a partir do original realiti4/claude-swap)
@@ -15,7 +17,7 @@ const https = require("https");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFile, spawn } = require("child_process");
+const { execFile } = require("child_process");
 
 const REPOS = {
   cli: "bragarpaulo/swap-plus",
@@ -25,7 +27,7 @@ const REPOS = {
 };
 const SYNC_WORKFLOW = "plus-sync.yml";
 const STATE_KEY = "swapPlus.updates";
-const PERIOD_MS = 12 * 3600e3;
+const PERIOD_MS = 48 * 3600e3; // a cada 2 dias
 const UA = "swap-plus-vscode";
 
 // ---------------------------------------------------------------- versões
@@ -111,16 +113,29 @@ function request(url, { timeout = 10000, json = true, dest = null, redirects = 5
   });
 }
 
+const IS_WIN = process.platform === "win32";
+
+/** Acha um executável (no Windows também com .exe/.cmd). */
 function findBin(name) {
   const home = os.homedir();
-  const dirs = [path.join(home, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", path.join(home, ".cargo", "bin"), ...(process.env.PATH || "").split(path.delimiter)];
+  const dirs = [path.join(home, ".local", "bin"), path.join(home, ".cargo", "bin")];
+  if (IS_WIN) {
+    if (process.env.LOCALAPPDATA) dirs.push(path.join(process.env.LOCALAPPDATA, "Programs", "GitHub CLI"));
+    if (process.env.ProgramFiles) dirs.push(path.join(process.env.ProgramFiles, "GitHub CLI"));
+  } else {
+    dirs.push("/opt/homebrew/bin", "/usr/local/bin");
+  }
+  dirs.push(...(process.env.PATH || "").split(path.delimiter));
+  const names = IS_WIN ? [`${name}.exe`, `${name}.cmd`, name] : [name];
   for (const d of dirs) {
     if (!d) continue;
-    const p = path.join(d, name);
-    try {
-      fs.accessSync(p, fs.constants.X_OK);
-      return p;
-    } catch {}
+    for (const n of names) {
+      const p = path.join(d, n);
+      try {
+        fs.accessSync(p, IS_WIN ? fs.constants.F_OK : fs.constants.X_OK);
+        if (fs.statSync(p).isFile()) return p;
+      } catch {}
+    }
   }
   return null;
 }
@@ -196,7 +211,7 @@ function createUpdater(deps) {
       ext: { installed: extVersion, latest: val(extRel) ? val(extRel).version : null, upstream: val(upExt), base: upstreamExtBase, release: val(extRel) },
       error: errors.length ? errors[0] : null,
     };
-    if (reason !== "close") await setState({ last: r });
+    await setState({ last: r });
     return r;
   }
 
@@ -297,41 +312,31 @@ function createUpdater(deps) {
     return busy;
   }
 
-  /** Ao fechar: verificação rápida; o que houver de novo instala em segundo plano e vale na próxima abertura. */
+  /**
+   * Ao fechar: verificação rápida (até 3 s) que só anota o resultado. Se houver
+   * versão nova, ela é instalada na próxima abertura, dentro do VS Code.
+   */
   async function onClose() {
-    if (!enabled() || !autoUpdate() || !claim("close", 2 * 60e3)) return;
-    let r = null;
+    if (!enabled() || !claim("close", 2 * 60e3)) return null;
     try {
-      r = await Promise.race([check({ reason: "close", timeout: 2500 }), new Promise((res) => setTimeout(() => res(null), 3000))]);
+      const r = await Promise.race([check({ reason: "close", timeout: 2500 }), new Promise((res) => setTimeout(() => res(null), 3000))]);
+      if (!r) return null;
+      const pending = (r.cli.release && r.cli.installed && newer(r.cli.release.version, r.cli.installed)) || (r.ext.release && newer(r.ext.release.version, extVersion));
+      await setState({ pendingOnOpen: !!pending });
+      return r;
     } catch {
-      return;
-    }
-    if (!r) return;
-    const log = path.join(os.tmpdir(), "swap-plus-update.log");
-    const detached = (bin, args) => {
-      try {
-        const fd = fs.openSync(log, "a");
-        spawn(bin, args, { detached: true, stdio: ["ignore", fd, fd] }).unref();
-      } catch {}
-    };
-    const cliRel = r.cli.release;
-    if (cliRel && r.cli.installed && newer(cliRel.version, r.cli.installed)) {
-      const uv = ov.uv || findBin("uv");
-      const whl = cliRel.assets.find((a) => /\.whl$/.test(a.name));
-      if (uv) detached(uv, ["tool", "install", "--force", "--reinstall", whl ? whl.url : `git+https://github.com/${REPOS.cli}@${cliRel.tag}`]);
-    }
-    const extRel = r.ext.release;
-    const vsix = extRel && extRel.assets.find((a) => /\.vsix$/.test(a.name));
-    const code = ov.code || path.join(vscode.env.appRoot || "", "bin", "code");
-    if (vsix && newer(extRel.version, extVersion) && fs.existsSync(code)) {
-      const tmp = path.join(os.tmpdir(), `swap-plus-${extRel.version}.vsix`);
-      detached("/bin/sh", ["-c", 'curl -fsSL -o "$1" "$2" && "$3" --install-extension "$1" --force', "sh", tmp, vsix.url, code]);
+      return null;
     }
   }
 
   function start() {
     if (timer) clearInterval(timer);
-    setTimeout(() => runCheck({ reason: "open" }).catch(() => {}), 20000);
+    // Se o fechamento anterior achou versão nova, instala logo; senão espera o VS Code assentar.
+    const delay = getState().pendingOnOpen ? 3000 : 20000;
+    setTimeout(() => {
+      setState({ pendingOnOpen: false });
+      runCheck({ reason: "open" }).catch(() => {});
+    }, delay);
     timer = setInterval(() => runCheck({ reason: "periodic" }).catch(() => {}), PERIOD_MS);
   }
 
@@ -345,6 +350,7 @@ function createUpdater(deps) {
     return {
       enabled: enabled(),
       autoUpdate: autoUpdate(),
+      pendingOnOpen: !!getState().pendingOnOpen,
       extInstalled: extVersion,
       last: last
         ? {
@@ -361,4 +367,4 @@ function createUpdater(deps) {
   return { start, stop, runCheck, onClose, check, summary, applyCli, applyExt };
 }
 
-module.exports = { createUpdater, cmpVersion, pickPlusRelease, pickStableTag, REPOS };
+module.exports = { createUpdater, cmpVersion, pickPlusRelease, pickStableTag, findBin, REPOS };

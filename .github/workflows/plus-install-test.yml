@@ -1,0 +1,64 @@
+# Swap Plus: testa os instaladores numa máquina limpa de verdade (Mac e Windows
+# do GitHub), do jeito que o MANUAL manda: instala o VS Code, roda o comando de
+# instalação e confere o motor e a extensão. Roda quando os instaladores mudam
+# e quando uma versão nova da extensão é publicada.
+name: Swap Plus — testar a instalação
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Swap Plus — publicar a extensão"]
+    types: [completed]
+  push:
+    branches: [main]
+    paths: ["plus/scripts/install.sh", "plus/scripts/install.ps1"]
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: VS Code
+        run: brew install --cask visual-studio-code
+      - name: Instalar (o mesmo comando do MANUAL, usando o script deste commit)
+        run: bash plus/scripts/install.sh
+      - name: Conferir
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          swap-plus --version
+          swap-plus list --json || true
+          "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" --list-extensions --show-versions | tee /dev/stderr | grep -q '^paulo-local.swap-plus@'
+
+  windows:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: VS Code
+        shell: pwsh
+        run: choco install vscode -y --no-progress
+      - name: Instalar (Windows PowerShell 5.1, o mesmo do MANUAL, usando o script deste commit)
+        shell: powershell
+        run: Get-Content -Raw plus/scripts/install.ps1 | Invoke-Expression
+      - name: Conferir
+        shell: powershell
+        run: |
+          & "$HOME\.local\bin\swap-plus.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & "$HOME\.local\bin\swap-plus.exe" list --json
+          $code = "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd"
+          if (-not (Test-Path $code)) { $code = "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" }
+          $exts = & $code --list-extensions --show-versions
+          $exts
+          if (-not ($exts -match '^paulo-local\.swap-plus@')) { Write-Error "extensão não instalada"; exit 1 }
+          exit 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Testes da extensão no Windows (dados simulados)
+        working-directory: plus
+        run: node test/smoke.js --unit

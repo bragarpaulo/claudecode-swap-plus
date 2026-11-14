@@ -324,6 +324,39 @@ async function partB() {
   }
   check("conta em uso não mudou durante o teste", JSON.parse(cswap("list", "--json")).activeAccountNumber === before);
 
+  if (!READONLY) {
+    console.log("\n# B8b. Reordenar contas (ida e volta; a conta em uso não entra)");
+    const listNow = () => JSON.parse(cswap("list", "--json")).accounts;
+    const seqRec = () => JSON.parse(fs.readFileSync(path.join(home, ".claude-swap-backup", "sequence.json"), "utf8")).accounts || {};
+    const nums = listNow().map((a) => a.number).sort((a, b) => a - b);
+    const activeNum = JSON.parse(cswap("list", "--json")).activeAccountNumber;
+    let pairIdx = nums.findIndex((n, i) => i < nums.length - 1 && n !== activeNum && nums[i + 1] !== activeNum);
+    const [x, y] = [nums[pairIdx], nums[pairIdx + 1]];
+    const before = listNow();
+    const emailAt = (list, n) => (list.find((a) => a.number === n) || {}).email;
+    const prefsOf = (rec) => JSON.stringify({ d: !!rec.disabled, t: rec.threshold ?? null, p: rec.priority || 0, a: rec.alias || null });
+    const recBefore = seqRec();
+    const prefsByEmail = {};
+    for (const a of before) prefsByEmail[a.email] = prefsOf(recBefore[String(a.number)] || {});
+    try {
+      await sendAndWait({ type: "move", number: x, dir: "down" }, 600);
+      const after = listNow();
+      check(`conta ${x} desceu: trocou de posição com a ${y}`, emailAt(after, y) === emailAt(before, x) && emailAt(after, x) === emailAt(before, y));
+      const recAfter = seqRec();
+      check("ajustes de cada conta foram junto", after.every((a) => prefsByEmail[a.email] === prefsOf(recAfter[String(a.number)] || {})));
+      check("conta em uso continua a mesma", JSON.parse(cswap("list", "--json")).activeAccountNumber === activeNum);
+      const sp = lastState();
+      check("tela já mostra a ordem nova", (sp.accounts.find((a) => a.number === y) || {}).email === emailAt(before, x));
+    } finally {
+      await sendAndWait({ type: "move", number: y, dir: "up" }, 600);
+    }
+    const back = listNow();
+    check("ordem original restaurada", nums.every((n) => emailAt(back, n) === emailAt(before, n)));
+    const nFirst = lastState().accounts.length;
+    await sendAndWait({ type: "move", number: nums[0], dir: "up" }, 300);
+    check("a primeira conta não sobe (nada muda)", emailAt(listNow(), nums[0]) === emailAt(before, nums[0]) && lastState().accounts.length === nFirst);
+  }
+
   console.log("\n# B9. Modo privado");
   await sendAndWait({ type: "ui", key: "privacy.hideEmails", value: true }, 300);
   await commands["swapPlus.refreshStatus"]();
@@ -474,19 +507,19 @@ async function partUpdates(context) {
     check("motor: instala pelo wheel da release", /^tool install --force --reinstall https:\/\/github\.com\/bragarpaulo\/swap-plus\/releases\/download\/plus-v[\d.]+\/\S+\.whl$/.test(l), l);
   }
 
-  // Ao fechar, com versões antigas simuladas: instala os dois em segundo plano.
+  // Ao fechar, com versões antigas simuladas: só verifica e anota; nada roda fora do VS Code.
   fs.writeFileSync(uvLog, "");
   try { fs.unlinkSync(path.join(os.tmpdir(), "swap-plus-close.lock")); } catch {}
   const oldCtx = { ...context, extension: { packageJSON: { version: "1.0.0", swapPlus: { upstreamExtension: "0.2.2" } } } };
   const u3 = U.createUpdater(deps({ context: oldCtx, cliVersion: async () => "1.0.0", overrides: { uv: fakeUv, code: fakeCode, autoUpdate: true } }));
-  await u3.onClose();
-  for (let i = 0; i < 60 && !(fs.existsSync(codeLog) && fs.readFileSync(uvLog, "utf8").trim()); i++) await sleep(250);
-  const uvl = fs.readFileSync(uvLog, "utf8").trim();
-  const cl = fs.existsSync(codeLog) ? fs.readFileSync(codeLog, "utf8").trim() : "";
-  check("ao fechar: motor novo instalado em segundo plano", /^tool install --force --reinstall \S+\.whl$/.test(uvl), uvl);
-  const m = cl.match(/^--install-extension (\S+\.vsix) --force$/);
-  check("ao fechar: extensão nova baixada e instalada em segundo plano", !!m && fs.readFileSync(m[1]).subarray(0, 2).toString("latin1") === "PK", cl);
-  if (m) try { fs.unlinkSync(m[1]); } catch {}
+  const t0 = Date.now();
+  const rc = await u3.onClose();
+  const took = Date.now() - t0;
+  await sleep(2000);
+  check("ao fechar: verifica em até 3 s", !!rc && took <= 3500, `${took} ms`);
+  check("ao fechar: anota que há versão nova para a próxima abertura", u3.summary().pendingOnOpen === true);
+  check("ao fechar: nada é instalado nem fica rodando", fs.readFileSync(uvLog, "utf8").trim() === "" && !fs.existsSync(codeLog));
+  await globalState.set("swapPlus.updates", { ...(globalState.get("swapPlus.updates") || {}), pendingOnOpen: false });
 }
 
 (async () => {

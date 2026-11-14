@@ -7,7 +7,9 @@
 //            A conta ativa nunca é trocada.
 //
 //   node test/smoke.js            # tudo
+//   node test/smoke.js --unit     # só os testes com dados simulados (usado no GitHub Actions)
 //   node test/smoke.js --readonly # sem gravações
+//   node test/smoke.js --no-github # sem consultar o GitHub
 //   node test/smoke.js --dump <arquivo.json>  # salva o estado (e-mails trocados) p/ o preview
 
 const Module = require("module");
@@ -17,6 +19,8 @@ const os = require("os");
 const { execFileSync } = require("child_process");
 
 const READONLY = process.argv.includes("--readonly");
+const UNIT = process.argv.includes("--unit");
+const NO_GITHUB = process.argv.includes("--no-github");
 const dumpIdx = process.argv.indexOf("--dump");
 const DUMP = dumpIdx > -1 ? process.argv[dumpIdx + 1] : null;
 const root = path.join(__dirname, "..");
@@ -25,7 +29,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "ut
 // ------------------------------------------------------------ vscode falso
 const defaults = {};
 for (const [k, v] of Object.entries(manifest.contributes.configuration.properties)) defaults[k] = v.default;
-const store = {};
+const store = { "swapPlus.updates.enabled": false }; // o teste chama o atualizador à mão
 const cfgListeners = [];
 const commands = {};
 const notifications = [];
@@ -46,6 +50,7 @@ const vscodeMock = {
   ViewColumn: { One: 1 },
   ProgressLocation: { Notification: 15 },
   QuickPickItemKind: { Separator: -1 },
+  env: { appRoot: "/nao-existe" },
   Uri: {
     joinPath: (base, ...p) => ({ fsPath: path.join(base.fsPath, ...p), toString() { return this.fsPath; } }),
     file: (p) => ({ fsPath: p, toString() { return p; } }),
@@ -190,6 +195,24 @@ function partA() {
   check("lista: sessão sem uso não mostra renovação", T.pickerTexts(idle, T.windows(idle), false).description === "Sessão (5h): 0% usado");
 }
 
+// ------------------------------------------------------------ parte U: atualizador
+function partU() {
+  console.log("\n# U. Atualizador (dados simulados)");
+  const U = require(path.join(root, "updater.js"));
+  check("1.10.0 é mais nova que 1.9.3", U.cmpVersion("1.10.0", "1.9.3") > 0);
+  check("“swap-plus 1.1.0” = 1.1.0", U.cmpVersion("swap-plus 1.1.0", "1.1.0") === 0);
+  const rels = [
+    { tag_name: "plus-v1.2.0", prerelease: true, assets: [] },
+    { tag_name: "plus-v1.1.0", assets: [{ name: "x.whl", browser_download_url: "u" }], html_url: "h" },
+    { tag_name: "v9.9.9", assets: [] },
+    { tag_name: "plus-v1.0.0", assets: [] },
+  ];
+  const r = U.pickPlusRelease(rels);
+  check("release: a plus-v mais nova, sem pré-release nem tags do original", !!r && r.version === "1.1.0" && r.assets[0].url === "u");
+  check("sem releases → nada", U.pickPlusRelease([]) === null);
+  check("original: só versões estáveis", U.pickStableTag([{ name: "v1.2.0b1" }, { name: "v1.1.0" }, { name: "v1.0.9" }, { name: "nightly" }]) === "1.1.0");
+}
+
 // ------------------------------------------------------------ parte B: integração
 async function partB() {
   const context = {
@@ -325,6 +348,11 @@ async function partB() {
     const envO = JSON.parse(fs.readFileSync(fileOther, "utf8"));
     check("Export Other gera o arquivo com todas as contas", Array.isArray(envO.accounts) && envO.accounts.length === raw.accounts.length, `${envO.accounts.length} contas`);
     check("arquivo marcado para modo privado", envO.swapPlus && envO.swapPlus.hideEmails === true);
+    const es = envO.swapPlus.settings || {};
+    check("leva regras de troca, avisos, exibição e troca automática", es["swapPlus.rules.weeklySwitchPct"] === 80 && es["swapPlus.rules.modelSwitchPct"] === 95 && "swapPlus.alerts.weeklyPct" in es && "swapPlus.statusBar.showModelWeekly" in es && "swapPlus.autoSwitch.enabled" in es, `${Object.keys(es).length} configurações`);
+    check("não leva caminho do executável nem modo privado", !("swapPlus.executablePath" in es) && !("swapPlus.privacy.hideEmails" in es));
+    const ea = envO.swapPlus.accounts || [];
+    check("leva os ajustes de cada conta", ea.length === raw.accounts.length && ea.every((a) => "disabled" in a && "threshold" in a && "priority" in a));
     check("arquivo só legível pelo seu usuário (600)", (fs.statSync(fileOther).mode & 0o777) === 0o600);
     check("aviso do export sem e-mail", !notifications.slice(-2).some((n) => /@/.test(n[1])));
     await sendAndWait({ type: "ui", key: "privacy.hideEmails", value: false }, 300);
@@ -341,24 +369,51 @@ async function partB() {
   console.log("\n# B11. Importar (com um swap-plus de mentira: nada é gravado de verdade)");
   const fakeLog = path.join(SCRATCH, "fake.log");
   const fake = path.join(SCRATCH, "fake-swap-plus");
-  fs.writeFileSync(fake, `#!/bin/bash\nif [ "$1" = "import" ]; then echo "$@" >> "${fakeLog}"; echo "Imported 2 accounts"; exit 0; fi\nexec "${cswapBin}" "$@"\n`, { mode: 0o755 });
+  // list/--version vão para o swap-plus de verdade (só leitura); o resto só é anotado.
+  fs.writeFileSync(fake, `#!/bin/bash\ncase "$1" in list|--version) exec "${cswapBin}" "$@";; esac\necho "$@" >> "${fakeLog}"\nexit 0\n`, { mode: 0o755 });
   const fakeFile = path.join(SCRATCH, "vindo-do-outro.cswap");
-  fs.writeFileSync(fakeFile, JSON.stringify({ version: 1, accounts: [{}, {}], swapPlus: { hideEmails: true } }), { mode: 0o600 });
+  const other = raw.accounts.find((a) => a.number !== raw.activeAccountNumber);
+  fs.writeFileSync(
+    fakeFile,
+    JSON.stringify({
+      version: 1,
+      accounts: [{}, {}],
+      swapPlus: {
+        hideEmails: true,
+        settings: { "swapPlus.rules.weeklySwitchPct": 77, "swapPlus.alerts.modelPct": 88, "swapPlus.executablePath": "/nao/deve/aplicar" },
+        accounts: [{ email: other.email, organizationUuid: other.organizationUuid || "", disabled: true, threshold: 75, priority: 4 }],
+      },
+    }),
+    { mode: 0o600 }
+  );
   try {
     await vscodeMock.workspace.getConfiguration("swapPlus").update("executablePath", fake);
     await sleep(300);
     vscodeMock.nextOpen = fakeFile;
     await sendAndWait({ type: "import" }, 600);
     const logged = fs.existsSync(fakeLog) ? fs.readFileSync(fakeLog, "utf8").trim() : "";
-    check("rodou “swap-plus import <arquivo>”", logged === `import ${fakeFile}`, logged);
+    const lines = logged.split("\n");
+    check("rodou “swap-plus import <arquivo>”", lines[0] === `import ${fakeFile}`, redact(lines[0] || ""));
     check("arquivo de Export Other liga o modo privado", lastState().privacy === true);
+    check("aplica as regras e avisos do arquivo", lastState().rules.weeklyPct === 77 && lastState().alerts.modelPct === 88, `semanal ${lastState().rules.weeklyPct}, aviso Fable ${lastState().alerts.modelPct}, store ${JSON.stringify(store["swapPlus.rules.weeklySwitchPct"])}`);
+    check("não aplica o caminho do executável de outra máquina", vscodeMock.workspace.getConfiguration("swapPlus").get("executablePath") === fake);
+    const want = [`disable ${other.number}`, `threshold ${other.number} 75`, `priority ${other.number} 4`];
+    check("aplica os ajustes da conta, achando-a pelo e-mail", want.every((w) => lines.includes(w)), lines.slice(1).join(" | "));
   } finally {
     vscodeMock.nextOpen = null;
     await vscodeMock.workspace.getConfiguration("swapPlus").update("executablePath", "");
     await vscodeMock.workspace.getConfiguration("swapPlus").update("privacy.hideEmails", false);
+    await vscodeMock.workspace.getConfiguration("swapPlus").update("rules.weeklySwitchPct", 80);
+    await vscodeMock.workspace.getConfiguration("swapPlus").update("alerts.modelPct", 85);
     await sleep(300);
   }
   check("configurações de teste desfeitas", lastState().privacy === false);
+
+  if (NO_GITHUB) {
+    console.log("\n# B12. Atualizações puladas (--no-github)");
+  } else {
+    await partUpdates(context);
+  }
 
   if (DUMP) {
     await commands["swapPlus.refreshStatus"]();
@@ -372,8 +427,68 @@ async function partB() {
   fs.rmSync(SCRATCH, { recursive: true, force: true });
 }
 
+async function partUpdates(context) {
+  console.log("\n# B12. Atualizações (GitHub de verdade; nada é instalado de fato)");
+  const U = require(path.join(root, "updater.js"));
+  const res = await T.getUpdater().check({ reason: "manual" });
+  console.log(`     motor:    aqui ${res.cli.installed} · fork ${res.cli.latest} · original ${res.cli.upstream}`);
+  console.log(`     extensão: aqui ${res.ext.installed} · fork ${res.ext.latest} · original ${res.ext.upstream} (base ${res.ext.base})`);
+  check("consulta o GitHub sem erro", !res.error, res.error || "");
+  check("motor desta máquina = última release do fork", !!res.cli.latest && U.cmpVersion(res.cli.latest, res.cli.installed) === 0);
+  check("fork do motor em dia com o original", !!res.cli.upstream && U.cmpVersion(res.cli.upstream, res.cli.latest) === 0);
+  check("release da extensão existe no fork", !!res.ext.latest);
+
+  const calls = [];
+  const origExec = vscodeMock.commands.executeCommand;
+  vscodeMock.commands.executeCommand = (id, arg) => { calls.push([id, arg]); return Promise.resolve(); };
+  try {
+    if (res.ext.release) {
+      await T.getUpdater().applyExt(res.ext.release);
+      const c = calls.find((x) => x[0] === "workbench.extensions.installExtension");
+      const ok = !!c && fs.readFileSync(c[1].fsPath).subarray(0, 2).toString("latin1") === "PK";
+      check("baixa o .vsix da release e pede ao VS Code para instalar", ok);
+      if (c) try { fs.unlinkSync(c[1].fsPath); } catch {}
+    }
+  } finally {
+    vscodeMock.commands.executeCommand = origExec;
+  }
+
+  const fakeUv = path.join(SCRATCH, "fake-uv"), uvLog = path.join(SCRATCH, "uv.log");
+  const fakeCode = path.join(SCRATCH, "fake-code"), codeLog = path.join(SCRATCH, "code.log");
+  fs.writeFileSync(fakeUv, `#!/bin/bash\necho "$@" >> "${uvLog}"\n`, { mode: 0o755 });
+  fs.writeFileSync(fakeCode, `#!/bin/bash\necho "$@" >> "${codeLog}"\n`, { mode: 0o755 });
+  const base = vscodeMock.workspace.getConfiguration("swapPlus");
+  const cfgOn = () => ({ get: (k) => (k === "updates.enabled" ? true : base.get(k)), update: base.update });
+  const deps = (over) => ({ cfg: cfgOn, onCliUpdated: async () => {}, pushHistory: async () => {}, postState: () => {}, ...over });
+  if (res.cli.release) {
+    const u2 = U.createUpdater(deps({ context, cliVersion: async () => res.cli.latest, overrides: { uv: fakeUv } }));
+    await u2.applyCli(res.cli.release);
+    const l = fs.existsSync(uvLog) ? fs.readFileSync(uvLog, "utf8").trim() : "";
+    check("motor: instala pelo wheel da release", /^tool install --force --reinstall https:\/\/github\.com\/bragarpaulo\/swap-plus\/releases\/download\/plus-v[\d.]+\/\S+\.whl$/.test(l), l);
+  }
+
+  // Ao fechar, com versões antigas simuladas: instala os dois em segundo plano.
+  fs.writeFileSync(uvLog, "");
+  try { fs.unlinkSync(path.join(os.tmpdir(), "swap-plus-close.lock")); } catch {}
+  const oldCtx = { ...context, extension: { packageJSON: { version: "1.0.0", swapPlus: { upstreamExtension: "0.2.2" } } } };
+  const u3 = U.createUpdater(deps({ context: oldCtx, cliVersion: async () => "1.0.0", overrides: { uv: fakeUv, code: fakeCode, autoUpdate: true } }));
+  await u3.onClose();
+  for (let i = 0; i < 60 && !(fs.existsSync(codeLog) && fs.readFileSync(uvLog, "utf8").trim()); i++) await sleep(250);
+  const uvl = fs.readFileSync(uvLog, "utf8").trim();
+  const cl = fs.existsSync(codeLog) ? fs.readFileSync(codeLog, "utf8").trim() : "";
+  check("ao fechar: motor novo instalado em segundo plano", /^tool install --force --reinstall \S+\.whl$/.test(uvl), uvl);
+  const m = cl.match(/^--install-extension (\S+\.vsix) --force$/);
+  check("ao fechar: extensão nova baixada e instalada em segundo plano", !!m && fs.readFileSync(m[1]).subarray(0, 2).toString("latin1") === "PK", cl);
+  if (m) try { fs.unlinkSync(m[1]); } catch {}
+}
+
 (async () => {
   partA();
+  partU();
+  if (UNIT) {
+    console.log(failed ? `\n${failed} verificação(ões) falharam.` : "\nTudo certo.");
+    process.exit(failed ? 1 : 0);
+  }
   await partB();
   console.log(failed ? `\n${failed} verificação(ões) falharam.` : "\nTudo certo.");
   process.exit(failed ? 1 : 0);

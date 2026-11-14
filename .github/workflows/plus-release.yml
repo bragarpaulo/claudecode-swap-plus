@@ -1,0 +1,49 @@
+# Swap Plus: publica a extensão quando uma tag plus-vX.Y.Z é enviada.
+# A extensão instalada em cada máquina baixa o .vsix desta release.
+name: Swap Plus — publicar a extensão
+
+on:
+  push:
+    tags: ["plus-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: A tag bate com a versão do package.json
+        working-directory: plus
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          [ "$GITHUB_REF_NAME" = "plus-v$VER" ] || { echo "::error::a tag $GITHUB_REF_NAME não bate com a versão $VER do package.json"; exit 1; }
+          echo "VER=$VER" >> "$GITHUB_ENV"
+
+      - name: Testes (regra de troca, textos e atualizador)
+        working-directory: plus
+        run: node test/smoke.js --unit
+
+      - name: Empacotar
+        working-directory: plus
+        run: npx --yes @vscode/vsce@3 package --no-dependencies -o swap-plus.vsix
+
+      - name: Publicar a release
+        run: |
+          gh release create "$GITHUB_REF_NAME" plus/swap-plus.vsix \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Swap Plus — extensão ${VER}" \
+            --notes "Extensão Swap Plus ${VER} para o VS Code. As instalações existentes se atualizam sozinhas ao abrir ou fechar o VS Code.
+
+          Instalar numa máquina nova (motor + extensão):
+          \`\`\`
+          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/plus/plus/scripts/install.sh | bash
+          \`\`\`"

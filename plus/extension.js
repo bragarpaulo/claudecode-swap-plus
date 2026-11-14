@@ -15,6 +15,7 @@ const { execFile } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { createUpdater } = require("./updater");
 
 const NS = "swapPlus";
 const HISTORY_KEY = "swapPlus.autoHistory";
@@ -52,6 +53,7 @@ let autoTimer;
 let autoGen = 0;
 let refreshing = null;
 let lastBlockedWarnAt = 0;
+let updater = null;
 let state = { list: null, records: {}, models: [], error: null, fetchedAt: 0 };
 
 // ---------------------------------------------------------------- utilitários
@@ -898,6 +900,7 @@ async function exportAccounts(mode) {
   try {
     if (fs.statSync(file).isFile()) fs.unlinkSync(file); // o diálogo já confirmou a substituição
   } catch {}
+  await refresh(); // ajustes por conta atualizados
   const r = await runCswap(["export", file], 120000);
   let env = null;
   try {
@@ -907,7 +910,15 @@ async function exportAccounts(mode) {
     vscode.window.showErrorMessage(`Swap Plus: falha no ${name}: ${lastLine(r.stderr) || r.spawnError || "arquivo não foi gerado"}`);
     return null;
   }
-  env.swapPlus = { hideEmails: other };
+  env.swapPlus = {
+    hideEmails: other,
+    exportedAt: new Date().toISOString(),
+    settings: collectSettings(),
+    accounts: env.accounts.map((a) => {
+      const rec = recordOf(state.records, a.number);
+      return { email: a.email, organizationUuid: a.organizationUuid || "", disabled: !!rec.disabled, threshold: rec.threshold ?? null, priority: Number(rec.priority) || 0 };
+    }),
+  };
   fs.writeFileSync(file, JSON.stringify(env, null, 2) + "\n");
   fs.chmodSync(file, 0o600);
   const n = env.accounts.length;
@@ -915,11 +926,65 @@ async function exportAccounts(mode) {
   postState();
   vscode.window
     .showInformationMessage(
-      `Swap Plus: ${n} contas exportadas (${name})${other ? ". No outro computador vai aparecer só “Conta 1”, “Conta 2”…" : ""}. O arquivo tem as credenciais das contas: leve para o outro computador, importe e apague.`,
+      `Swap Plus: ${n} contas exportadas (${name}), com as regras de troca, os avisos e os ajustes de cada conta${other ? ". No outro computador vai aparecer só “Conta 1”, “Conta 2”…" : ""}. O arquivo tem as credenciais das contas: leve para o outro computador, importe e apague.`,
       "Mostrar no Finder"
     )
     .then((c) => c && vscode.commands.executeCommand("revealFileInOS", uri));
   return { file, n };
+}
+
+/** Configurações do Swap Plus que viajam no export (não vão: caminho do executável e modo privado). */
+const NOT_EXPORTED = new Set(["swapPlus.executablePath", "swapPlus.privacy.hideEmails"]);
+
+function settingKeys() {
+  const pkg = (extContext.extension && extContext.extension.packageJSON) || require("./package.json");
+  const props = (pkg.contributes && pkg.contributes.configuration && pkg.contributes.configuration.properties) || {};
+  return Object.keys(props).filter((k) => k.startsWith(`${NS}.`) && !NOT_EXPORTED.has(k));
+}
+
+function collectSettings() {
+  const out = {};
+  for (const k of settingKeys()) out[k] = cfg().get(k.slice(NS.length + 1));
+  return out;
+}
+
+async function applySettings(settings) {
+  if (!settings || typeof settings !== "object") return 0;
+  const known = new Set(settingKeys());
+  let n = 0;
+  for (const [k, v] of Object.entries(settings)) {
+    if (!known.has(k) || v === undefined) continue;
+    const key = k.slice(NS.length + 1);
+    if (JSON.stringify(cfg().get(key)) === JSON.stringify(v)) continue;
+    await cfg().update(key, v, vscode.ConfigurationTarget.Global);
+    n++;
+  }
+  return n;
+}
+
+/** Fora da rotação, linha própria e prioridade de cada conta, achando a conta pelo e-mail + organização. */
+async function applyAccountPrefs(prefs) {
+  if (!Array.isArray(prefs) || !prefs.length) return 0;
+  const l = await runCswap(["list", "--json"]);
+  const list = parseJson(l.stdout);
+  if (!list || !Array.isArray(list.accounts)) return 0;
+  const records = await readRecords();
+  let n = 0;
+  for (const p of prefs) {
+    const acc = list.accounts.find((a) => a.email === p.email && (a.organizationUuid || "") === (p.organizationUuid || ""));
+    if (!acc) continue;
+    const num = String(acc.number);
+    const rec = recordOf(records, acc.number);
+    const cmds = [];
+    if (!!p.disabled !== !!rec.disabled) cmds.push([p.disabled ? "disable" : "enable", num]);
+    const th = p.threshold === null || p.threshold === undefined ? null : Number(p.threshold);
+    const cur = rec.threshold === null || rec.threshold === undefined ? null : Number(rec.threshold);
+    if (th !== cur) cmds.push(th === null ? ["threshold", num, "--unset"] : ["threshold", num, String(th)]);
+    if ((Number(p.priority) || 0) !== (Number(rec.priority) || 0)) cmds.push(["priority", num, String(Number(p.priority) || 0)]);
+    for (const c of cmds) await runCswap(c);
+    if (cmds.length) n++;
+  }
+  return n;
 }
 
 async function importAccounts() {
@@ -953,11 +1018,17 @@ async function importAccounts() {
     return { ok: false, hide };
   }
   const n = env.accounts.length;
-  await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `Importadas ${n} contas${hide ? " (modo privado)" : ""}` }]);
+  const sp = env.swapPlus || {};
+  if (sp.hideEmails === false) await cfg().update("privacy.hideEmails", false, vscode.ConfigurationTarget.Global);
+  const nSettings = await applySettings(sp.settings);
+  const nAccounts = await applyAccountPrefs(sp.accounts);
+  await refresh();
+  const carried = nSettings || nAccounts ? ", com as regras de troca, os avisos e os ajustes de cada conta" : "";
+  await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `Importadas ${n} contas${carried ? " e configurações" : ""}${hide ? " (modo privado)" : ""}` }]);
   postState();
   vscode.window
     .showInformationMessage(
-      `Swap Plus: ${n} contas importadas${hide ? ". Modo privado ligado: aqui aparece só “Conta N”." : "."} Apague o arquivo agora que ele não é mais necessário.`,
+      `Swap Plus: ${n} contas importadas${carried}${hide ? ". Modo privado ligado: aqui aparece só “Conta N”." : "."} Apague o arquivo agora que ele não é mais necessário.`,
       "Apagar o arquivo"
     )
     .then((c) => {
@@ -968,6 +1039,12 @@ async function importAccounts() {
       }
     });
   return { ok: true, hide, n };
+}
+
+async function cliVersion() {
+  const r = await runCswap(["--version"], 20000);
+  const m = `${r.stdout} ${r.stderr}`.match(/(\d+\.\d+\.\d+\S*)/);
+  return r.code === 0 && m ? m[1] : null;
 }
 
 function addAccount() {
@@ -1044,6 +1121,7 @@ function buildPayload() {
       history: (extContext.globalState.get(HISTORY_KEY) || []).map((h) => ({ ...h, text: safe(h.text), when: fmtWhen(h.ts) })),
     },
     privacy: priv,
+    updates: updater ? (() => { const u = updater.summary(); if (u.last) u.last.when = fmtWhen(u.last.ts); return u; })() : null,
     ui: {
       showAccountNumber: !!cfg().get("statusBar.showAccountNumber"),
       showModelWeekly: !!cfg().get("statusBar.showModelWeekly"),
@@ -1178,6 +1256,16 @@ async function handleMessage(m) {
       await importAccounts();
       return;
 
+    case "checkUpdates": {
+      post({ type: "busy", on: true, text: "Verificando atualizações..." });
+      const r = updater ? await updater.runCheck({ reason: "manual" }) : null;
+      post({ type: "busy", on: false });
+      postState();
+      if (r && r.error) post({ type: "toast", kind: "error", text: `Não consegui falar com o GitHub: ${r.error}` });
+      else if (r) post({ type: "toast", kind: "info", text: "Verificação concluída." });
+      return;
+    }
+
     case "clearHistory":
       await extContext.globalState.update(HISTORY_KEY, []);
       postState();
@@ -1204,7 +1292,8 @@ function activate(context) {
     vscode.commands.registerCommand(`${NS}.switchBest`, switchBest),
     vscode.commands.registerCommand(`${NS}.exportOther`, () => exportAccounts("other")),
     vscode.commands.registerCommand(`${NS}.exportMe`, () => exportAccounts("me")),
-    vscode.commands.registerCommand(`${NS}.importAccounts`, importAccounts)
+    vscode.commands.registerCommand(`${NS}.importAccounts`, importAccounts),
+    vscode.commands.registerCommand(`${NS}.checkUpdates`, () => updater && updater.runCheck({ reason: "manual" }))
   );
 
   context.subscriptions.push(
@@ -1219,12 +1308,19 @@ function activate(context) {
 
   setupPolling();
   setupAuto();
+
+  updater = createUpdater({ context, cfg, cliVersion, onCliUpdated: refresh, pushHistory, postState });
+  updater.start();
 }
 
 function deactivate() {
   autoGen++;
   if (pollTimer) clearInterval(pollTimer);
   if (autoTimer) clearTimeout(autoTimer);
+  if (updater) {
+    updater.stop();
+    return updater.onClose().catch(() => {}); // verificação ao fechar o VS Code
+  }
 }
 
-module.exports = { activate, deactivate, _test: { decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels } };
+module.exports = { activate, deactivate, _test: { decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };

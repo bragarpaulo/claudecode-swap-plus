@@ -474,6 +474,47 @@
     );
   }
 
+  const REASONS = { open: "ao abrir o VS Code", close: "ao fechar o VS Code", periodic: "verificação periódica", manual: "manual" };
+
+  function renderUpdates() {
+    const u = S.updates;
+    const box = $("updBox");
+    if (!u) return box.replaceChildren(h("p", { class: "muted small", text: "Atualizador indisponível." }));
+    const L = u.last;
+    const newer = (a, b) => {
+      const p = (s) => String(s || "").split(/[^\d]+/).filter(Boolean).slice(0, 3).map(Number);
+      const x = p(a), y = p(b);
+      if (x.length < 3 || y.length < 3) return false;
+      for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+      return false;
+    };
+    const cell = (v, flag) => h("span", { class: flag ? "new" : "", text: v || "—" });
+    const rows = [
+      h("span", { class: "hd", text: "" }), h("span", { class: "hd", text: "Nesta máquina" }), h("span", { class: "hd", text: "No seu fork" }), h("span", { class: "hd", text: "No original" }),
+      h("span", { class: "nm", text: "Motor (swap-plus)" }),
+      cell(L ? L.cli.installed : null),
+      cell(L ? L.cli.latest : null, L && newer(L.cli.latest, L.cli.installed)),
+      cell(L ? L.cli.upstream : null, L && newer(L.cli.upstream, L.cli.latest)),
+      h("span", { class: "nm", text: "Extensão Swap Plus" }),
+      cell(u.extInstalled),
+      cell(L ? L.ext.latest : null, L && newer(L.ext.latest, u.extInstalled)),
+      cell(L && L.ext.upstream ? `${L.ext.upstream} (base ${L.ext.base || "?"})` : null, L && newer(L.ext.upstream, L.ext.base)),
+    ];
+    box.replaceChildren(
+      h("div", { class: "upd" }, rows),
+      h("p", {
+        class: "muted small",
+        text: L
+          ? `Última verificação: ${L.when || L.ts} (${REASONS[L.reason] || L.reason})${L.error ? ` — erro: ${L.error}` : ""}.`
+          : "Ainda não verificou.",
+      }),
+      h("p", {
+        class: "muted small",
+        text: `Verifica ao abrir e ao fechar o VS Code e a cada 12 h. ${u.autoUpdate ? "Instala sozinho, como as outras extensões (Extensions: Auto Update ligado)." : "Só avisa, porque o Auto Update de extensões do VS Code está desligado."} Versão nova do original: o GitHub roda os testes do original e só então prepara o motor no seu fork.`,
+      })
+    );
+  }
+
   function renderHistory() {
     const items = S.auto.history || [];
     $("history").replaceChildren(
@@ -500,6 +541,7 @@
     renderRules();
     renderAccounts();
     renderUi();
+    renderUpdates();
     renderHistory();
     $("rowExportMe").classList.toggle("hidden", !!S.privacy);
   }
@@ -535,6 +577,7 @@
   $("btnExportOther").addEventListener("click", () => send({ type: "export", mode: "other" }));
   $("btnExportMe").addEventListener("click", () => send({ type: "export", mode: "me" }));
   $("btnImport").addEventListener("click", () => send({ type: "import" }));
+  $("btnUpdates").addEventListener("click", () => send({ type: "checkUpdates" }));
 
   send({ type: "ready" });
 })();

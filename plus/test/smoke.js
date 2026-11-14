@@ -373,6 +373,8 @@ async function partB() {
   fs.writeFileSync(fake, `#!/bin/bash\ncase "$1" in list|--version) exec "${cswapBin}" "$@";; esac\necho "$@" >> "${fakeLog}"\nexit 0\n`, { mode: 0o755 });
   const fakeFile = path.join(SCRATCH, "vindo-do-outro.cswap");
   const other = raw.accounts.find((a) => a.number !== raw.activeAccountNumber);
+  const seqNow = JSON.parse(fs.readFileSync(path.join(home, ".claude-swap-backup", "sequence.json"), "utf8"));
+  const otherRec = (seqNow.accounts || {})[String(other.number)] || {};
   fs.writeFileSync(
     fakeFile,
     JSON.stringify({
@@ -381,7 +383,8 @@ async function partB() {
       swapPlus: {
         hideEmails: true,
         settings: { "swapPlus.rules.weeklySwitchPct": 77, "swapPlus.alerts.modelPct": 88, "swapPlus.executablePath": "/nao/deve/aplicar" },
-        accounts: [{ email: other.email, organizationUuid: other.organizationUuid || "", disabled: true, threshold: 75, priority: 4 }],
+        // o oposto do estado atual da conta, para todo ajuste exigir um comando
+        accounts: [{ email: other.email, organizationUuid: other.organizationUuid || "", disabled: !otherRec.disabled, threshold: otherRec.threshold === 75 ? 76 : 75, priority: (Number(otherRec.priority) || 0) === 4 ? 5 : 4 }],
       },
     }),
     { mode: 0o600 }
@@ -397,7 +400,11 @@ async function partB() {
     check("arquivo de Export Other liga o modo privado", lastState().privacy === true);
     check("aplica as regras e avisos do arquivo", lastState().rules.weeklyPct === 77 && lastState().alerts.modelPct === 88, `semanal ${lastState().rules.weeklyPct}, aviso Fable ${lastState().alerts.modelPct}, store ${JSON.stringify(store["swapPlus.rules.weeklySwitchPct"])}`);
     check("não aplica o caminho do executável de outra máquina", vscodeMock.workspace.getConfiguration("swapPlus").get("executablePath") === fake);
-    const want = [`disable ${other.number}`, `threshold ${other.number} 75`, `priority ${other.number} 4`];
+    const want = [
+      `${otherRec.disabled ? "enable" : "disable"} ${other.number}`,
+      `threshold ${other.number} ${otherRec.threshold === 75 ? 76 : 75}`,
+      `priority ${other.number} ${(Number(otherRec.priority) || 0) === 4 ? 5 : 4}`,
+    ];
     check("aplica os ajustes da conta, achando-a pelo e-mail", want.every((w) => lines.includes(w)), lines.slice(1).join(" | "));
   } finally {
     vscodeMock.nextOpen = null;

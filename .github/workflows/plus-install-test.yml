@@ -43,7 +43,8 @@ jobs:
         run: choco install vscode -y --no-progress
       - name: Instalar (Windows PowerShell 5.1, o mesmo do MANUAL, usando o script deste commit)
         shell: powershell
-        run: Get-Content -Raw plus/scripts/install.ps1 | Invoke-Expression
+        # UTF-8 explícito: é o que o irm recebe do GitHub no comando do MANUAL.
+        run: Get-Content -Raw -Encoding UTF8 plus/scripts/install.ps1 | Invoke-Expression
       - name: Conferir
         shell: powershell
         run: |

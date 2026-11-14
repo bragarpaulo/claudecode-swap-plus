@@ -136,7 +136,7 @@ function acct(n, o = {}) {
     },
   };
 }
-const R = { sessionPct: 90, weeklyPct: 80, modelPct: 95, preferModel: "Fable", strategy: "headroom", expiringHours: 24, cooldownMin: 5, marginPct: 5, intervalSec: 60 };
+const R = { sessionPct: 90, weeklyPct: 80, modelPct: 95, preferModel: "Fable", strategy: "headroom", expiringHours: 24, cooldownMin: 5, marginPct: 5, intervalSec: 60, onModelLimit: "switchAccount" };
 const OPUS = ["claude-opus-5-5"];
 const FABLE = ["claude-fable-5-2"];
 const run = (accounts, active, opts = {}) =>
@@ -155,6 +155,10 @@ function partA() {
   check("Fable em uso e em 94% → não troca", d.action === "none", d.text);
   d = run([acct(1, { w: 50, f: 99 }), acct(2, { w: 10 })], 1, { models: OPUS });
   check("Fable em 99% mas usando Opus → não troca", d.action === "none", d.text);
+  d = run([acct(1, { w: 50, f: 100 }), acct(2, { w: 10, f: 0 })], 1, { models: FABLE, r: { onModelLimit: "sameAccount" } });
+  check("“mesma conta”: Fable esgotado → não troca de conta (o Claude Code troca o modelo)", d.action === "none", d.text);
+  d = run([acct(1, { w: 85, f: 100 }), acct(2, { w: 10, f: 0 }), acct(3, { w: 5, f: 99 })], 1, { models: FABLE, r: { onModelLimit: "sameAccount" } });
+  check("“mesma conta”: semanal estourado ainda troca, preferindo conta com Fable", d.action === "switch" && d.to === 2, d.text);
   d = run([acct(1, { w: 85 }), acct(2, { w: 5, f: 97 }), acct(3, { w: 40, f: 20 })], 1, { models: OPUS });
   check("na troca, prefere conta com Fable disponível", d.action === "switch" && d.to === 3, d.text);
   d = run([acct(1, { w: 85 }), acct(2, { w: 5, f: 97 }), acct(3, { w: 40, f: 20 })], 1, { models: OPUS, r: { preferModel: "" } });
@@ -249,6 +253,36 @@ function partI() {
   } finally {
     fs.readFileSync = origRead;
   }
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// ------------------------------------------------------------ parte C: preparar o Claude Code
+function partC() {
+  console.log("\n# C. Preparar o Claude Code para quando o Fable acabar (arquivos temporários)");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-cc-"));
+  const f = (n) => path.join(dir, n, "settings.json");
+  // 1) sem arquivo
+  let r = T.prepareClaudeCode(f("a"));
+  let d = JSON.parse(fs.readFileSync(f("a"), "utf8"));
+  check("sem arquivo: cria com Opus de padrão e esforço do Opus", r.ok && d.model === "opus" && d.modelSettings["claude-opus-5-5"].effortLevel === "xhigh");
+  // 2) padrão no Fable, outras chaves que não podem sumir
+  fs.mkdirSync(path.join(dir, "b"));
+  fs.writeFileSync(f("b"), JSON.stringify({ model: "claude-fable-5-2", effortLevel: "high", permissions: { allow: ["Bash(ls)"] }, modelSettings: { "claude-fable-5-2": { effortLevel: "high" }, "claude-opus-5-5": { autoCompactWindow: 200000 } } }));
+  check("antes: não está pronto", T.claudeCodeStatus(f("b")).ready === false);
+  r = T.prepareClaudeCode(f("b"));
+  d = JSON.parse(fs.readFileSync(f("b"), "utf8"));
+  check("Fable de padrão → Opus de padrão, Opus no mesmo esforço do Fable", r.ok && d.model === "opus" && d.modelSettings["claude-opus-5-5"].effortLevel === "high", r.changes.join("; "));
+  check("mantém o resto do arquivo", d.permissions.allow[0] === "Bash(ls)" && d.modelSettings["claude-opus-5-5"].autoCompactWindow === 200000 && d.effortLevel === "high");
+  check("depois: pronto", T.claudeCodeStatus(f("b")).ready === true);
+  // 3) já pronto: não mexe
+  const before = fs.readFileSync(f("b"), "utf8");
+  r = T.prepareClaudeCode(f("b"));
+  check("já pronto: não muda nada", r.ok && r.changes.length === 0 && fs.readFileSync(f("b"), "utf8") === before);
+  // 4) arquivo corrompido: não grava
+  fs.mkdirSync(path.join(dir, "c"));
+  fs.writeFileSync(f("c"), "{ isto não é json");
+  r = T.prepareClaudeCode(f("c"));
+  check("arquivo corrompido: não grava e explica", !r.ok && fs.readFileSync(f("c"), "utf8") === "{ isto não é json", r.error || "");
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
@@ -376,6 +410,8 @@ async function partB() {
   check("preferência pelo Fable ligada", st.rules.preferModel === "Fable");
   check("modelo em uso detectado", st.modelsInUse.length > 0, st.modelsInUse.map((m) => m.label).join(", "));
   check("avisos 10 pontos antes da troca", st.alerts.weeklyPct === 70 && st.alerts.modelPct === 85 && st.alerts.fiveHourPct === 80);
+  check("padrão: quando o Fable acaba, segue na mesma conta", st.rules.onModelLimit === "sameAccount");
+  check("Claude Code deste Mac já está pronto (Opus 5.5 no mesmo esforço do Fable)", !!st.claudeCode && st.claudeCode.ready === true, JSON.stringify(st.claudeCode));
 
   console.log("\n# B4. Simulação (não troca)");
   const before = JSON.parse(cswap("list", "--json")).activeAccountNumber;
@@ -399,11 +435,13 @@ async function partB() {
   check("regras restauradas", lastState().rules.weeklyPct === 80 && lastState().rules.preferModel === "Fable");
 
   console.log("\n# B7. Alertas (chegou a X% → avisar)");
+  const nWarnBefore = notifications.filter((n) => n[0] === "warn").length; // avisos reais (uso alto) não contam
   await sendAndWait({ type: "saveRules", rules: st.rules, alerts: { ...st.alerts, fiveHourPct: 1, weeklyPct: 1, modelPct: 1 } }, 200);
   await commands["swapPlus.refreshStatus"]();
-  for (let i = 0; i < 40 && notifications.filter((n) => n[0] === "warn").length === 0; i++) await sleep(250);
+  for (let i = 0; i < 40 && notifications.filter((n) => n[0] === "warn").length === nWarnBefore; i++) await sleep(250);
   await sleep(1000); // os avisos chegam um depois do outro
-  const warns = notifications.filter((n) => n[0] === "warn").map((n) => n[1]);
+  const warns = notifications.filter((n) => n[0] === "warn").slice(nWarnBefore).map((n) => n[1]);
+  if (process.env.SWAP_PLUS_DEBUG) warns.forEach((w) => console.log("     [aviso] " + redact(w)));
   const expected = [u.fiveHour && u.fiveHour.pct >= 1, u.sevenDay && u.sevenDay.pct >= 1, ...(u.scoped || []).map((s) => s.pct >= 1)].filter(Boolean).length;
   check("alerta dispara ao cruzar a linha", warns.length === expected, `${warns.length} de ${expected}`);
   const n0 = notifications.length;
@@ -596,7 +634,18 @@ async function partUpdates(context) {
       return r.resources.core.remaining;
     } catch { return null; }
   };
+  const https = require("https");
+  let apiCalls = 0;
+  const count = (orig) => function (url, ...rest) {
+    const host = typeof url === "string" ? new URL(url).host : (url && (url.host || url.hostname)) || "";
+    if (/^api\.github\.com/.test(host)) apiCalls++;
+    return orig.call(this, url, ...rest);
+  };
+  const origGet = https.get, origReq = https.request;
+  https.get = count(origGet);
+  https.request = count(origReq);
   const before = await remaining();
+  apiCalls = 0; // a própria consulta do limite não conta
   if (before === 0) {
     const r0 = await T.getUpdater().check({ reason: "manual" });
     check("limite do GitHub estourado: mensagem clara, sem “403”", r0.error === U.RATE_LIMIT_MSG, r0.error || "");
@@ -604,14 +653,17 @@ async function partUpdates(context) {
     return;
   }
   const res = await T.getUpdater().check({ reason: "manual" });
-  const mid = await remaining();
   const res2 = await T.getUpdater().check({ reason: "manual" });
+  const callsByChecks = apiCalls;
+  https.get = origGet;
+  https.request = origReq;
+  const mid = before;
   const after = await remaining();
   console.log(`     motor:    aqui ${res.cli.installed} · fork ${res.cli.latest} · original ${res.cli.upstream}`);
   console.log(`     extensão: aqui ${res.ext.installed} · fork ${res.ext.latest} · original ${res.ext.upstream} (base ${res.ext.base})`);
-  console.log(`     consultas restantes na API: ${before} → ${mid} (1ª verificação) → ${after} (2ª)`);
+  console.log(`     consultas à API feitas pelas 2 verificações: ${callsByChecks} (limite da rede: ${before} → ${after}, inclui outros computadores)`);
   check("consulta o GitHub sem erro", !res.error && !res2.error, res.error || res2.error || "");
-  check("verificações não gastam o limite da API do GitHub", before !== null && after !== null && before - after <= 0, `${before} → ${after}`);
+  check("verificações não usam a API do GitHub (não gastam o limite)", callsByChecks === 0, `${callsByChecks} consulta(s)`);
   check("acha as versões do original também", !!res.cli.upstream && !!res.ext.upstream, `${res.cli.upstream} / ${res.ext.upstream}`);
   check("2ª verificação dá o mesmo resultado", res2.cli.latest === res.cli.latest && res2.ext.latest === res.ext.latest && res2.cli.upstream === res.cli.upstream);
   check("motor desta máquina = última release do fork", !!res.cli.latest && U.cmpVersion(res.cli.latest, res.cli.installed) === 0);
@@ -665,6 +717,7 @@ async function partUpdates(context) {
 (async () => {
   partA();
   partI();
+  partC();
   await partF();
   partU();
   if (UNIT) {

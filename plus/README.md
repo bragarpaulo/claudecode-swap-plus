@@ -19,7 +19,12 @@ Fork pessoal de [smith89k/claude-swap-status](https://github.com/smith89k/claude
   As credenciais vão em texto puro, com permissão só para o seu usuário: transfira e apague.
 - **Troca automática** (começa desligada; liga na tela de Configurações). Padrão:
   - sessão de 5h em **90%**, semanal em **80%**, Fable em **95%**;
-  - o limite do Fable só conta enquanto o Fable está em uso. O modelo em uso é lido das transcrições locais do Claude Code (últimos 30 min);
+  - quando o Fable acaba na conta em uso, o padrão é **seguir na mesma conta com o Opus 5.5**: o Swap Plus não troca de conta;
+    o Claude Code pergunta *"Switch models?"* e oferece o modelo padrão dele. O botão **Deixar pronto** grava em
+    `~/.claude/settings.json` o padrão `opus` e o Opus 5.5 no mesmo esforço do Fable (`modelSettings`). Não dá para trocar
+    sozinho o modelo de uma conversa aberta: o Claude Code lê modelo e esforço só ao começar a sessão e não oferece comando para isso;
+  - opção: trocar de conta para continuar no Fable. Aí o limite do Fable conta enquanto o Fable está em uso (modelo lido das
+    transcrições locais do Claude Code, últimos 30 min);
   - na troca, contas com Fable disponível têm preferência;
   - o modelo continua o mesmo depois da troca. A escolha de modelo fica no Claude Code, não na conta.
 - **Tela de Configurações** (aba dentro do VS Code): sliders de “avisar em X%” e “trocar em Y%” para cada limite; estratégia

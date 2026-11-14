@@ -170,7 +170,8 @@
 
     const group = (title, cur, what, alertKey, alertEnabledKey, switchKey, line, extra) => {
       const mA = { cls: "alert", pct: draft.alerts[alertKey], show: draft.alerts[alertEnabledKey] };
-      const mS = { cls: "switch", pct: draft[switchKey], show: true };
+      const noSwitch = !!(extra && extra.noSwitch);
+      const mS = { cls: "switch", pct: draft[switchKey], show: !noSwitch };
       const tr = track(cur && !cur.idle ? cur.pct : cur && cur.idle ? 0 : null, [mA, mS]);
       paintTrack(tr, draft[switchKey]);
       return h(
@@ -187,13 +188,16 @@
           onToggle: (v) => { draft.alerts[alertEnabledKey] = v; markDirty(); renderRules(); },
           onInput: (v) => { draft.alerts[alertKey] = v; moveMark(mA, v); markDirty(); },
         }),
-        sliderRow({
-          label: "Trocar de conta quando chegar em",
-          value: draft[switchKey],
-          min: 50, max: 100, step: 1, suffix: "%",
-          hint: (extra && extra.hint) || switchHint,
-          onInput: (v) => { draft[switchKey] = v; moveMark(mS, v); paintTrack(tr, v); markDirty(); },
-        }),
+        extra && extra.before ? extra.before : null,
+        noSwitch
+          ? null
+          : sliderRow({
+              label: "Trocar de conta quando chegar em",
+              value: draft[switchKey],
+              min: 50, max: 100, step: 1, suffix: "%",
+              hint: (extra && extra.hint) || switchHint,
+              onInput: (v) => { draft[switchKey] = v; moveMark(mS, v); paintTrack(tr, v); markDirty(); },
+            }),
         extra && extra.after ? extra.after : null
       );
     };
@@ -214,9 +218,56 @@
         }),
         `Ao trocar, dar preferência a contas com ${name} disponível`
       );
+      const same = draft.onModelLimit !== "switchAccount";
+      const choice = (value, label, desc) =>
+        h(
+          "label",
+          { class: "strategy mini" + (draft.onModelLimit === value || (value === "sameAccount" && same) ? " selected" : "") },
+          h("input", {
+            type: "radio",
+            name: `onModelLimit-${name}`,
+            checked: value === "sameAccount" ? same : !same,
+            onchange: () => { draft.onModelLimit = value; markDirty(); renderRules(); },
+          }),
+          h("div", null, h("div", { class: "name", text: label }), h("div", { class: "desc", text: desc }))
+        );
+      const cc = S.claudeCode || {};
+      const ccBox = same
+        ? h(
+            "div",
+            { class: "ccbox" + (cc.ready ? " ok" : "") },
+            cc.error
+              ? h("span", { text: `Não consegui ler as configurações do Claude Code: ${cc.error}` })
+              : cc.ready
+                ? h("span", null, h("b", { class: "ontext", text: "Claude Code pronto: " }), `quando o ${name} acabar, ele oferece o Opus 5.5${cc.opusEffort ? `, no esforço ${cc.opusEffort} (o mesmo do ${name})` : ""}.`)
+                : h(
+                    "span",
+                    null,
+                    `O Claude Code ainda não está preparado: hoje ele ofereceria ${cc.opusDefault ? "o Opus" : `o modelo padrão (${cc.model || "o do plano"})`}${cc.opusEffort ? ` no esforço ${cc.opusEffort}` : ""}. `,
+                    h("button", { class: "secondary", text: "Deixar pronto", onclick: () => send({ type: "prepareClaudeCode" }) })
+                  ),
+            h("div", {
+              class: "muted small",
+              text: `O Swap Plus não consegue trocar o modelo de uma conversa aberta (o Claude Code não deixa). Quando o ${name} acabar, ele pergunta “Switch models?”: escolha “Switch to Opus 5.5”. Vale para a conversa, na mesma conta. O Swap Plus avisa antes, na linha de aviso acima.`,
+            })
+          )
+        : null;
       box.append(
         group(`Limite semanal do ${name}`, sc, "usado", "modelPct", "modelEnabled", "modelPct", null, {
           badge: h("span", { class: "tag" + (watching ? " on" : ""), text: watching ? "em uso agora" : "não está em uso" }),
+          noSwitch: same,
+          before: h(
+            "div",
+            { class: "onlimit" },
+            h("div", { class: "cap", text: `Quando o ${name} acabar na conta em uso:` }),
+            h(
+              "div",
+              { class: "strategies two" },
+              choice("sameAccount", "Seguir na mesma conta com o Opus 5.5", `A conta não muda. O Claude Code pergunta e você troca para o Opus 5.5 na mesma conversa. Prioriza o ${name} enquanto houver.`),
+              choice("switchAccount", `Trocar de conta para continuar no ${name}`, `O Swap Plus troca para outra conta que ainda tem ${name}, na linha de troca abaixo.`)
+            ),
+            ccBox
+          ),
           hint: watching
             ? `O ${name} está em uso: esta linha vale agora.` + (autoOn ? "" : " (Só troca com a “Troca automática” ligada.)")
             : `Vale quando o ${name} estiver em uso. Agora ele não está, então só a sessão e o semanal decidem.`,
@@ -455,7 +506,11 @@
     $("autoToggle").checked = S.auto.enabled;
     const r = S.rules;
     const st = STRATS.find((s) => s.id === r.strategy);
-    const models = S.modelNames.length ? `, ${S.modelNames.join("/")} ≥ ${fmt(r.modelPct)}% (quando em uso)` : "";
+    const models = !S.modelNames.length
+      ? ""
+      : r.onModelLimit === "switchAccount"
+        ? `, ${S.modelNames.join("/")} ≥ ${fmt(r.modelPct)}% (quando em uso)`
+        : ` · quando o ${S.modelNames.join("/")} acaba, segue na mesma conta com o Opus 5.5`;
     $("autoStatus").replaceChildren(
       h("span", { class: "dot" + (S.auto.enabled ? " on" : "") }),
       S.auto.enabled ? h("b", { class: "ontext", text: "Ligada" }) : h("b", { text: "Desligada" }),

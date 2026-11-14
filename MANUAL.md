@@ -132,6 +132,12 @@ Pronto. Se a troca automática estava ligada no computador principal, ela já ve
 - **Ordem das contas:** em **Configurações → Contas** e na lista da barra, primeiro vêm as contas que participam da
   troca automática (contornadas de verde), de quem renova o semanal antes para quem renova depois; no fim, as que
   não participam, na mesma ordem. Para ordenar à mão, marque **Ordenar pelo número da conta** e use as setas ↑ ↓.
+- **Quando o Fable acaba:** o padrão é **seguir na mesma conta com o Opus 5.5**. O Claude Code pergunta
+  *"You've reached your Fable limit for this week. Switch models?"*: escolha **Switch to Opus 5.5** e a conversa
+  continua na mesma conta, no mesmo esforço. O Swap Plus avisa antes (linha de aviso do Fable) e não troca de
+  conta por causa do Fable. Em **Configurações → Regras → Limite semanal do Fable** dá para escolher o contrário
+  (trocar de conta para continuar no Fable) e, se aparecer **Deixar pronto**, clicar nele uma vez para o Claude
+  Code oferecer o Opus 5.5 no mesmo esforço do Fable.
 - **Ligar ou desligar o modo privado:** **Configurações → Exibição**.
 - **Adicionar uma conta só neste computador:** logue a conta no Claude Code, clique na barra →
   **Adicionar conta…**

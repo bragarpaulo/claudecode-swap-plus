@@ -2,7 +2,7 @@
   "name": "swap-plus",
   "displayName": "Swap Plus",
   "description": "Uso do Claude Code na barra de status (ícone de e-mail, 5h, semanal e Fable) e tela de regras para avisos e troca automática de conta. Usa o CLI swap-plus. Fork pessoal de smith89k/claude-swap-status (MIT).",
-  "version": "1.4.4",
+  "version": "1.5.0",
   "publisher": "paulo-local",
   "license": "MIT",
   "icon": "icon.png",
@@ -166,7 +166,20 @@
           "default": 95,
           "minimum": 50,
           "maximum": 100,
-          "description": "Trocar de conta quando o limite semanal do modelo em uso (ex.: Fable) chegar neste percentual. Só vale enquanto esse modelo estiver em uso."
+          "description": "Com “trocar para outra conta”: trocar de conta quando o limite semanal do modelo em uso (ex.: Fable) chegar neste percentual."
+        },
+        "swapPlus.rules.onModelLimit": {
+          "type": "string",
+          "default": "sameAccount",
+          "enum": [
+            "sameAccount",
+            "switchAccount"
+          ],
+          "enumDescriptions": [
+            "Seguir na mesma conta com outro modelo: o limite do modelo não troca de conta; o Claude Code pergunta “Switch models?” e você escolhe o Opus 5.5.",
+            "Trocar para outra conta que ainda tem o modelo (para continuar no Fable)."
+          ],
+          "description": "O que fazer quando o limite semanal de um modelo (ex.: Fable) acaba na conta em uso."
         },
         "swapPlus.rules.preferModel": {
           "type": "string",

@@ -82,6 +82,8 @@ function rules() {
     cooldownMin: numSetting("rules.cooldownMinutes", 5, 0, 240),
     marginPct: numSetting("rules.marginPct", 5, 0, 30),
     intervalSec: numSetting("rules.intervalSeconds", 60, 15, 3600),
+    // O que fazer quando o limite de um modelo (ex.: Fable) acaba na conta em uso.
+    onModelLimit: cfg().get("rules.onModelLimit") === "switchAccount" ? "switchAccount" : "sameAccount",
   };
 }
 
@@ -380,7 +382,8 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false }
   const active = list.accounts.find((a) => a.number === list.activeAccountNumber);
   if (!active) return { action: "none", kind: "idle", text: "nenhuma conta ativa" };
   const names = scopedNames(list);
-  const watch = watchedModels(modelIds, names);
+  // "Mesma conta": o limite do modelo não troca de conta; o Claude Code pergunta e troca o modelo.
+  const watch = r.onModelLimit === "switchAccount" ? watchedModels(modelIds, names) : [];
   const pref = r.preferModel && names.includes(r.preferModel) ? r.preferModel : null;
 
   const aw = windows(active);
@@ -677,12 +680,96 @@ async function checkAlerts() {
     const text = `Conta ${acc.number} chegou a ${fmtPct(ch.w.pct)} ${ch.label}${r ? ` (renova em ${r})` : ""}`;
     await pushHistory([{ ts: new Date().toISOString(), kind: "alert", text }]);
     postState();
-    const tail = autoEnabled() ? " A troca automática assume quando passar da linha de troca." : "";
+    const isModel = ch.id.startsWith("m:");
+    const tail =
+      isModel && rules().onModelLimit === "sameAccount"
+        ? ` Quando ele acabar, o Claude Code pergunta “Switch models?”: escolha “Switch to ${claudeCodeSwitchTarget()}” para seguir na mesma conta e na mesma sessão.`
+        : autoEnabled()
+          ? " A troca automática assume quando passar da linha de troca."
+          : "";
     vscode.window.showWarningMessage(`Swap Plus: ${text}.${tail}`, "Trocar para a melhor conta", "Configurações").then((choice) => {
       if (choice === "Trocar para a melhor conta") switchBest();
       else if (choice === "Configurações") openSettings();
     });
   }
+}
+
+// ---------------------------------------------------------------- Claude Code: modelo da troca
+
+const OPUS_ID = "claude-opus-5-5";
+const FABLE_ID = "claude-fable-5-2";
+
+function claudeSettingsPath() {
+  return path.join(os.homedir(), ".claude", "settings.json");
+}
+
+/** Lê o settings.json do Claude Code. { data, error } — data = {} se o arquivo não existe. */
+function readClaudeSettings(file = claudeSettingsPath()) {
+  try {
+    const text = fs.readFileSync(file, "utf8");
+    const data = text.trim() ? JSON.parse(text) : {};
+    if (!data || typeof data !== "object" || Array.isArray(data)) return { error: "o arquivo não tem o formato esperado" };
+    return { data };
+  } catch (e) {
+    if (e.code === "ENOENT") return { data: {} };
+    return { error: e.message };
+  }
+}
+
+const isOpus = (m) => typeof m === "string" && /^(opus|claude-opus)/i.test(m.trim());
+
+/**
+ * Como o Claude Code está preparado para quando o Fable acabar. Ele oferece trocar
+ * para o modelo padrão (`model`); com o padrão em Opus, a troca vai para o Opus 5.5,
+ * no esforço definido em modelSettings.
+ */
+function claudeCodeStatus(file) {
+  const r = readClaudeSettings(file);
+  if (r.error) return { error: r.error };
+  const d = r.data;
+  const ms = d.modelSettings || {};
+  const fableEffort = (ms[FABLE_ID] && ms[FABLE_ID].effortLevel) || d.effortLevel || null;
+  const opusEffort = (ms[OPUS_ID] && ms[OPUS_ID].effortLevel) || d.effortLevel || null;
+  const opusDefault = isOpus(d.model);
+  return { model: d.model || null, opusDefault, fableEffort, opusEffort, ready: opusDefault && (!fableEffort || opusEffort === fableEffort) };
+}
+
+function claudeCodeSwitchTarget() {
+  const st = claudeCodeStatus();
+  return st && st.opusDefault ? "Opus 5.5" : "outro modelo";
+}
+
+/**
+ * Deixa o Claude Code pronto: modelo padrão Opus (o que ele oferece quando o Fable
+ * acaba) e o Opus 5.5 no mesmo esforço do Fable. Mexe só nessas chaves e mantém o
+ * resto do arquivo. Vale para as próximas sessões (o Claude Code lê isso ao começar).
+ */
+function prepareClaudeCode(file = claudeSettingsPath()) {
+  const r = readClaudeSettings(file);
+  if (r.error) return { ok: false, error: `não consegui ler ${file}: ${r.error}` };
+  const d = r.data;
+  const changes = [];
+  if (!isOpus(d.model)) {
+    changes.push(`modelo padrão: ${d.model || "(nenhum)"} → opus`);
+    d.model = "opus";
+  }
+  const ms = (d.modelSettings = d.modelSettings && typeof d.modelSettings === "object" ? d.modelSettings : {});
+  const fableEffort = (ms[FABLE_ID] && ms[FABLE_ID].effortLevel) || d.effortLevel || "xhigh";
+  const cur = ms[OPUS_ID] && ms[OPUS_ID].effortLevel;
+  if (cur !== fableEffort) {
+    ms[OPUS_ID] = { ...(ms[OPUS_ID] || {}), effortLevel: fableEffort };
+    changes.push(`esforço do Opus 5.5: ${cur || "(padrão)"} → ${fableEffort}`);
+  }
+  if (!changes.length) return { ok: true, changes };
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.swap-plus-${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(d, null, 2) + "\n");
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+  return { ok: true, changes };
 }
 
 // ---------------------------------------------------------------- troca automática
@@ -1309,6 +1396,7 @@ function buildPayload() {
       history: (extContext.globalState.get(HISTORY_KEY) || []).map((h) => ({ ...h, text: safe(h.text), when: fmtWhen(h.ts) })),
     },
     privacy: priv,
+    claudeCode: claudeCodeStatus(),
     updates: updater ? (() => { const u = updater.summary(); if (u.last) u.last.when = fmtWhen(u.last.ts); return u; })() : null,
     ui: {
       showAccountNumber: !!cfg().get("statusBar.showAccountNumber"),
@@ -1364,6 +1452,7 @@ const RULE_SETTINGS = {
   cooldownMin: "rules.cooldownMinutes",
   marginPct: "rules.marginPct",
   intervalSec: "rules.intervalSeconds",
+  onModelLimit: "rules.onModelLimit",
 };
 
 async function handleMessage(m) {
@@ -1452,6 +1541,14 @@ async function handleMessage(m) {
       return;
     }
 
+    case "prepareClaudeCode": {
+      const res = prepareClaudeCode();
+      postState();
+      if (!res.ok) post({ type: "toast", kind: "error", text: `Claude Code: ${res.error}` });
+      else post({ type: "toast", kind: "info", text: res.changes.length ? `Claude Code pronto: ${res.changes.join("; ")}. Vale para as próximas conversas.` : "O Claude Code já estava pronto." });
+      return;
+    }
+
     case "export":
       await exportAccounts(m.mode === "other" ? "other" : "me");
       return;
@@ -1527,4 +1624,4 @@ function deactivate() {
   }
 }
 
-module.exports = { activate, deactivate, _test: { orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };
+module.exports = { activate, deactivate, _test: { claudeCodeStatus, prepareClaudeCode, orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };

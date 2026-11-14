@@ -378,7 +378,7 @@ async function detectModels(now = Date.now()) {
  *   - "Aproveitar ao máximo" também troca antes da linha, para uma conta cuja
  *     cota semanal zera logo e ainda está sobrando.
  */
-function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false }) {
+function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, limitHit = null }) {
   const active = list.accounts.find((a) => a.number === list.activeAccountNumber);
   if (!active) return { action: "none", kind: "idle", text: "nenhuma conta ativa" };
   const names = scopedNames(list);
@@ -387,7 +387,8 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false }
   const pref = r.preferModel && names.includes(r.preferModel) ? r.preferModel : null;
 
   const aw = windows(active);
-  if (!aw || aw.stale) return { action: "none", kind: "idle", text: "uso da conta ativa desatualizado; sem decisão por enquanto" };
+  // limitHit: o Claude Code acabou de registrar "You've hit your limit" — vale mais que o dado de uso.
+  if (!limitHit && (!aw || aw.stale)) return { action: "none", kind: "idle", text: "uso da conta ativa desatualizado; sem decisão por enquanto" };
 
   const rowsOf = (w, l) => {
     const rows = [{ label: "sessão", pct: w.session.pct, line: l.session }];
@@ -399,17 +400,17 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false }
     return rows;
   };
 
-  const activeRows = rowsOf(aw, linesFor(active, r, records));
-  const over = activeRows.filter((x) => x.pct >= x.line);
-  const activeReset = aw.weekly && aw.weekly.resetsAt ? Date.parse(aw.weekly.resetsAt) : Infinity;
-  const activeHeadroom = Math.min(...activeRows.map((x) => x.line - x.pct));
+  const activeRows = aw ? rowsOf(aw, linesFor(active, r, records)) : [];
+  const over = limitHit ? [{ label: limitHit, pct: 100, line: 100, hit: true }] : activeRows.filter((x) => x.pct >= x.line);
+  const activeReset = aw && aw.weekly && aw.weekly.resetsAt ? Date.parse(aw.weekly.resetsAt) : Infinity;
+  const activeHeadroom = activeRows.length ? Math.min(...activeRows.map((x) => x.line - x.pct)) : -Infinity;
 
   const cands = [];
   for (const acc of list.accounts) {
     if (acc.number === active.number) continue;
     if (recordOf(records, acc.number).disabled) continue;
     const w = windows(acc);
-    if (!w || w.stale) continue;
+    if (!w || (w.stale && !limitHit)) continue;
     const l = linesFor(acc, r, records);
     const rows = rowsOf(w, l);
     let prefOk = true;
@@ -426,6 +427,7 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false }
       resetTs: w.weekly && w.weekly.resetsAt ? Date.parse(w.weekly.resetsAt) : Infinity,
       unused: w.weekly ? 100 - w.weekly.pct : 100,
       priority: Number(recordOf(records, acc.number).priority) || 0,
+      stale: !!w.stale,
     });
   }
 
@@ -437,16 +439,22 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false }
   const rank = (arr) =>
     [...arr].sort((x, y) => Number(y.prefOk) - Number(x.prefOk) || byStrategy[r.strategy](x, y) || x.acc.number - y.acc.number);
   const pick = () => {
-    const strict = rank(cands.filter((c) => c.strictOk));
-    return strict.length ? strict[0] : rank(cands.filter((c) => c.looseOk))[0];
+    // Dados recentes primeiro; com o limite estourado, vale também conta com dado antigo.
+    for (const pool of [cands.filter((c) => !c.stale), cands.filter((c) => c.stale)]) {
+      const strict = rank(pool.filter((c) => c.strictOk));
+      if (strict.length) return strict[0];
+      const loose = rank(pool.filter((c) => c.looseOk))[0];
+      if (loose) return loose;
+    }
+    return undefined;
   };
   const go = (t, reason) => ({ action: "switch", kind: "switch", from: active.number, to: t.acc.number, reason, text: `da conta ${active.number} para a conta ${t.acc.number}: ${reason}` });
 
   if (over.length) {
-    const reason = over.map((o) => `${o.label} em ${fmtPct(o.pct)} (linha ${fmtPct(o.line)})`).join(", ");
+    const reason = limitHit ? `a conta ${active.number} bateu o ${limitHit}` : over.map((o) => `${o.label} em ${fmtPct(o.pct)} (linha ${fmtPct(o.line)})`).join(", ");
     const t = pick();
-    if (!t) return { action: "none", kind: "blocked", text: `conta ${active.number} com ${reason}, mas nenhuma outra conta tem folga` };
-    return go(t, reason);
+    if (!t) return { action: "none", kind: "blocked", text: limitHit ? `${reason}, mas nenhuma outra conta tem folga` : `conta ${active.number} com ${reason}, mas nenhuma outra conta tem folga` };
+    return { ...go(t, reason), atLimit: !!limitHit || over.some((o) => o.pct >= 100) };
   }
 
   if (force) {
@@ -806,9 +814,34 @@ function setupAuto() {
     } catch (e) {
       console.error("[swap-plus] auto tick", e);
     }
-    if (gen === autoGen && autoEnabled()) autoTimer = setTimeout(loop, rules().intervalSec * 1000);
+    if (gen === autoGen && autoEnabled()) autoTimer = setTimeout(loop, effectiveIntervalSec() * 1000);
   };
   autoTimer = setTimeout(loop, 5000);
+}
+
+const NEAR_LINE_PCT = 15; // mesma faixa em que o motor passa a atualizar o uso a cada minuto
+const NEAR_LINE_INTERVAL_S = 30;
+
+/** Conta em uso perto de alguma linha de troca: verifica a cada 30 s (o dado vem do cache do motor, sem gastar cota). */
+function nearLine() {
+  const list = state.list;
+  const acc = list && list.accounts.find((a) => a.number === list.activeAccountNumber);
+  const w = acc && windows(acc);
+  if (!w) return false;
+  const r = rules();
+  const l = linesFor(acc, r, state.records);
+  const rows = [[w.session.pct, l.session]];
+  if (w.weekly) rows.push([w.weekly.pct, l.weekly]);
+  if (r.onModelLimit === "switchAccount") {
+    const watch = watchedModels(state.models.map((m) => m.id), scopedNames(list));
+    for (const m of w.models) if (watch.includes(m.name)) rows.push([m.pct, l.model]);
+  }
+  return rows.some(([pct, line]) => pct >= line - NEAR_LINE_PCT);
+}
+
+function effectiveIntervalSec() {
+  const base = rules().intervalSec;
+  return nearLine() ? Math.min(base, NEAR_LINE_INTERVAL_S) : base;
 }
 
 async function pushHistory(entries) {
@@ -829,7 +862,7 @@ async function execSwitch(d) {
 
 async function autoTick({ manual = false, dryRun = false } = {}) {
   const r = rules();
-  if (!manual && !claimSlot(r.intervalSec * 1000)) return null;
+  if (!manual && !claimSlot(effectiveIntervalSec() * 1000)) return null;
   await refresh();
   const ts = new Date().toISOString();
   let main;
@@ -850,7 +883,7 @@ async function autoTick({ manual = false, dryRun = false } = {}) {
       const res = await execSwitch(d);
       if (res.ok) {
         await extContext.globalState.update(LAST_SWITCH_KEY, Date.now());
-        main = { ts, kind: "switch", text: `Trocou ${d.text}` };
+        main = { ts, kind: "switch", text: `Trocou ${d.text}`, atLimit: !!d.atLimit };
       } else {
         main = { ts, kind: "error", text: `Falha ao trocar para a conta ${d.to}: ${res.error}` };
       }
@@ -865,7 +898,7 @@ async function autoTick({ manual = false, dryRun = false } = {}) {
   }
   if (main.kind === "switch") {
     const model = state.models[0];
-    vscode.window.showInformationMessage(`Swap Plus: ${main.text}.${model ? ` O Claude Code continua no ${model.label}.` : ""}`);
+    vscode.window.showInformationMessage(`Swap Plus: ${main.text}.${model ? ` O Claude Code continua no ${model.label}.` : ""}${main.atLimit ? RESUME_TIP : ""}`);
   } else if (main.kind === "blocked" && !manual && !dryRun && Date.now() - lastBlockedWarnAt > 60 * 60 * 1000) {
     lastBlockedWarnAt = Date.now();
     vscode.window.showWarningMessage(`Swap Plus: ${main.text}.`);
@@ -875,6 +908,201 @@ async function autoTick({ manual = false, dryRun = false } = {}) {
   render();
   postState();
   return main;
+}
+
+// ---------------------------------------------------------------- limite estourado: reação imediata
+
+const RESUME_TIP = " Se o Claude Code parou com “You've hit your limit”, mande uma mensagem (por exemplo, “continue”) para ele seguir na conta nova.";
+const LIMIT_KEY = "swapPlus.lastLimitHit";
+const LIMIT_LOCK = path.join(os.tmpdir(), "swap-plus-limit.lock");
+const LIMIT_SCAN_S = 15;
+let limitTimer = null;
+let limitRoot = path.join(os.homedir(), ".claude", "projects");
+
+function limitLabel(text) {
+  const t = String(text || "");
+  if (/5-hour|five.?hour|session/i.test(t)) return "limite da sessão de 5h";
+  if (/weekly|week|seven.?day/i.test(t)) return /fable|opus|sonnet/i.test(t) ? null : "limite semanal";
+  if (/fable|opus|sonnet/i.test(t)) return null; // limite de um modelo: quem resolve é a pergunta do Claude Code
+  return "limite de uso";
+}
+
+/**
+ * Procura, no fim das transcrições alteradas desde `sinceMs`, o erro que o Claude
+ * Code grava quando a conta bate o limite: mensagem marcada isApiErrorMessage com
+ * error "rate_limit". Texto de conversa comum que cite o erro não conta.
+ */
+async function scanLimitErrors(sinceMs, root = limitRoot) {
+  let latest = null;
+  const files = [];
+  let dirs = [];
+  try {
+    dirs = await fs.promises.readdir(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue;
+    const dir = path.join(root, d.name);
+    let entries = [];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (e.isFile() && e.name.endsWith(".jsonl")) files.push(path.join(dir, e.name));
+      else if (e.isDirectory()) {
+        const sub = path.join(dir, e.name, "subagents");
+        try {
+          for (const f of await fs.promises.readdir(sub)) if (f.endsWith(".jsonl")) files.push(path.join(sub, f));
+        } catch {}
+      }
+    }
+  }
+  for (const f of files) {
+    let st;
+    try {
+      st = await fs.promises.stat(f);
+    } catch {
+      continue;
+    }
+    if (st.mtimeMs <= sinceMs) continue;
+    let tail;
+    try {
+      tail = await readTail(f, 128 * 1024);
+    } catch {
+      continue;
+    }
+    for (const line of tail.split("\n")) {
+      if (!line.includes('"isApiErrorMessage":true') || !line.includes('"rate_limit"')) continue;
+      let d;
+      try {
+        d = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (d.isApiErrorMessage !== true || d.error !== "rate_limit") continue;
+      const ts = Date.parse(d.timestamp) || st.mtimeMs;
+      if (ts <= sinceMs) continue;
+      const c = d.message && d.message.content;
+      const text = Array.isArray(c) ? c.map((x) => (x && x.text) || "").join(" ") : String(c || "");
+      if (!latest || ts > latest.ts) latest = { ts, text, file: f };
+    }
+  }
+  return latest;
+}
+
+/** Trava entre janelas: só uma reage a cada erro. */
+function claimLimit(ts) {
+  try {
+    let last = 0;
+    try {
+      last = Number(fs.readFileSync(LIMIT_LOCK, "utf8")) || 0;
+    } catch {}
+    if (last >= ts) return false;
+    fs.writeFileSync(LIMIT_LOCK, String(ts));
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+async function checkLimitErrors() {
+  const now = Date.now();
+  const since = Math.max(extContext.globalState.get(LIMIT_KEY) || 0, extContext.globalState.get(LAST_SWITCH_KEY) || 0, now - 10 * 60 * 1000);
+  const hit = await scanLimitErrors(since);
+  if (!hit) return null;
+  await extContext.globalState.update(LIMIT_KEY, hit.ts);
+  const label = limitLabel(hit.text);
+  if (!label || !claimLimit(hit.ts)) return null;
+  return handleLimitHit(label);
+}
+
+async function handleLimitHit(label) {
+  await refresh();
+  const list = state.list;
+  if (!list) return null;
+  const from = list.activeAccountNumber;
+  const ts = new Date().toISOString();
+  if (!autoEnabled()) {
+    const text = `A conta ${from} bateu o ${label}.`;
+    await pushHistory([{ ts, kind: "alert", text }]);
+    vscode.window.showWarningMessage(`Swap Plus: ${text} A troca automática está desligada.`, "Trocar para a melhor conta").then((c) => c && switchBest());
+    postState();
+    return { kind: "alert" };
+  }
+  const d = decide({ list, records: state.records, r: rules(), modelIds: state.models.map((m) => m.id), now: Date.now(), limitHit: label });
+  let main;
+  if (d.action === "switch") {
+    const res = await execSwitch(d);
+    if (res.ok) {
+      await extContext.globalState.update(LAST_SWITCH_KEY, Date.now());
+      main = { ts, kind: "switch", text: `Trocou na hora ${d.text}`, atLimit: true };
+      vscode.window.showInformationMessage(`Swap Plus: ${main.text}.${RESUME_TIP}`);
+    } else {
+      main = { ts, kind: "error", text: `A conta ${from} bateu o ${label}, mas a troca falhou: ${res.error}` };
+      vscode.window.showErrorMessage(`Swap Plus: ${main.text}`);
+    }
+  } else {
+    main = { ts, kind: "blocked", text: d.text.charAt(0).toUpperCase() + d.text.slice(1) };
+    vscode.window.showWarningMessage(`Swap Plus: ${main.text}.`);
+  }
+  await extContext.globalState.update(LAST_TICK_KEY, main);
+  await pushHistory([main]);
+  render();
+  postState();
+  return main;
+}
+
+/**
+ * Atualiza a barra e a tela no instante em que a conta em uso muda — por esta
+ * janela, por outra janela do VS Code ou pelo terminal — sem esperar o próximo ciclo.
+ */
+function watchAccounts() {
+  const dir = path.join(os.homedir(), ".claude-swap-backup");
+  let t = null;
+  try {
+    const w = fs.watch(dir, (_ev, name) => {
+      if (name && !String(name).startsWith("sequence.json")) return;
+      clearTimeout(t);
+      t = setTimeout(() => refresh().catch(() => {}), 700);
+    });
+    extContext.subscriptions.push({ dispose: () => w.close() });
+  } catch {}
+}
+
+function setupLimitWatch() {
+  if (limitTimer) clearInterval(limitTimer);
+  limitTimer = setInterval(() => checkLimitErrors().catch((e) => console.error("[swap-plus] limit watch", e)), LIMIT_SCAN_S * 1000);
+}
+
+// ---------------------------------------------------------------- linhas do motor (ritmo de atualização do uso)
+
+/**
+ * O motor atualiza o uso mais rápido (a cada minuto) quando a conta em uso chega a
+ * 15 pontos da linha de troca, mas usa as linhas das configurações DELE. Aqui elas
+ * são alinhadas às regras do Swap Plus.
+ */
+async function syncMotorLines() {
+  const r = rules();
+  const want = {
+    "autoswitch.threshold": Math.min(99.9, r.sessionPct),
+    "autoswitch.weeklyThreshold": Math.min(99.9, r.weeklyPct),
+    "autoswitch.model": r.onModelLimit === "switchAccount" && r.preferModel ? r.preferModel : null,
+  };
+  const c = parseJson((await runCswap(["config", "--json"])).stdout);
+  if (!c || !Array.isArray(c.settings)) return false;
+  const cur = Object.fromEntries(c.settings.map((x) => [x.key, x]));
+  for (const [k, v] of Object.entries(want)) {
+    const now = cur[k] ? cur[k].value : undefined;
+    if (v === null) {
+      if (cur[k] && cur[k].isSet) await runCswap(["config", "unset", k]);
+    } else if (Number(now) !== Number(v) && String(now) !== String(v)) {
+      await runCswap(["config", "set", k, String(v)]);
+    }
+  }
+  return true;
 }
 
 async function switchBest() {
@@ -1490,6 +1718,7 @@ async function handleMessage(m) {
         }
       }
       setupAuto();
+      syncMotorLines().catch(() => {});
       render();
       postState();
       post({ type: "toast", kind: "info", text: "Regras salvas." });
@@ -1612,16 +1841,21 @@ function activate(context) {
 
   updater = createUpdater({ context, cfg, cliVersion, onCliUpdated: refresh, pushHistory, postState });
   updater.start();
+
+  setupLimitWatch();
+  watchAccounts();
+  setTimeout(() => syncMotorLines().catch(() => {}), 8000);
 }
 
 function deactivate() {
   autoGen++;
   if (pollTimer) clearInterval(pollTimer);
   if (autoTimer) clearTimeout(autoTimer);
+  if (limitTimer) clearInterval(limitTimer);
   if (updater) {
     updater.stop();
     return updater.onClose().catch(() => {}); // verificação ao fechar o VS Code
   }
 }
 
-module.exports = { activate, deactivate, _test: { claudeCodeStatus, prepareClaudeCode, orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };
+module.exports = { activate, deactivate, _test: { scanLimitErrors, checkLimitErrors, limitLabel, syncMotorLines, nearLine, setLimitRoot: (r) => (limitRoot = r), claudeCodeStatus, prepareClaudeCode, orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };

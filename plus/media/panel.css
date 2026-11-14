@@ -341,3 +341,6 @@ input.rotbox { accent-color: var(--green); }
 .ccbox { margin-top: 8px; padding: 8px 12px; border: 1px solid var(--warn); border-radius: var(--radius); display: flex; flex-direction: column; gap: 4px; }
 .ccbox.ok { border-color: var(--green); }
 .ccbox button { margin-left: 6px; }
+
+/* ---------- v1.6: conta em uso em destaque */
+.inuse { margin: 10px 0 8px; padding: 8px 12px; border: 1px solid var(--green); border-radius: var(--radius); }

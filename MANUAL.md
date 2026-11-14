@@ -132,6 +132,9 @@ Pronto. Se a troca automática estava ligada no computador principal, ela já ve
 - **Ordem das contas:** em **Configurações → Contas** e na lista da barra, primeiro vêm as contas que participam da
   troca automática (contornadas de verde), de quem renova o semanal antes para quem renova depois; no fim, as que
   não participam, na mesma ordem. Para ordenar à mão, marque **Ordenar pelo número da conta** e use as setas ↑ ↓.
+- **Se a conta bater o limite antes da troca** (por exemplo, com vários agentes rodando ao mesmo tempo): o Swap Plus
+  percebe na hora, pelo aviso que o próprio Claude Code grava, e troca de conta. O Claude Code pode ficar parado
+  esperando: **mande uma mensagem (por exemplo, "continue")** e ele segue na conta nova.
 - **Quando o Fable acaba:** o padrão é **seguir na mesma conta com o Opus 5.5**. O Claude Code pergunta
   *"You've reached your Fable limit for this week. Switch models?"*: escolha **Switch to Opus 5.5** e a conversa
   continua na mesma conta, no mesmo esforço. O Swap Plus avisa antes (linha de aviso do Fable) e não troca de
@@ -165,6 +168,7 @@ trava:
 | Windows: o comando da Etapa 2 dá erro de "execução de scripts" | Rode antes: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` e tente de novo. |
 | **Importar contas** dá erro | A mensagem diz o motivo. Os mais comuns: escolher o arquivo `._…` do pen drive (escolha o sem `._`), arquivo vazio porque ainda está só na nuvem (baixe ou copie para outra pasta) ou arquivo que chegou como `.zip` (descompacte). Se nada disso, gere o arquivo de novo (Etapa 1). |
 | Windows: erro com **pasta de rede** ou `ERR_UNC_HOST_NOT_ALLOWED` | O arquivo está numa pasta de rede (caminho começando com `\\`, como a pasta do Mac compartilhada). A partir da versão 1.4.2 a extensão copia o arquivo sozinha; se ainda der erro, copie o arquivo para a Área de Trabalho do Windows e importe de lá. |
+| A extensão não se atualiza sozinha (a tela continua igual depois de uma versão nova) | Rode o comando da Etapa 2 de novo: ele instala a versão mais nova por cima, sem mexer nas contas. Depois recarregue o VS Code. |
 | A barra não aparece depois de instalar | Recarregue o VS Code (`Cmd/Ctrl + Shift + P` → **Developer: Reload Window**). |
 
 ## Remover

@@ -481,7 +481,17 @@
         : "Ordem automática: primeiro as contas que participam da troca automática, de quem renova o semanal antes para quem renova depois; no fim, as que não participam, na mesma ordem.",
     });
     const grid = h("div", { class: "accounts" }, list.length ? list.map((a, i) => accountCard(a, i, list.length)) : h("p", { class: "muted", text: "Nenhuma conta cadastrada ainda." }));
-    $("accounts").replaceWith(h("div", { id: "accounts" }, sortBox, hint, grid));
+    const act = S.accounts.find((a) => a.active);
+    const inUse = h(
+      "div",
+      { class: "inuse" },
+      h("span", { class: "dot on" }),
+      "Em uso agora: ",
+      h("b", { text: act ? `Conta ${act.number}${!S.privacy && act.email ? ` — ${act.email}` : ""}` : "nenhuma conta" }),
+      act && act.session ? ` · sessão ${fmt(act.session.pct)}%` : "",
+      act && act.weekly ? ` · semanal ${fmt(act.weekly.pct)}%` : ""
+    );
+    $("accounts").replaceWith(h("div", { id: "accounts" }, inUse, sortBox, hint, grid));
     wireAccountHold();
   }
 

@@ -17,7 +17,15 @@ Fork pessoal de [smith89k/claude-swap-status](https://github.com/smith89k/claude
   e **Importar contas…**. O arquivo `.cswap` leva as contas e também as regras de troca, os avisos, a exibição, a troca automática
   ligada/desligada e os ajustes de cada conta (rotação, linha própria, prioridade). Não leva o caminho do executável nem o histórico.
   As credenciais vão em texto puro, com permissão só para o seu usuário: transfira e apague.
-- **Troca automática** (começa desligada; liga na tela de Configurações). Padrão:
+- **Troca automática** (começa desligada; liga na tela de Configurações). Como ela fica sabendo:
+  - pelo uso que o motor consulta na Anthropic, que pode consultar cerca de 30 vezes por hora (por isso cada conta é
+    atualizada de alguns em alguns minutos); perto de uma linha de troca o motor passa a atualizar a cada minuto e a
+    extensão verifica a cada 30 s. As linhas do motor são alinhadas às do Swap Plus automaticamente;
+  - **na hora**, pelo erro “You've hit your limit” que o Claude Code grava na transcrição (mensagem de erro de API
+    `rate_limit`): se a conta bater o limite antes da troca, ela troca em até 15 s. O Claude Code pode ficar esperando;
+    uma mensagem (“continue”) faz ele seguir na conta nova.
+
+  Padrão:
   - sessão de 5h em **90%**, semanal em **80%**, Fable em **95%**;
   - quando o Fable acaba na conta em uso, o padrão é **seguir na mesma conta com o Opus 5.5**: o Swap Plus não troca de conta;
     o Claude Code pergunta *"Switch models?"* e oferece o modelo padrão dele. O botão **Deixar pronto** grava em

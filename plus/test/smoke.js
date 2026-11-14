@@ -140,7 +140,7 @@ const R = { sessionPct: 90, weeklyPct: 80, modelPct: 95, preferModel: "Fable", s
 const OPUS = ["claude-opus-5-5"];
 const FABLE = ["claude-fable-5-2"];
 const run = (accounts, active, opts = {}) =>
-  T.decide({ list: { activeAccountNumber: active, accounts }, records: opts.records || {}, r: { ...R, ...(opts.r || {}) }, modelIds: opts.models || OPUS, now: Date.now(), lastSwitchAt: opts.lastSwitchAt || 0, force: opts.force });
+  T.decide({ list: { activeAccountNumber: active, accounts }, records: opts.records || {}, r: { ...R, ...(opts.r || {}) }, modelIds: opts.models || OPUS, now: Date.now(), lastSwitchAt: opts.lastSwitchAt || 0, force: opts.force, limitHit: opts.limitHit || null });
 
 function partA() {
   console.log("\n# A. Regra de decisão (contas simuladas)");
@@ -190,6 +190,11 @@ function partA() {
     { 3: { disabled: true }, 6: { disabled: true } }
   ).map((a) => a.number);
   check("ordem: participantes por renovação, depois os de fora", ord.join(",") === "2,4,5,1,3,6", ord.join(","));
+  d = run([acct(1, { s: 70, w: 20, age: 3600 }), acct(2, { w: 10, age: 3600 }), acct(3, { w: 40, age: 3600 })], 1, { r: { onModelLimit: "sameAccount" }, limitHit: "limite da sessão de 5h" });
+  check("limite estourado agora: troca mesmo com dados antigos", d.action === "switch" && d.to === 2 && d.atLimit === true, d.text);
+  d = run([acct(1, { s: 70, w: 20 }), acct(2, { w: 95 })], 1, { limitHit: "limite da sessão de 5h" });
+  check("limite estourado e nenhuma conta com folga → avisa, não troca", d.action === "none" && d.kind === "blocked", d.text);
+  check("rótulos do erro", T.limitLabel("You've hit your 5-hour limit · resets 10:20pm") === "limite da sessão de 5h" && T.limitLabel("You've hit your weekly limit") === "limite semanal" && T.limitLabel("You've reached your Fable limit for this week") === null);
   check("nome do modelo: claude-fable-5-2 → Fable 5.2", T.modelLabel("claude-fable-5-2") === "Fable 5.2");
   check("limite do Fable reconhecido pelo id do modelo", T.watchedModels(["claude-fable-5-2"], ["Fable"]).join() === "Fable");
   check("Opus não liga o limite do Fable", T.watchedModels(["claude-opus-5-5"], ["Fable"]).length === 0);
@@ -254,6 +259,32 @@ function partI() {
     fs.readFileSync = origRead;
   }
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// ------------------------------------------------------------ parte L: erro de limite nas transcrições
+async function partL() {
+  console.log("\n# L. Erro de limite nas transcrições (arquivos temporários)");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-tr-"));
+  fs.mkdirSync(path.join(root, "proj", "sess", "subagents"), { recursive: true });
+  const now = Date.now();
+  const iso = (ms) => new Date(ms).toISOString();
+  const apiErr = (ms, text) => JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", timestamp: iso(ms), message: { model: "<synthetic>", content: [{ type: "text", text }] } });
+  const chat = (ms, text) => JSON.stringify({ type: "assistant", timestamp: iso(ms), message: { model: "claude-fable-5-2", content: [{ type: "text", text }] } });
+  const f = path.join(root, "proj", "conversa.jsonl");
+  fs.writeFileSync(f, [chat(now - 5000, "o print mostra You've hit your 5-hour limit · resets 10:20pm"), JSON.stringify({ type: "user", isApiErrorMessage: true, error: "rate_limit", timestamp: iso(now - 4000) }).replace('"isApiErrorMessage":true,', '')].join("\n") + "\n");
+  let hit = await T.scanLimitErrors(now - 60000, root);
+  check("texto de conversa citando o erro não conta", hit === null, hit ? hit.text : "");
+  fs.appendFileSync(f, apiErr(now - 120000 * 10, "You've hit your 5-hour limit · resets 8:00pm") + "\n");
+  hit = await T.scanLimitErrors(now - 60000, root);
+  check("erro antigo (antes do período) não conta", hit === null);
+  fs.appendFileSync(f, apiErr(now - 2000, "You've hit your 5-hour limit · resets 10:20pm (America/Sao_Paulo)") + "\n");
+  hit = await T.scanLimitErrors(now - 60000, root);
+  check("erro de limite do Claude Code é detectado", !!hit && /5-hour/.test(hit.text) && T.limitLabel(hit.text) === "limite da sessão de 5h");
+  const sub = path.join(root, "proj", "sess", "subagents", "agente.jsonl");
+  fs.writeFileSync(sub, apiErr(now - 1000, "You've hit your weekly limit") + "\n");
+  hit = await T.scanLimitErrors(now - 60000, root);
+  check("erro num subagente também é detectado", !!hit && hit.file === sub && T.limitLabel(hit.text) === "limite semanal");
+  fs.rmSync(root, { recursive: true, force: true });
 }
 
 // ------------------------------------------------------------ parte C: preparar o Claude Code
@@ -607,6 +638,40 @@ async function partB() {
   }
   check("configurações de teste desfeitas", lastState().privacy === false);
 
+  console.log("\n# B13. Limite estourado → troca na hora (motor de mentira: nada é trocado de verdade)");
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-hit-"));
+    fs.mkdirSync(path.join(root, "proj"));
+    const log13 = path.join(SCRATCH, "fake13.log");
+    const fake13 = path.join(SCRATCH, "fake13");
+    fs.writeFileSync(fake13, `#!/bin/bash\ncase "$1" in list|--version|config) exec "${cswapBin}" "$@";; esac\necho "$@" >> "${log13}"\nexit 0\n`, { mode: 0o755 });
+    const cfg13 = vscodeMock.workspace.getConfiguration("swapPlus");
+    const nNotes = notifications.length;
+    try {
+      await cfg13.update("executablePath", fake13);
+      await cfg13.update("autoSwitch.enabled", true);
+      await sleep(300);
+      globalState.set("swapPlus.lastLimitHit", 0);
+      globalState.set("swapPlus.lastAutoSwitch", 0);
+      try { fs.unlinkSync(path.join(os.tmpdir(), "swap-plus-limit.lock")); } catch {}
+      T.setLimitRoot(root);
+      fs.writeFileSync(path.join(root, "proj", "c.jsonl"), JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", timestamp: new Date().toISOString(), message: { content: [{ type: "text", text: "You've hit your 5-hour limit · resets 10:20pm" }] } }) + "\n");
+      const r13 = await T.checkLimitErrors();
+      const logged = fs.existsSync(log13) ? fs.readFileSync(log13, "utf8").trim() : "";
+      check("detecta o erro e manda trocar de conta na hora", /^switch \d+$/m.test(logged), logged || (r13 && r13.text) || "");
+      check("explica o motivo no histórico", !!r13 && /bateu o limite da sessão de 5h/.test(r13.text), r13 && r13.text);
+      const r13b = await T.checkLimitErrors();
+      check("o mesmo erro não dispara duas vezes", r13b === null);
+    } finally {
+      T.setLimitRoot(path.join(home, ".claude", "projects"));
+      await cfg13.update("autoSwitch.enabled", false);
+      await cfg13.update("executablePath", "");
+      await sleep(300);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+    check("conta em uso não mudou (motor de mentira)", JSON.parse(cswap("list", "--json")).activeAccountNumber === before);
+  }
+
   if (NO_GITHUB) {
     console.log("\n# B12. Atualizações puladas (--no-github)");
   } else {
@@ -717,6 +782,7 @@ async function partUpdates(context) {
 (async () => {
   partA();
   partI();
+  await partL();
   partC();
   await partF();
   partU();

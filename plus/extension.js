@@ -1,8 +1,13 @@
 "use strict";
 // Swap Plus — fork pessoal de smith89k/claude-swap-status (MIT).
-// Barra de status compacta (ícone de e-mail com o endereço no hover) e uma
-// tela de configuração das trocas automáticas, tudo em cima do CLI `swap-plus`
-// (fork do claude-swap; o `cswap` original também serve).
+//
+// - Barra de status: ícone de e-mail (endereço no hover), sessão de 5h, semanal
+//   e limites semanais por modelo (ex.: Fable), cada um com sua cor.
+// - Clique na barra: lista de contas, com "Configurações" em primeiro.
+// - Regras de aviso e de troca automática, com linhas separadas para sessão,
+//   semanal e por modelo. A decisão é tomada aqui, olhando o modelo que está em
+//   uso no Claude Code; a troca em si é feita pelo CLI `swap-plus`
+//   (fork do claude-swap; o `cswap` original também serve).
 
 const vscode = require("vscode");
 const { execFile } = require("child_process");
@@ -13,52 +18,18 @@ const path = require("path");
 const NS = "swapPlus";
 const HISTORY_KEY = "swapPlus.autoHistory";
 const LAST_TICK_KEY = "swapPlus.lastTick";
+const LAST_SWITCH_KEY = "swapPlus.lastAutoSwitch";
 const ALERTED_KEY = "swapPlus.alerted";
 const AUTO_LOCK = path.join(os.tmpdir(), "swap-plus-auto.lock");
 const HISTORY_MAX = 40;
-
-const RULE_KEYS = [
-  "autoswitch.threshold",
-  "autoswitch.weeklyThreshold",
-  "autoswitch.strategy",
-  "autoswitch.model",
-  "autoswitch.intervalSeconds",
-  "autoswitch.cooldownSeconds",
-  "autoswitch.hysteresisPct",
-];
+const MODEL_WINDOW_MS = 30 * 60 * 1000; // modelo "em uso" = usado nos últimos 30 min
+const STALE_USAGE_SEC = 20 * 60; // dados de uso mais velhos que isso não decidem troca
+const YELLOW_AT = 70;
 
 const STRATEGY_LABELS = {
-  best: "Mais folga",
-  "weekly-first": "Semanal primeiro",
-  "consume-first": "Esgotar quem renova antes",
-  "priority-consume-first": "Por prioridade",
-};
-
-const TRIGGER_LABELS = {
-  proactive: "chegou no limite configurado",
-  "at-limit": "conta bateu o limite",
-  failover: "conta com problema",
-  "consume-first": "outra conta renova antes",
-  priority: "conta de prioridade maior disponível",
-};
-
-const REASON_LABELS = {
-  "below-threshold": "abaixo do limite",
-  cooldown: "aguardando intervalo mínimo entre trocas",
-  "no-candidates": "nenhuma outra conta disponível",
-  "no-viable-target": "nenhuma conta com folga suficiente",
-  "no-qualifying-candidate": "nenhuma conta atende às regras",
-  "no-comparison": "sem dados para comparar",
-  "already-active": "já está na melhor conta",
-  "already-consuming-soonest": "já está na conta que renova antes",
-  "already-consuming-priority": "já está na conta de maior prioridade",
-  "active-idle": "conta ativa sem uso recente",
-  "active-usage-unknown": "uso da conta ativa desconhecido",
-  "active-api-key": "conta ativa é API key",
-  "stale-usage": "dados de uso desatualizados",
-  "reset-unknown": "horário de renovação desconhecido",
-  "no-active-account": "nenhuma conta ativa",
-  "unmanaged-active-account": "conta ativa não está cadastrada no swap-plus",
+  headroom: "Mais folga",
+  max: "Aproveitar ao máximo",
+  priority: "Por prioridade",
 };
 
 const STATUS_LABELS = {
@@ -74,19 +45,44 @@ const STATUS_LABELS = {
 
 let extContext;
 let mailItem;
-let usageItem;
+let sessItem;
+let weekItem;
+const modelItems = new Map();
 let panel;
 let pollTimer;
 let autoTimer;
 let autoGen = 0;
 let refreshing = null;
 let lastBlockedWarnAt = 0;
-let state = { list: null, config: {}, configPath: null, records: {}, error: null, fetchedAt: 0 };
+let state = { list: null, records: {}, models: [], error: null, fetchedAt: 0 };
 
-// ---------------------------------------------------------------- helpers
+// ---------------------------------------------------------------- utilitários
 
 function cfg() {
   return vscode.workspace.getConfiguration(NS);
+}
+
+function numSetting(key, def, lo, hi) {
+  const v = cfg().get(key);
+  const n = Number(v);
+  if (v === null || v === undefined || v === "" || !isFinite(n)) return def;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function rules() {
+  const st = cfg().get("rules.strategy");
+  const pref = cfg().get("rules.preferModel");
+  return {
+    sessionPct: numSetting("rules.sessionSwitchPct", 90, 50, 100),
+    weeklyPct: numSetting("rules.weeklySwitchPct", 80, 50, 100),
+    modelPct: numSetting("rules.modelSwitchPct", 95, 50, 100),
+    preferModel: typeof pref === "string" ? pref.trim() : "Fable",
+    strategy: STRATEGY_LABELS[st] ? st : "headroom",
+    expiringHours: numSetting("rules.expiringHours", 24, 1, 168),
+    cooldownMin: numSetting("rules.cooldownMinutes", 5, 0, 240),
+    marginPct: numSetting("rules.marginPct", 5, 0, 30),
+    intervalSec: numSetting("rules.intervalSeconds", 60, 15, 3600),
+  };
 }
 
 function cswapPath() {
@@ -127,12 +123,6 @@ function lastLine(s) {
   return lines.length ? lines[lines.length - 1] : "";
 }
 
-function getUsage(acc) {
-  if (acc.usageStatus === "ok" && acc.usage) return { usage: acc.usage, stale: false, ageSeconds: acc.usageAgeSeconds };
-  if (acc.lastGoodUsage) return { usage: acc.lastGoodUsage, stale: true, ageSeconds: acc.lastGoodAgeSeconds };
-  return null;
-}
-
 function statusLabel(s) {
   return (s && STATUS_LABELS[s]) || s || "desconhecido";
 }
@@ -140,6 +130,8 @@ function statusLabel(s) {
 function needsAttention(s) {
   return !!s && s !== "ok" && s !== "token_expired";
 }
+
+const fmtPct = (v) => `${Math.round(Number(v) || 0)}%`;
 
 function progressBar(pct) {
   const total = 5;
@@ -160,75 +152,312 @@ function resetIn(iso) {
   return `${m}m`;
 }
 
-function fmtWhen(iso) {
-  let d = new Date(iso);
+function roundedDate(iso) {
+  const d = new Date(iso);
   if (isNaN(d.getTime())) return null;
-  d = new Date(Math.round(d.getTime() / 60000) * 60000); // 17:59:59 → 18:00
+  return new Date(Math.round(d.getTime() / 60000) * 60000); // 17:59:59 → 18:00
+}
+
+function dayPrefix(d) {
   const now = new Date();
-  const time = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-  if (d.toDateString() === now.toDateString()) return `hoje ${time}`;
+  if (d.toDateString() === now.toDateString()) return "hoje";
   const tomorrow = new Date(now);
   tomorrow.setDate(now.getDate() + 1);
-  if (d.toDateString() === tomorrow.toDateString()) return `amanhã ${time}`;
+  if (d.toDateString() === tomorrow.toDateString()) return "amanhã";
   const wd = d.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "");
-  const dm = d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
-  return `${wd} ${dm} ${time}`;
+  const dm = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return `${wd} ${dm}`;
 }
 
-function fmtWindow(w) {
-  const r = resetIn(w.resetsAt);
-  return `${progressBar(w.pct)} ${Math.round(w.pct)}%${r ? ` R:${r}` : ""}`;
+/** "hoje 18:00", "amanhã 09:30", "sex 20/11 12:00" */
+function fmtWhen(iso) {
+  const d = roundedDate(iso);
+  if (!d) return null;
+  return `${dayPrefix(d)} ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-function resetDetail(w) {
-  if (!w || !w.resetsAt) return "sem renovação agendada";
-  const when = fmtWhen(w.resetsAt);
-  const r = resetIn(w.resetsAt);
-  return `renova ${when || ""}${r ? ` (em ${r})` : ""}`.trim();
+/** Versão curta para a lista de contas: "hoje 18h", "sex 20/11 12h30" */
+function shortWhen(iso) {
+  const d = roundedDate(iso);
+  if (!d) return null;
+  const hm = d.getMinutes() === 0 ? `${d.getHours()}h` : `${d.getHours()}h${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${dayPrefix(d)} ${hm}`;
 }
 
-function confValue(key) {
-  const c = state.config[key];
-  return c ? c.value : undefined;
+function level(pct, line) {
+  if (pct === null || pct === undefined || isNaN(pct)) return "none";
+  if (pct >= line) return "bad";
+  if (pct >= Math.min(YELLOW_AT, line)) return "warn";
+  return "ok";
 }
 
-function autoEnabled() {
-  return !!cfg().get("autoSwitch.enabled");
+const DOTS = { ok: "🟢", warn: "🟡", bad: "🔴", none: "⚪" };
+
+function levelColor(lv) {
+  if (lv === "bad") return new vscode.ThemeColor("charts.red");
+  if (lv === "warn") return new vscode.ThemeColor("charts.yellow");
+  return undefined;
 }
 
-function autoIntervalMs() {
-  const v = Number(confValue("autoswitch.intervalSeconds"));
-  return Math.max(15, isFinite(v) && v > 0 ? v : 60) * 1000;
+// ---------------------------------------------------------------- uso e linhas
+
+function getUsage(acc) {
+  if (acc.usageStatus === "ok" && acc.usage) return { usage: acc.usage, stale: false, ageSeconds: acc.usageAgeSeconds };
+  if (acc.lastGoodUsage) return { usage: acc.lastGoodUsage, stale: true, ageSeconds: acc.lastGoodAgeSeconds };
+  return null;
 }
 
-function rulesSummary() {
-  const th = confValue("autoswitch.threshold");
-  const wk = confValue("autoswitch.weeklyThreshold");
-  const st = confValue("autoswitch.strategy") || "best";
-  const model = confValue("autoswitch.model");
-  const parts = [`5h ≥ ${th ?? 90}%`, `semanal ≥ ${wk ?? th ?? 90}%`];
-  if (model) parts.push(`modelo: ${model}`);
-  parts.push(STRATEGY_LABELS[st] || st);
-  return parts.join(" · ");
+/** Janelas de uso de uma conta, já no formato que o resto do código usa. */
+function windows(acc) {
+  const f = getUsage(acc);
+  if (!f) return null;
+  const u = f.usage;
+  return {
+    stale: f.stale || (typeof f.ageSeconds === "number" && f.ageSeconds > STALE_USAGE_SEC),
+    ageSeconds: f.ageSeconds,
+    // Sem janela de 5h aberta = sessão sem uso recente, 100% livre.
+    session: u.fiveHour ? { pct: u.fiveHour.pct, resetsAt: u.fiveHour.resetsAt || null } : { pct: 0, resetsAt: null, idle: true },
+    weekly: u.sevenDay
+      ? {
+          pct: u.sevenDay.pct,
+          resetsAt: u.sevenDay.resetsAt || null,
+          willLast: u.sevenDay.willLastToReset,
+          exhaustAt: u.sevenDay.projectedExhaustionAt || null,
+        }
+      : null,
+    models: (u.scoped || []).map((s) => ({ name: s.name, pct: s.pct, resetsAt: s.resetsAt || null })),
+  };
+}
+
+function recordOf(records, num) {
+  return (records && records[String(num)]) || {};
 }
 
 function accountRecord(num) {
-  return (state.records && state.records[String(num)]) || {};
+  return recordOf(state.records, num);
 }
 
 function accountAlias(acc) {
   return acc.alias || accountRecord(acc.number).alias || null;
 }
 
-// ---------------------------------------------------------------- data
+/** Linhas de troca de uma conta: sessão (pode ter limite próprio), semanal, por modelo. */
+function linesFor(acc, r, records) {
+  const rec = recordOf(records, acc.number);
+  const own = rec.threshold !== null && rec.threshold !== undefined && isFinite(Number(rec.threshold));
+  return { session: own ? Number(rec.threshold) : r.sessionPct, weekly: r.weeklyPct, model: r.modelPct };
+}
 
-async function readRecords(configPath) {
-  const root = configPath ? path.dirname(configPath) : path.join(os.homedir(), ".claude-swap-backup");
+function scopedNames(list) {
+  const names = new Set();
+  for (const a of (list && list.accounts) || []) {
+    const w = windows(a);
+    if (w) w.models.forEach((m) => names.add(m.name));
+  }
+  return [...names];
+}
+
+// ---------------------------------------------------------------- modelo em uso
+
+function modelLabel(id) {
+  const parts = String(id).replace(/^claude-/, "").replace(/-\d{8}$/, "").split("-");
+  if (!parts[0] || /^\d/.test(parts[0])) return id;
+  const name = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+  const ver = parts.slice(1).filter((x) => /^\d+$/.test(x)).join(".");
+  return ver ? `${name} ${ver}` : name;
+}
+
+/** Limites por modelo (ex.: "Fable") que correspondem a um modelo em uso. */
+function watchedModels(modelIds, names) {
+  return names.filter((n) => modelIds.some((id) => String(id).toLowerCase().includes(n.toLowerCase())));
+}
+
+async function readTail(p, bytes) {
+  const fh = await fs.promises.open(p, "r");
+  try {
+    const { size } = await fh.stat();
+    const start = Math.max(0, size - bytes);
+    const buf = Buffer.alloc(size - start);
+    await fh.read(buf, 0, buf.length, start);
+    return buf.toString("utf8");
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * Modelos usados pelo Claude Code nos últimos 30 minutos, do mais recente para
+ * o mais antigo. Lê só o fim das transcrições locais (~/.claude/projects).
+ */
+async function detectModels(now = Date.now()) {
+  const root = path.join(os.homedir(), ".claude", "projects");
+  const seen = new Map();
+  let dirs = [];
+  try {
+    dirs = await fs.promises.readdir(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue;
+    const dir = path.join(root, d.name);
+    let files = [];
+    try {
+      files = await fs.promises.readdir(dir);
+    } catch {
+      continue;
+    }
+    for (const f of files) {
+      if (!f.endsWith(".jsonl")) continue;
+      const p = path.join(dir, f);
+      let st;
+      try {
+        st = await fs.promises.stat(p);
+      } catch {
+        continue;
+      }
+      if (now - st.mtimeMs > MODEL_WINDOW_MS) continue;
+      let tail = "";
+      try {
+        tail = await readTail(p, 256 * 1024);
+      } catch {
+        continue;
+      }
+      const re = /"model":"(claude-[^"]+)"/g;
+      let m;
+      let last = null;
+      while ((m = re.exec(tail))) last = m[1];
+      if (last && (!seen.has(last) || seen.get(last) < st.mtimeMs)) seen.set(last, st.mtimeMs);
+    }
+  }
+  return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([id, ts]) => ({ id, label: modelLabel(id), ts }));
+}
+
+// ---------------------------------------------------------------- decisão de troca
+
+/**
+ * Decide se troca de conta e para qual. Função pura (testável).
+ *   - Gatilho: a conta ativa chegou na linha da sessão, do semanal, ou do
+ *     limite de um modelo que está em uso agora.
+ *   - Destino: conta na rotação, com dados de uso recentes e abaixo de todas
+ *     as linhas que importam (com a folga mínima). Contas com o modelo
+ *     preferido (Fable) disponível vêm primeiro; depois vale a estratégia.
+ *   - "Aproveitar ao máximo" também troca antes da linha, para uma conta cuja
+ *     cota semanal zera logo e ainda está sobrando.
+ */
+function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false }) {
+  const active = list.accounts.find((a) => a.number === list.activeAccountNumber);
+  if (!active) return { action: "none", kind: "idle", text: "nenhuma conta ativa" };
+  const names = scopedNames(list);
+  const watch = watchedModels(modelIds, names);
+  const pref = r.preferModel && names.includes(r.preferModel) ? r.preferModel : null;
+
+  const aw = windows(active);
+  if (!aw || aw.stale) return { action: "none", kind: "idle", text: "uso da conta ativa desatualizado; sem decisão por enquanto" };
+
+  const rowsOf = (w, l) => {
+    const rows = [{ label: "sessão", pct: w.session.pct, line: l.session }];
+    if (w.weekly) rows.push({ label: "semanal", pct: w.weekly.pct, line: l.weekly });
+    for (const name of watch) {
+      const s = w.models.find((m) => m.name === name);
+      if (s) rows.push({ label: name, pct: s.pct, line: l.model });
+    }
+    return rows;
+  };
+
+  const activeRows = rowsOf(aw, linesFor(active, r, records));
+  const over = activeRows.filter((x) => x.pct >= x.line);
+  const activeReset = aw.weekly && aw.weekly.resetsAt ? Date.parse(aw.weekly.resetsAt) : Infinity;
+  const activeHeadroom = Math.min(...activeRows.map((x) => x.line - x.pct));
+
+  const cands = [];
+  for (const acc of list.accounts) {
+    if (acc.number === active.number) continue;
+    if (recordOf(records, acc.number).disabled) continue;
+    const w = windows(acc);
+    if (!w || w.stale) continue;
+    const l = linesFor(acc, r, records);
+    const rows = rowsOf(w, l);
+    let prefOk = true;
+    if (pref) {
+      const s = w.models.find((m) => m.name === pref);
+      prefOk = !!s && s.pct <= l.model - r.marginPct;
+    }
+    cands.push({
+      acc,
+      strictOk: rows.every((x) => x.pct <= x.line - r.marginPct),
+      looseOk: rows.every((x) => x.pct < x.line),
+      headroom: Math.min(...rows.map((x) => x.line - x.pct)),
+      prefOk,
+      resetTs: w.weekly && w.weekly.resetsAt ? Date.parse(w.weekly.resetsAt) : Infinity,
+      unused: w.weekly ? 100 - w.weekly.pct : 100,
+      priority: Number(recordOf(records, acc.number).priority) || 0,
+    });
+  }
+
+  const byStrategy = {
+    headroom: (x, y) => y.headroom - x.headroom,
+    max: (x, y) => x.resetTs - y.resetTs || y.headroom - x.headroom,
+    priority: (x, y) => y.priority - x.priority || x.resetTs - y.resetTs || y.headroom - x.headroom,
+  };
+  const rank = (arr) =>
+    [...arr].sort((x, y) => Number(y.prefOk) - Number(x.prefOk) || byStrategy[r.strategy](x, y) || x.acc.number - y.acc.number);
+  const pick = () => {
+    const strict = rank(cands.filter((c) => c.strictOk));
+    return strict.length ? strict[0] : rank(cands.filter((c) => c.looseOk))[0];
+  };
+  const go = (t, reason) => ({ action: "switch", kind: "switch", from: active.number, to: t.acc.number, reason, text: `da conta ${active.number} para a conta ${t.acc.number}: ${reason}` });
+
+  if (over.length) {
+    const reason = over.map((o) => `${o.label} em ${fmtPct(o.pct)} (linha ${fmtPct(o.line)})`).join(", ");
+    const t = pick();
+    if (!t) return { action: "none", kind: "blocked", text: `conta ${active.number} com ${reason}, mas nenhuma outra conta tem folga` };
+    return go(t, reason);
+  }
+
+  if (force) {
+    const t = pick();
+    if (!t || t.headroom <= activeHeadroom) return { action: "none", kind: "idle", text: "a conta atual já é a que tem mais folga" };
+    return go(t, "troca pedida pela melhor conta");
+  }
+
+  if (r.strategy === "max") {
+    const soon = rank(
+      cands.filter(
+        (c) =>
+          c.strictOk &&
+          c.resetTs > now &&
+          c.resetTs - now <= r.expiringHours * 3600000 &&
+          c.resetTs < activeReset - 3600000 &&
+          c.unused >= 20
+      )
+    );
+    if (soon.length) {
+      if (lastSwitchAt && now - lastSwitchAt < r.cooldownMin * 60000) {
+        return { action: "none", kind: "idle", text: "esperando o intervalo mínimo entre trocas" };
+      }
+      const t = soon[0];
+      return go(t, `a cota semanal dela zera ${fmtWhen(new Date(t.resetTs).toISOString())} com ${fmtPct(t.unused)} sobrando`);
+    }
+  }
+
+  const closest = [...activeRows].sort((a, b) => b.pct / b.line - a.pct / a.line)[0];
+  return {
+    action: "none",
+    kind: "idle",
+    text: `abaixo das linhas (mais perto: ${closest.label} ${fmtPct(closest.pct)} de ${fmtPct(closest.line)})`,
+  };
+}
+
+// ---------------------------------------------------------------- dados
+
+async function readRecords() {
+  const root = path.join(os.homedir(), ".claude-swap-backup");
   try {
     const seq = JSON.parse(await fs.promises.readFile(path.join(root, "sequence.json"), "utf8"));
     const out = {};
     for (const [num, rec] of Object.entries(seq.accounts || {})) {
-      // Só os campos de preferência; nada de credenciais.
+      // Só as preferências da conta; nada de credenciais.
       out[num] = { alias: rec.alias || null, disabled: !!rec.disabled, threshold: rec.threshold ?? null, priority: rec.priority ?? 0 };
     }
     return out;
@@ -240,21 +469,13 @@ async function readRecords(configPath) {
 function refresh() {
   if (refreshing) return refreshing;
   refreshing = (async () => {
-    const [l, c] = await Promise.all([runCswap(["list", "--json"]), runCswap(["config", "--json"])]);
+    const [l, models, records] = await Promise.all([runCswap(["list", "--json"]), detectModels(), readRecords()]);
     const list = parseJson(l.stdout);
-    const confRaw = parseJson(c.stdout);
-    const config = {};
-    if (confRaw && Array.isArray(confRaw.settings)) {
-      for (const s of confRaw.settings) config[s.key] = { value: s.value, isSet: s.isSet };
-    }
-    const configPath = (confRaw && confRaw.path) || state.configPath;
-    const records = await readRecords(configPath);
     const ok = list && Array.isArray(list.accounts);
     state = {
       list: ok ? list : null,
-      config: Object.keys(config).length ? config : state.config,
-      configPath,
       records,
+      models,
       error: ok ? null : l.spawnError || lastLine(l.stderr) || "não foi possível ler 'swap-plus list --json'",
       fetchedAt: Date.now(),
     };
@@ -267,21 +488,91 @@ function refresh() {
   return refreshing;
 }
 
-// ---------------------------------------------------------------- status bar
+// ---------------------------------------------------------------- barra de status
+
+function ensureModelItem(name, idx) {
+  let it = modelItems.get(name);
+  if (!it) {
+    it = vscode.window.createStatusBarItem(`${NS}.model.${name}`, vscode.StatusBarAlignment.Left, 102 - idx);
+    it.name = `Swap Plus — ${name}`;
+    it.command = `${NS}.switchAccount`;
+    modelItems.set(name, it);
+    extContext.subscriptions.push(it);
+  }
+  return it;
+}
+
+function usageTooltip(acc, w, l) {
+  const t = new vscode.MarkdownString(undefined, true);
+  const alias = accountAlias(acc);
+  t.appendMarkdown(`**Conta ${acc.number}**`);
+  if (alias) t.appendText(` (${alias})`);
+  t.appendMarkdown(" — **");
+  t.appendText(acc.email || "");
+  t.appendMarkdown("**  \n");
+  const meta = [];
+  if (acc.plan && acc.plan.label) meta.push(`plano ${acc.plan.label}`);
+  if (acc.organizationName) meta.push(acc.organizationName);
+  if (meta.length) t.appendText(meta.join(" · "));
+  t.appendMarkdown("\n\n");
+
+  if (!w) {
+    t.appendText(`Uso indisponível (${statusLabel(acc.usageStatus)})`);
+  } else {
+    if (w.stale) {
+      t.appendText(`Dados de ${Math.round((w.ageSeconds || 0) / 60)} min atrás (${statusLabel(acc.usageStatus)}).`);
+      t.appendMarkdown("\n\n");
+    }
+    const line = (label, win, ln, withLeft) => {
+      t.appendMarkdown(`${DOTS[level(win.pct, ln)]} **${label}:** `);
+      let s = `${fmtPct(win.pct)} usado`;
+      if (withLeft) s += ` · sobra ${fmtPct(100 - win.pct)}`;
+      if (win.resetsAt) s += ` · renova ${fmtWhen(win.resetsAt)} (em ${resetIn(win.resetsAt)})`;
+      else if (win.idle) s += " · sem uso nas últimas 5h";
+      t.appendText(s);
+      t.appendMarkdown("  \n");
+    };
+    line("Sessão (5h)", w.session, l.session, true);
+    if (w.weekly) line("Semanal", w.weekly, l.weekly, true);
+    for (const m of w.models) line(`${m.name} (semanal)`, m, l.model, false);
+    if (w.weekly && w.weekly.willLast === false && w.weekly.exhaustAt) {
+      t.appendText(`⚠ No ritmo atual, o semanal acaba ${fmtWhen(w.weekly.exhaustAt)}`);
+      t.appendMarkdown("  \n");
+    }
+  }
+  if (state.models.length) {
+    t.appendMarkdown("\n");
+    t.appendText(`Modelo em uso: ${state.models[0].label}`);
+  }
+  t.appendMarkdown("\n\n_Clique para trocar de conta ou abrir as configurações_");
+  return t;
+}
+
+function setItem(item, text, lv, tooltip) {
+  item.text = text;
+  item.color = levelColor(lv);
+  item.tooltip = tooltip;
+  item.show();
+}
 
 function render() {
-  if (!mailItem || !usageItem) return;
-  usageItem.backgroundColor = undefined;
+  if (!mailItem) return;
+  const others = [weekItem, ...modelItems.values()];
+  for (const it of [sessItem, ...others]) {
+    it.color = undefined;
+    it.backgroundColor = undefined;
+  }
   const list = state.list;
 
   if (!list) {
     mailItem.text = "$(mail)";
     mailItem.tooltip = "Swap Plus: não consegui executar o swap-plus.";
-    usageItem.text = "$(warning) Claude: erro no swap-plus";
-    usageItem.tooltip = `Falha ao executar o swap-plus.\n${state.error || ""}\n\nVerifique se 'swap-plus list --json' funciona no terminal.`;
-    usageItem.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+    sessItem.text = "$(warning) Swap Plus: erro";
+    sessItem.tooltip = `Falha ao executar o swap-plus.\n${state.error || ""}\n\nVerifique se 'swap-plus list --json' funciona no terminal.`;
+    sessItem.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
     mailItem.show();
-    usageItem.show();
+    sessItem.show();
+    others.forEach((it) => it.hide());
     return;
   }
 
@@ -289,173 +580,49 @@ function render() {
   if (!acc) {
     mailItem.text = "$(mail)";
     mailItem.tooltip = "Nenhuma conta ativa. Clique para escolher.";
-    usageItem.text = "Claude: sem conta ativa";
-    usageItem.tooltip = "Clique para escolher uma conta ou abrir as configurações.";
+    sessItem.text = "Claude: sem conta ativa";
+    sessItem.tooltip = "Clique para escolher uma conta ou abrir as configurações.";
     mailItem.show();
-    usageItem.show();
+    sessItem.show();
+    others.forEach((it) => it.hide());
     return;
   }
 
-  const alias = accountAlias(acc);
-  const showNum = !!cfg().get("statusBar.showAccountNumber");
-  const showModel = !!cfg().get("statusBar.showModelWeekly");
-  const autoOn = autoEnabled();
+  const r = rules();
+  const l = linesFor(acc, r, state.records);
+  const w = windows(acc);
+  const tip = usageTooltip(acc, w, l);
 
-  // ---- ícone de e-mail (hover mostra o endereço)
-  mailItem.text = showNum ? `$(mail) ${acc.number}` : "$(mail)";
+  // ícone de e-mail: o endereço só aparece no hover
+  mailItem.text = cfg().get("statusBar.showAccountNumber") ? `$(mail) ${acc.number}` : "$(mail)";
   const mt = new vscode.MarkdownString(undefined, true);
-  mt.appendMarkdown("$(mail) ");
+  mt.appendMarkdown(`**Conta ${acc.number}** — **`);
   mt.appendText(acc.email || "");
-  mt.appendMarkdown("  \n");
-  const meta = [`Conta ${acc.number}`];
-  if (alias) meta.push(alias);
-  if (acc.plan && acc.plan.label) meta.push(`plano ${acc.plan.label}`);
-  if (acc.organizationName) meta.push(acc.organizationName);
-  mt.appendText(meta.join(" · "));
-  mt.appendMarkdown("\n\n_Clique para trocar de conta ou abrir as configurações_");
+  mt.appendMarkdown("**\n\n_Clique para trocar de conta ou abrir as configurações_");
   mailItem.tooltip = mt;
-
-  // ---- uso
-  let five = "N/A";
-  let seven = "N/A";
-  let modelStr = "";
-  let staleMark = "";
-  let maxPct = 0;
-  const found = getUsage(acc);
-  const ut = new vscode.MarkdownString(undefined, true);
-  ut.appendMarkdown(`**Uso — conta ${acc.number}**`);
-  if (alias) ut.appendText(` (${alias})`);
-  ut.appendMarkdown("\n\n");
-
-  if (found) {
-    const u = found.usage;
-    if (found.stale) {
-      staleMark = " $(history)";
-      ut.appendText(`Mostrando o último uso conhecido, de ${Math.round((found.ageSeconds || 0) / 60)} min atrás (${statusLabel(acc.usageStatus)}).`);
-      ut.appendMarkdown("\n\n");
-    }
-    if (u.fiveHour) {
-      five = fmtWindow(u.fiveHour);
-      maxPct = Math.max(maxPct, u.fiveHour.pct);
-    }
-    if (u.sevenDay) {
-      seven = fmtWindow(u.sevenDay);
-      maxPct = Math.max(maxPct, u.sevenDay.pct);
-    }
-    const lines = [];
-    lines.push(`5h: ${u.fiveHour ? Math.round(u.fiveHour.pct) + "%" : "—"} — ${resetDetail(u.fiveHour)}`);
-    lines.push(`Semanal: ${u.sevenDay ? Math.round(u.sevenDay.pct) + "%" : "—"} — ${resetDetail(u.sevenDay)}`);
-    for (const s of u.scoped || []) {
-      lines.push(`${s.name} (semanal): ${Math.round(s.pct)}% — ${resetDetail(s)}`);
-      if (showModel) {
-        modelStr += ` | ${s.name}: ${progressBar(s.pct)} ${Math.round(s.pct)}%`;
-        maxPct = Math.max(maxPct, s.pct);
-      }
-    }
-    if (u.sevenDay && u.sevenDay.willLastToReset === false && u.sevenDay.projectedExhaustionAt) {
-      lines.push(`⚠ No ritmo atual, o semanal acaba ${fmtWhen(u.sevenDay.projectedExhaustionAt)}`);
-    }
-    for (const line of lines) {
-      ut.appendText(line);
-      ut.appendMarkdown("  \n");
-    }
-  } else if (acc.usageStatus) {
-    five = seven = statusLabel(acc.usageStatus);
-    ut.appendText(`Status: ${statusLabel(acc.usageStatus)}`);
-    ut.appendMarkdown("  \n");
-  }
-
-  if (maxPct >= 85) usageItem.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
-  else if (maxPct >= 70 || needsAttention(acc.usageStatus)) usageItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-
-  ut.appendMarkdown("\n---\n\n");
-  if (autoOn) {
-    ut.appendMarkdown("$(sync) Troca automática **ligada** — ");
-    ut.appendText(rulesSummary());
-  } else {
-    ut.appendMarkdown("$(circle-slash) Troca automática **desligada**");
-  }
-  const last = extContext && extContext.globalState.get(LAST_TICK_KEY);
-  if (autoOn && last && last.ts) {
-    ut.appendMarkdown("  \n");
-    ut.appendText(`Última verificação ${fmtWhen(last.ts) || ""}: ${last.text}`);
-  }
-  ut.appendMarkdown("\n\n_Clique para trocar de conta ou abrir as configurações_");
-
-  usageItem.text = `5h: ${five} | 7d: ${seven}${modelStr}${staleMark}${autoOn ? " $(sync)" : ""}`;
-  usageItem.tooltip = ut;
   mailItem.show();
-  usageItem.show();
-}
 
-// ---------------------------------------------------------------- alertas
-
-function alertSettings() {
-  const c = cfg();
-  const pct = (k, d) => Math.max(1, Math.min(100, Number(c.get(k)) || d));
-  return {
-    fiveHourEnabled: !!c.get("alerts.fiveHourEnabled"),
-    fiveHourPct: pct("alerts.fiveHourPct", 80),
-    weeklyEnabled: !!c.get("alerts.weeklyEnabled"),
-    weeklyPct: pct("alerts.weeklyPct", 80),
-    modelEnabled: !!c.get("alerts.modelEnabled"),
-    modelPct: pct("alerts.modelPct", 80),
-  };
-}
-
-/** "Chegou a X% → avisar": uma notificação por conta, janela e ciclo de renovação. */
-async function checkAlerts() {
-  const list = state.list;
-  if (!list) return;
-  const acc = list.accounts.find((a) => a.number === list.activeAccountNumber);
-  if (!acc) return;
-  const found = getUsage(acc);
-  if (!found || found.stale) return;
-  const u = found.usage;
-  const a = alertSettings();
-  const checks = [];
-  if (a.fiveHourEnabled && u.fiveHour) checks.push({ id: "5h", label: "na janela de 5h", w: u.fiveHour, line: a.fiveHourPct });
-  if (a.weeklyEnabled && u.sevenDay) checks.push({ id: "7d", label: "no limite semanal", w: u.sevenDay, line: a.weeklyPct });
-  if (a.modelEnabled) for (const s of u.scoped || []) checks.push({ id: `m:${s.name}`, label: `no semanal do ${s.name}`, w: s, line: a.modelPct });
-
-  for (const ch of checks) {
-    if (!(ch.w.pct >= ch.line)) continue;
-    const key = `${acc.number}|${ch.id}|${ch.line}|${String(ch.w.resetsAt || "").slice(0, 13)}`;
-    const alerted = extContext.globalState.get(ALERTED_KEY) || [];
-    if (alerted.includes(key)) continue;
-    await extContext.globalState.update(ALERTED_KEY, [key, ...alerted].slice(0, 200));
-    const r = resetIn(ch.w.resetsAt);
-    const text = `Conta ${acc.number} chegou a ${Math.round(ch.w.pct)}% ${ch.label}${r ? ` (renova em ${r})` : ""}`;
-    await pushHistory([{ ts: new Date().toISOString(), kind: "alert", text }]);
-    postState();
-    const tail = autoEnabled() ? " A troca automática assume quando passar da linha de troca." : "";
-    vscode.window.showWarningMessage(`Swap Plus: ${text}.${tail}`, "Trocar para a melhor conta", "Configurar").then((choice) => {
-      if (choice === "Trocar para a melhor conta") switchBest();
-      else if (choice === "Configurar") openSettings();
-    });
+  if (!w) {
+    setItem(sessItem, `Sessão: ${statusLabel(acc.usageStatus)}`, "none", tip);
+    if (needsAttention(acc.usageStatus)) sessItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+    others.forEach((it) => it.hide());
+    return;
   }
-}
 
-async function switchBest() {
-  const model = confValue("autoswitch.model");
-  const args = ["switch", "--strategy", "best", "--json"];
-  if (model) args.push("--model", String(model));
-  const before = state.list ? state.list.activeAccountNumber : null;
-  const r = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: "Trocando para a conta com mais folga...", cancellable: false },
-    () => runCswap(args, 120000)
-  );
-  await refresh();
-  const after = state.list ? state.list.activeAccountNumber : null;
-  if (r.code !== 0) {
-    vscode.window.showErrorMessage(`Falha ao trocar de conta: ${lastLine(r.stderr) || r.spawnError || "erro desconhecido"}`);
-  } else if (after !== before) {
-    vscode.window.showInformationMessage(`Swap Plus: agora na conta ${after}.`);
-    await pushHistory([{ ts: new Date().toISOString(), kind: "manual", text: `Troca manual para a conta ${after} (melhor conta)` }]);
-    postState();
+  setItem(sessItem, `Sessão ${progressBar(w.session.pct)} ${fmtPct(w.session.pct)}`, level(w.session.pct, l.session), tip);
+  if (needsAttention(acc.usageStatus)) sessItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+  if (w.weekly) {
+    setItem(weekItem, `Semanal ${progressBar(w.weekly.pct)} ${fmtPct(w.weekly.pct)}${w.stale ? " $(history)" : ""}`, level(w.weekly.pct, l.weekly), tip);
   } else {
-    vscode.window.showInformationMessage("Swap Plus: a conta atual já é a melhor opção.");
+    weekItem.hide();
   }
+  const showModels = !!cfg().get("statusBar.showModelWeekly");
+  const present = new Set();
+  w.models.forEach((m, i) => {
+    present.add(m.name);
+    if (showModels) setItem(ensureModelItem(m.name, i), `${m.name} ${progressBar(m.pct)} ${fmtPct(m.pct)}`, level(m.pct, l.model), tip);
+  });
+  for (const [name, it] of modelItems) if (!showModels || !present.has(name)) it.hide();
 }
 
 // ---------------------------------------------------------------- polling
@@ -467,10 +634,61 @@ function setupPolling() {
   pollTimer = setInterval(() => refresh(), minutes * 60 * 1000);
 }
 
-// ---------------------------------------------------------------- auto-switch
+// ---------------------------------------------------------------- alertas
+
+function alertSettings() {
+  const c = cfg();
+  const pct = (k, d) => Math.max(1, Math.min(100, Number(c.get(k)) || d));
+  return {
+    fiveHourEnabled: !!c.get("alerts.fiveHourEnabled"),
+    fiveHourPct: pct("alerts.fiveHourPct", 80),
+    weeklyEnabled: !!c.get("alerts.weeklyEnabled"),
+    weeklyPct: pct("alerts.weeklyPct", 70),
+    modelEnabled: !!c.get("alerts.modelEnabled"),
+    modelPct: pct("alerts.modelPct", 85),
+  };
+}
+
+/** "Chegou a X% → avisar": uma notificação por conta, janela e ciclo de renovação. */
+async function checkAlerts() {
+  const list = state.list;
+  if (!list) return;
+  const acc = list.accounts.find((a) => a.number === list.activeAccountNumber);
+  if (!acc) return;
+  const w = windows(acc);
+  if (!w || w.stale) return;
+  const a = alertSettings();
+  const checks = [];
+  if (a.fiveHourEnabled && !w.session.idle) checks.push({ id: "5h", label: "na sessão de 5h", w: w.session, line: a.fiveHourPct });
+  if (a.weeklyEnabled && w.weekly) checks.push({ id: "7d", label: "no limite semanal", w: w.weekly, line: a.weeklyPct });
+  if (a.modelEnabled) for (const m of w.models) checks.push({ id: `m:${m.name}`, label: `no semanal do ${m.name}`, w: m, line: a.modelPct });
+
+  for (const ch of checks) {
+    if (!(ch.w.pct >= ch.line)) continue;
+    const key = `${acc.number}|${ch.id}|${ch.line}|${String(ch.w.resetsAt || "").slice(0, 13)}`;
+    const alerted = extContext.globalState.get(ALERTED_KEY) || [];
+    if (alerted.includes(key)) continue;
+    await extContext.globalState.update(ALERTED_KEY, [key, ...alerted].slice(0, 200));
+    const r = resetIn(ch.w.resetsAt);
+    const text = `Conta ${acc.number} chegou a ${fmtPct(ch.w.pct)} ${ch.label}${r ? ` (renova em ${r})` : ""}`;
+    await pushHistory([{ ts: new Date().toISOString(), kind: "alert", text }]);
+    postState();
+    const tail = autoEnabled() ? " A troca automática assume quando passar da linha de troca." : "";
+    vscode.window.showWarningMessage(`Swap Plus: ${text}.${tail}`, "Trocar para a melhor conta", "Configurações").then((choice) => {
+      if (choice === "Trocar para a melhor conta") switchBest();
+      else if (choice === "Configurações") openSettings();
+    });
+  }
+}
+
+// ---------------------------------------------------------------- troca automática
+
+function autoEnabled() {
+  return !!cfg().get("autoSwitch.enabled");
+}
 
 function claimSlot(ms) {
-  // Evita que várias janelas do VS Code rodem a verificação ao mesmo tempo.
+  // Evita que várias janelas do VS Code decidam ao mesmo tempo.
   try {
     const now = Date.now();
     let last = 0;
@@ -497,136 +715,152 @@ function setupAuto() {
     } catch (e) {
       console.error("[swap-plus] auto tick", e);
     }
-    if (gen === autoGen && autoEnabled()) autoTimer = setTimeout(loop, autoIntervalMs());
+    if (gen === autoGen && autoEnabled()) autoTimer = setTimeout(loop, rules().intervalSec * 1000);
   };
   autoTimer = setTimeout(loop, 5000);
-}
-
-function accRef(ref) {
-  if (!ref) return "(nenhuma)";
-  return `conta ${ref.number}`;
-}
-
-function summarize(events, code, dryRun, stderr) {
-  const ts = new Date().toISOString();
-  const extra = [];
-  for (const e of events) {
-    if (e.event === "account-quarantined") extra.push({ ts, kind: "warn", text: `Conta ${e.number} saiu da rotação temporariamente (${e.reason})` });
-    if (e.event === "account-unquarantined") extra.push({ ts, kind: "info", text: `Conta ${e.number} voltou para a rotação` });
-  }
-  const sw = events.find((e) => e.event === "switch");
-  if (sw) {
-    const verb = dryRun ? "Trocaria" : "Trocou";
-    return {
-      main: { ts, kind: dryRun ? "sim" : "switch", text: `${verb} da ${accRef(sw.from)} para a ${accRef(sw.to)} — ${TRIGGER_LABELS[sw.trigger] || sw.trigger}`, to: sw.to ? sw.to.number : null },
-      extra,
-    };
-  }
-  const ex = events.find((e) => e.event === "all-exhausted");
-  if (ex) {
-    const when = ex.earliestResetAt ? fmtWhen(ex.earliestResetAt) : null;
-    return { main: { ts, kind: "blocked", text: `Todas as contas no limite${when ? ` — a primeira renova ${when}` : ""}` }, extra };
-  }
-  const err = events.find((e) => e.event === "error");
-  if (err) return { main: { ts, kind: "error", text: `Erro: ${err.message}` }, extra };
-  const ns = events.find((e) => e.event === "no-switch");
-  if (ns) {
-    const reason = REASON_LABELS[ns.reason] || ns.reason;
-    return { main: { ts, kind: code === 3 ? "blocked" : "idle", text: `Sem troca: ${reason}${ns.detail ? ` (${ns.detail})` : ""}` }, extra };
-  }
-  if (code !== 0 && code !== 2) {
-    return { main: { ts, kind: "error", text: `Erro ao rodar 'swap-plus auto'${stderr ? `: ${lastLine(stderr)}` : ""}` }, extra };
-  }
-  return { main: { ts, kind: "idle", text: "Sem troca" }, extra };
 }
 
 async function pushHistory(entries) {
   if (!entries.length) return;
   const hist = extContext.globalState.get(HISTORY_KEY) || [];
-  const next = [...entries.reverse(), ...hist].slice(0, HISTORY_MAX);
-  await extContext.globalState.update(HISTORY_KEY, next);
+  const fresh = entries.filter((e) => !(hist[0] && hist[0].kind === e.kind && hist[0].text === e.text));
+  if (!fresh.length) return;
+  await extContext.globalState.update(HISTORY_KEY, [...fresh.reverse(), ...hist].slice(0, HISTORY_MAX));
+}
+
+async function execSwitch(d) {
+  const res = await runCswap(["switch", String(d.to)], 120000);
+  await refresh();
+  const now = state.list ? state.list.activeAccountNumber : null;
+  if (res.code === 0 && now === d.to) return { ok: true };
+  return { ok: false, error: lastLine(res.stderr) || res.spawnError || `a conta ativa continua ${now}` };
 }
 
 async function autoTick({ manual = false, dryRun = false } = {}) {
-  if (!manual && !claimSlot(autoIntervalMs())) return null;
-  const args = ["auto", "--once", "--json"];
-  if (dryRun) args.push("--dry-run");
-  const r = await runCswap(args, 180000);
-  const events = r.stdout
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map(parseJson)
-    .filter(Boolean);
-  const { main, extra } = summarize(events, r.code, dryRun, r.stderr || r.spawnError);
+  const r = rules();
+  if (!manual && !claimSlot(r.intervalSec * 1000)) return null;
+  await refresh();
+  const ts = new Date().toISOString();
+  let main;
+  if (!state.list) {
+    main = { ts, kind: "error", text: `Erro ao ler as contas: ${state.error}` };
+  } else {
+    const d = decide({
+      list: state.list,
+      records: state.records,
+      r,
+      modelIds: state.models.map((m) => m.id),
+      now: Date.now(),
+      lastSwitchAt: extContext.globalState.get(LAST_SWITCH_KEY) || 0,
+    });
+    if (d.action === "switch" && dryRun) {
+      main = { ts, kind: "sim", text: `Trocaria ${d.text}` };
+    } else if (d.action === "switch") {
+      const res = await execSwitch(d);
+      if (res.ok) {
+        await extContext.globalState.update(LAST_SWITCH_KEY, Date.now());
+        main = { ts, kind: "switch", text: `Trocou ${d.text}` };
+      } else {
+        main = { ts, kind: "error", text: `Falha ao trocar para a conta ${d.to}: ${res.error}` };
+      }
+    } else {
+      main = { ts, kind: d.kind, text: d.kind === "idle" ? `Sem troca: ${d.text}` : d.text.charAt(0).toUpperCase() + d.text.slice(1) };
+    }
+  }
 
   if (!dryRun) {
     await extContext.globalState.update(LAST_TICK_KEY, main);
-    const notable = main.kind === "idle" ? [] : [main];
-    await pushHistory([...extra, ...notable]);
+    if (main.kind !== "idle") await pushHistory([main]);
   }
-
   if (main.kind === "switch") {
-    vscode.window.showInformationMessage(`Swap Plus: ${main.text}.`);
-    await refresh();
+    const model = state.models[0];
+    vscode.window.showInformationMessage(`Swap Plus: ${main.text}.${model ? ` O Claude Code continua no ${model.label}.` : ""}`);
   } else if (main.kind === "blocked" && !manual && !dryRun && Date.now() - lastBlockedWarnAt > 60 * 60 * 1000) {
     lastBlockedWarnAt = Date.now();
     vscode.window.showWarningMessage(`Swap Plus: ${main.text}.`);
+  } else if (main.kind === "error" && !manual) {
+    vscode.window.showErrorMessage(`Swap Plus: ${main.text}`);
   }
   render();
   postState();
   return main;
 }
 
-// ---------------------------------------------------------------- commands
+async function switchBest() {
+  await refresh();
+  if (!state.list) return vscode.window.showErrorMessage(`Swap Plus: ${state.error}`);
+  const d = decide({ list: state.list, records: state.records, r: rules(), modelIds: state.models.map((m) => m.id), now: Date.now(), force: true });
+  if (d.action !== "switch") return vscode.window.showInformationMessage(`Swap Plus: ${d.text}.`);
+  const res = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `Trocando para a conta ${d.to}...`, cancellable: false },
+    () => execSwitch(d)
+  );
+  if (res.ok) {
+    await pushHistory([{ ts: new Date().toISOString(), kind: "manual", text: `Troca manual ${d.text}` }]);
+    vscode.window.showInformationMessage(`Swap Plus: agora na conta ${d.to}.`);
+  } else {
+    vscode.window.showErrorMessage(`Falha ao trocar de conta: ${res.error}`);
+  }
+  postState();
+}
+
+// ---------------------------------------------------------------- lista de contas
+
+/** Linha de baixo (menor) de cada conta na lista. */
+function pickerDetail(acc, w, l, disabled) {
+  if (!w) return `⚪ uso indisponível (${statusLabel(acc.usageStatus)})`;
+  const dot = (win, line) => DOTS[level(win.pct, line)];
+  const parts = [`${dot(w.session, l.session)} Sessão 5h sobra ${fmtPct(100 - w.session.pct)}`];
+  const wk = w.weekly;
+  const sameReset =
+    wk && wk.resetsAt && w.models.length && w.models.every((m) => m.resetsAt && Math.abs(Date.parse(m.resetsAt) - Date.parse(wk.resetsAt)) <= 5 * 60000);
+  if (sameReset) {
+    const models = w.models.map((m) => `${dot(m, l.model)} ${m.name} ${fmtPct(m.pct)}`).join(" · ");
+    parts.push(`${dot(wk, l.weekly)} Semanal ${fmtPct(wk.pct)} · ${models} usados, renovam ${shortWhen(wk.resetsAt)}`);
+  } else {
+    if (wk) parts.push(`${dot(wk, l.weekly)} Semanal ${fmtPct(wk.pct)} usado${wk.resetsAt ? `, renova ${shortWhen(wk.resetsAt)}` : ""}`);
+    for (const m of w.models) parts.push(`${dot(m, l.model)} ${m.name} ${fmtPct(m.pct)} usado${m.resetsAt ? `, renova ${shortWhen(m.resetsAt)}` : ""}`);
+  }
+  if (disabled) parts.push("fora da troca automática");
+  if (w.stale) parts.push("dados antigos");
+  return parts.join(" · ");
+}
 
 async function switchAccount() {
   await refresh();
   const list = state.list;
   if (!list || !list.accounts.length) {
-    vscode.window.showErrorMessage("Nenhuma conta Claude cadastrada. Adicione uma conta primeiro.");
+    const choice = await vscode.window.showErrorMessage(
+      list ? "Nenhuma conta Claude cadastrada ainda." : `Swap Plus: ${state.error}`,
+      "Configurações",
+      "Adicionar conta"
+    );
+    if (choice === "Configurações") openSettings();
+    else if (choice === "Adicionar conta") addAccount();
     return;
   }
+  const r = rules();
   const items = list.accounts.map((acc) => {
     const active = acc.number === list.activeAccountNumber;
     const alias = accountAlias(acc);
-    const rec = accountRecord(acc.number);
-    const found = getUsage(acc);
-    let detail = "";
-    if (found) {
-      const f = found.usage.fiveHour ? `${Math.round(found.usage.fiveHour.pct)}%` : "—";
-      const s = found.usage.sevenDay ? `${Math.round(found.usage.sevenDay.pct)}%` : "—";
-      detail = `5h ${f} · semanal ${s}`;
-      for (const sc of found.usage.scoped || []) detail += ` · ${sc.name} ${Math.round(sc.pct)}%`;
-      if (found.usage.sevenDay && found.usage.sevenDay.resetsAt) detail += ` · semanal renova ${fmtWhen(found.usage.sevenDay.resetsAt)}`;
-      if (found.stale) detail += ` · último conhecido`;
-    } else {
-      detail = statusLabel(acc.usageStatus);
-    }
-    if (rec.disabled) detail += " · fora da rotação automática";
     return {
-      label: `${active ? "$(check) " : ""}Conta ${acc.number}${alias ? ` (${alias})` : ""}`,
-      description: acc.email,
-      detail,
+      label: `${active ? "$(check) " : ""}Conta ${acc.number}${alias ? ` “${alias}”` : ""} — ${acc.email}`,
+      detail: pickerDetail(acc, windows(acc), linesFor(acc, r, state.records), accountRecord(acc.number).disabled),
       accountNum: acc.number,
     };
   });
-  const sep = (label) => ({ label, kind: vscode.QuickPickItemKind.Separator });
-  const autoOn = autoEnabled();
   const menu = [
     { label: "$(gear) Configurações...", description: "regras de aviso e de troca automática", accountNum: -2 },
-    { label: `$(sync) Troca automática: ${autoOn ? "ligada" : "desligada"}`, description: autoOn ? "clique para desligar" : "clique para ligar", accountNum: -3 },
-    sep("Contas"),
+    { label: "Contas", kind: vscode.QuickPickItemKind.Separator },
     ...items,
-    sep(""),
+    { label: "", kind: vscode.QuickPickItemKind.Separator },
     { label: "$(add) Adicionar conta...", description: "logar uma nova conta Claude Code", accountNum: -1 },
   ];
 
-  const picked = await vscode.window.showQuickPick(menu, { placeHolder: "Escolha a conta Claude ou abra as configurações", matchOnDescription: true });
+  const picked = await vscode.window.showQuickPick(menu, { placeHolder: "Escolha a conta Claude ou abra as configurações", matchOnDescription: true, matchOnDetail: false });
   if (!picked) return;
   if (picked.accountNum === -1) return addAccount();
   if (picked.accountNum === -2) return openSettings();
-  if (picked.accountNum === -3) return toggleAuto();
   if (picked.accountNum !== list.activeAccountNumber) await doSwitch(picked.accountNum);
 }
 
@@ -656,18 +890,27 @@ async function toggleAuto() {
   vscode.window.showInformationMessage(`Swap Plus: troca automática ${next ? "ligada" : "desligada"}.`);
 }
 
-// ---------------------------------------------------------------- settings panel
+// ---------------------------------------------------------------- tela de configurações
 
-function winPayload(w) {
-  const ts = w.resetsAt ? new Date(w.resetsAt).getTime() : NaN;
-  return { pct: w.pct, in: resetIn(w.resetsAt), when: w.resetsAt ? fmtWhen(w.resetsAt) : null, resetTs: isNaN(ts) ? null : ts };
+function winPayload(win, line) {
+  const ts = win.resetsAt ? Date.parse(win.resetsAt) : NaN;
+  return {
+    pct: win.pct,
+    in: resetIn(win.resetsAt),
+    when: win.resetsAt ? fmtWhen(win.resetsAt) : null,
+    resetTs: isNaN(ts) ? null : ts,
+    level: level(win.pct, line),
+    idle: !!win.idle,
+  };
 }
 
 function buildPayload() {
   const list = state.list;
+  const r = rules();
   const accounts = list
     ? list.accounts.map((acc) => {
-        const found = getUsage(acc);
+        const w = windows(acc);
+        const l = linesFor(acc, r, state.records);
         const rec = accountRecord(acc.number);
         return {
           number: acc.number,
@@ -678,34 +921,33 @@ function buildPayload() {
           active: acc.number === list.activeAccountNumber,
           status: acc.usageStatus,
           statusLabel: statusLabel(acc.usageStatus),
-          stale: found ? found.stale : false,
-          fiveHour: found && found.usage.fiveHour ? winPayload(found.usage.fiveHour) : null,
-          sevenDay: found && found.usage.sevenDay ? winPayload(found.usage.sevenDay) : null,
-          scoped: found ? (found.usage.scoped || []).map((s) => ({ name: s.name, ...winPayload(s) })) : [],
+          stale: w ? w.stale : false,
+          lines: l,
+          session: w ? winPayload(w.session, l.session) : null,
+          weekly: w && w.weekly ? winPayload(w.weekly, l.weekly) : null,
+          models: w ? w.models.map((m) => ({ name: m.name, ...winPayload(m, l.model) })) : [],
           disabled: !!rec.disabled,
           threshold: rec.threshold,
           priority: rec.priority || 0,
         };
       })
     : [];
-  const modelNames = [...new Set(accounts.flatMap((a) => a.scoped.map((s) => s.name)))];
-  const rules = {};
-  for (const k of RULE_KEYS) rules[k] = state.config[k] ? state.config[k].value : null;
+  const names = scopedNames(list);
+  const last = extContext.globalState.get(LAST_TICK_KEY) || null;
   return {
     type: "state",
     error: state.error,
     fetchedAt: state.fetchedAt,
     accounts,
-    modelNames,
-    rules,
+    modelNames: names,
+    modelsInUse: state.models.map((m) => ({ id: m.id, label: m.label, minutesAgo: Math.max(0, Math.round((Date.now() - m.ts) / 60000)) })),
+    watch: watchedModels(state.models.map((m) => m.id), names),
+    rules: r,
     alerts: alertSettings(),
     auto: {
       enabled: autoEnabled(),
-      last: extContext.globalState.get(LAST_TICK_KEY) || null,
-      lastWhen: (() => {
-        const l = extContext.globalState.get(LAST_TICK_KEY);
-        return l && l.ts ? fmtWhen(l.ts) : null;
-      })(),
+      last,
+      lastWhen: last && last.ts ? fmtWhen(last.ts) : null,
       history: (extContext.globalState.get(HISTORY_KEY) || []).map((h) => ({ ...h, when: fmtWhen(h.ts) })),
     },
     ui: {
@@ -731,7 +973,7 @@ function openSettings() {
     return;
   }
   const media = vscode.Uri.joinPath(extContext.extensionUri, "media");
-  panel = vscode.window.createWebviewPanel("swapPlus.settings", "Swap Plus", vscode.ViewColumn.One, {
+  panel = vscode.window.createWebviewPanel(`${NS}.settings`, "Swap Plus", vscode.ViewColumn.One, {
     enableScripts: true,
     retainContextWhenHidden: true,
     localResourceRoots: [media],
@@ -752,12 +994,17 @@ function openSettings() {
   panel.webview.onDidReceiveMessage((m) => handleMessage(m).catch((e) => post({ type: "toast", kind: "error", text: String(e && e.message ? e.message : e) })));
 }
 
-function sameValue(a, b) {
-  if (a === null || a === undefined || a === "") return b === null || b === undefined || b === "";
-  if (b === null || b === undefined || b === "") return false;
-  if (typeof a === "number" || typeof b === "number") return Number(a) === Number(b);
-  return String(a) === String(b);
-}
+const RULE_SETTINGS = {
+  sessionPct: "rules.sessionSwitchPct",
+  weeklyPct: "rules.weeklySwitchPct",
+  modelPct: "rules.modelSwitchPct",
+  preferModel: "rules.preferModel",
+  strategy: "rules.strategy",
+  expiringHours: "rules.expiringHours",
+  cooldownMin: "rules.cooldownMinutes",
+  marginPct: "rules.marginPct",
+  intervalSec: "rules.intervalSeconds",
+};
 
 async function handleMessage(m) {
   switch (m.type) {
@@ -780,29 +1027,23 @@ async function handleMessage(m) {
     }
 
     case "saveRules": {
-      post({ type: "busy", on: true, text: "Salvando regras..." });
-      const errors = [];
-      for (const key of RULE_KEYS) {
-        if (!(key in m.values)) continue;
-        const next = m.values[key];
-        const cur = state.config[key] ? state.config[key].value : null;
-        if (sameValue(next, cur)) continue;
-        const args = next === null || next === undefined || next === "" ? ["config", "unset", key] : ["config", "set", key, String(next)];
-        const r = await runCswap(args);
-        if (r.code !== 0) errors.push(`${key}: ${lastLine(r.stderr) || lastLine(r.stdout) || r.spawnError || "erro"}`);
+      const cur = rules();
+      for (const [k, key] of Object.entries(RULE_SETTINGS)) {
+        if (!m.rules || !(k in m.rules) || m.rules[k] === cur[k]) continue;
+        await cfg().update(key, m.rules[k], vscode.ConfigurationTarget.Global);
       }
       if (m.alerts && typeof m.alerts === "object") {
-        const cur = alertSettings();
-        for (const k of Object.keys(cur)) {
-          if (!(k in m.alerts) || m.alerts[k] === cur[k]) continue;
-          const v = typeof cur[k] === "boolean" ? !!m.alerts[k] : Math.max(1, Math.min(100, Number(m.alerts[k]) || cur[k]));
+        const ca = alertSettings();
+        for (const k of Object.keys(ca)) {
+          if (!(k in m.alerts) || m.alerts[k] === ca[k]) continue;
+          const v = typeof ca[k] === "boolean" ? !!m.alerts[k] : Math.max(1, Math.min(100, Number(m.alerts[k]) || ca[k]));
           await cfg().update(`alerts.${k}`, v, vscode.ConfigurationTarget.Global);
         }
       }
-      await refresh();
       setupAuto();
-      post({ type: "busy", on: false });
-      post(errors.length ? { type: "toast", kind: "error", text: errors.join(" | ") } : { type: "toast", kind: "info", text: "Regras salvas." });
+      render();
+      postState();
+      post({ type: "toast", kind: "info", text: "Regras salvas." });
       return;
     }
 
@@ -842,18 +1083,19 @@ async function handleMessage(m) {
   }
 }
 
-// ---------------------------------------------------------------- lifecycle
+// ---------------------------------------------------------------- ciclo de vida
 
 function activate(context) {
   extContext = context;
 
-  mailItem = vscode.window.createStatusBarItem(`${NS}.mail`, vscode.StatusBarAlignment.Left, 101);
+  mailItem = vscode.window.createStatusBarItem(`${NS}.mail`, vscode.StatusBarAlignment.Left, 105);
   mailItem.name = "Swap Plus — conta";
-  mailItem.command = `${NS}.switchAccount`;
-  usageItem = vscode.window.createStatusBarItem(`${NS}.usage`, vscode.StatusBarAlignment.Left, 100);
-  usageItem.name = "Swap Plus — uso";
-  usageItem.command = `${NS}.switchAccount`;
-  context.subscriptions.push(mailItem, usageItem);
+  sessItem = vscode.window.createStatusBarItem(`${NS}.session`, vscode.StatusBarAlignment.Left, 104);
+  sessItem.name = "Swap Plus — sessão de 5h";
+  weekItem = vscode.window.createStatusBarItem(`${NS}.weekly`, vscode.StatusBarAlignment.Left, 103);
+  weekItem.name = "Swap Plus — semanal";
+  for (const it of [mailItem, sessItem, weekItem]) it.command = `${NS}.switchAccount`;
+  context.subscriptions.push(mailItem, sessItem, weekItem);
 
   context.subscriptions.push(
     vscode.commands.registerCommand(`${NS}.switchAccount`, switchAccount),
@@ -868,15 +1110,14 @@ function activate(context) {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (!e.affectsConfiguration(NS)) return;
       if (e.affectsConfiguration(`${NS}.pollIntervalMinutes`) || e.affectsConfiguration(`${NS}.executablePath`)) setupPolling();
-      if (e.affectsConfiguration(`${NS}.autoSwitch.enabled`)) setupAuto();
+      if (e.affectsConfiguration(`${NS}.autoSwitch.enabled`) || e.affectsConfiguration(`${NS}.rules.intervalSeconds`)) setupAuto();
       render();
       postState();
     })
   );
 
   setupPolling();
-  // Espera o primeiro refresh para saber o intervalo do cswap.
-  refresh().then(() => setupAuto());
+  setupAuto();
 }
 
 function deactivate() {
@@ -885,4 +1126,4 @@ function deactivate() {
   if (autoTimer) clearTimeout(autoTimer);
 }
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, _test: { decide, pickerDetail, windows, linesFor, level, watchedModels, modelLabel, detectModels } };

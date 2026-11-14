@@ -2,7 +2,7 @@
   "name": "swap-plus",
   "displayName": "Swap Plus",
   "description": "Uso do Claude Code na barra de status (ícone de e-mail, 5h, semanal e Fable) e tela de regras para avisos e troca automática de conta. Usa o CLI swap-plus. Fork pessoal de smith89k/claude-swap-status (MIT).",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "paulo-local",
   "license": "MIT",
   "icon": "icon.png",
@@ -56,27 +56,6 @@
     "configuration": {
       "title": "Swap Plus",
       "properties": {
-        "swapPlus.pollIntervalMinutes": {
-          "type": "number",
-          "default": 1,
-          "minimum": 0.5,
-          "description": "De quantos em quantos minutos atualizar o uso na barra de status (mínimo 0,5)."
-        },
-        "swapPlus.autoSwitch.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Troca automática de conta ligada (roda 'swap-plus auto --once' no intervalo configurado)."
-        },
-        "swapPlus.statusBar.showAccountNumber": {
-          "type": "boolean",
-          "default": false,
-          "description": "Mostrar o número da conta ao lado do ícone de e-mail."
-        },
-        "swapPlus.statusBar.showModelWeekly": {
-          "type": "boolean",
-          "default": true,
-          "description": "Mostrar também o limite semanal por modelo (ex.: Fable) na barra de status."
-        },
         "swapPlus.alerts.fiveHourEnabled": {
           "type": "boolean",
           "default": true,
@@ -89,18 +68,6 @@
           "maximum": 100,
           "description": "Percentual da janela de 5h que dispara o aviso."
         },
-        "swapPlus.alerts.weeklyEnabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Avisar quando o limite semanal da conta ativa passar do percentual configurado."
-        },
-        "swapPlus.alerts.weeklyPct": {
-          "type": "number",
-          "default": 80,
-          "minimum": 1,
-          "maximum": 100,
-          "description": "Percentual do limite semanal que dispara o aviso."
-        },
         "swapPlus.alerts.modelEnabled": {
           "type": "boolean",
           "default": true,
@@ -108,15 +75,117 @@
         },
         "swapPlus.alerts.modelPct": {
           "type": "number",
-          "default": 80,
+          "default": 85,
           "minimum": 1,
           "maximum": 100,
           "description": "Percentual do limite semanal por modelo que dispara o aviso."
+        },
+        "swapPlus.alerts.weeklyEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Avisar quando o limite semanal da conta ativa passar do percentual configurado."
+        },
+        "swapPlus.alerts.weeklyPct": {
+          "type": "number",
+          "default": 70,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Percentual do limite semanal que dispara o aviso."
+        },
+        "swapPlus.autoSwitch.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Troca automática de conta ligada. A decisão é tomada pela extensão (regras swapPlus.rules.*); a troca é feita pelo swap-plus."
         },
         "swapPlus.executablePath": {
           "type": "string",
           "default": "",
           "description": "Caminho do executável swap-plus (ou cswap). Vazio = procura ~/.local/bin/swap-plus, depois ~/.local/bin/cswap."
+        },
+        "swapPlus.pollIntervalMinutes": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.5,
+          "description": "De quantos em quantos minutos atualizar o uso na barra de status (mínimo 0,5)."
+        },
+        "swapPlus.rules.cooldownMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 240,
+          "description": "Tempo mínimo entre trocas antecipadas (não vale quando a conta chega na linha)."
+        },
+        "swapPlus.rules.expiringHours": {
+          "type": "number",
+          "default": 24,
+          "minimum": 1,
+          "maximum": 168,
+          "description": "Aproveitar ao máximo: trocar antes da linha para uma conta cuja cota semanal zera em até estas horas."
+        },
+        "swapPlus.rules.intervalSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 15,
+          "maximum": 3600,
+          "description": "De quantos em quantos segundos a troca automática verifica as contas."
+        },
+        "swapPlus.rules.marginPct": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 30,
+          "description": "A conta de destino precisa estar pelo menos estes pontos abaixo de cada linha."
+        },
+        "swapPlus.rules.modelSwitchPct": {
+          "type": "number",
+          "default": 95,
+          "minimum": 50,
+          "maximum": 100,
+          "description": "Trocar de conta quando o limite semanal do modelo em uso (ex.: Fable) chegar neste percentual. Só vale enquanto esse modelo estiver em uso."
+        },
+        "swapPlus.rules.preferModel": {
+          "type": "string",
+          "default": "Fable",
+          "description": "Ao trocar, dar preferência a contas com folga neste modelo. Vazio = sem preferência."
+        },
+        "swapPlus.rules.sessionSwitchPct": {
+          "type": "number",
+          "default": 90,
+          "minimum": 50,
+          "maximum": 100,
+          "description": "Trocar de conta quando a sessão de 5h da conta ativa chegar neste percentual."
+        },
+        "swapPlus.rules.strategy": {
+          "type": "string",
+          "default": "headroom",
+          "enum": [
+            "headroom",
+            "max",
+            "priority"
+          ],
+          "enumDescriptions": [
+            "Mais folga: vai para a conta com mais folga.",
+            "Aproveitar ao máximo: usa primeiro a conta cuja cota semanal zera antes, e troca antes da linha quando outra conta está prestes a zerar com cota sobrando.",
+            "Por prioridade: segue a prioridade de cada conta; em empate, a que renova antes."
+          ],
+          "description": "Para qual conta ir na troca automática."
+        },
+        "swapPlus.rules.weeklySwitchPct": {
+          "type": "number",
+          "default": 80,
+          "minimum": 50,
+          "maximum": 100,
+          "description": "Trocar de conta quando o limite semanal da conta ativa chegar neste percentual."
+        },
+        "swapPlus.statusBar.showAccountNumber": {
+          "type": "boolean",
+          "default": false,
+          "description": "Mostrar o número da conta ao lado do ícone de e-mail."
+        },
+        "swapPlus.statusBar.showModelWeekly": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mostrar também o limite semanal por modelo (ex.: Fable) na barra de status."
         }
       }
     }

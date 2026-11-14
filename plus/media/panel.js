@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
 
   let S = null; // último estado vindo da extensão
-  let draft = null; // regras em edição (só vão para o cswap ao salvar)
+  let draft = null; // regras em edição (só valem depois de salvar)
   let rulesDirty = false;
   let acctHold = false; // usuário mexendo num card de conta: não redesenhar
   let acctPending = false;
@@ -14,26 +14,21 @@
 
   const STRATS = [
     {
-      id: "best",
+      id: "headroom",
       name: "Mais folga",
       tag: "padrão",
-      desc: "Só troca quando a conta ativa chega na linha de troca. Vai para a conta com mais cota livre.",
+      desc: "Troca só quando a conta ativa chega numa linha de troca e vai para a conta com mais folga.",
     },
     {
-      id: "weekly-first",
-      name: "Semanal primeiro",
-      desc: "Só troca na linha de troca, mas escolhe a conta cujo semanal renova antes — gasta primeiro a cota que está prestes a zerar.",
-    },
-    {
-      id: "consume-first",
+      id: "max",
       name: "Aproveitar ao máximo",
       tag: "menos desperdício",
-      desc: "Fica sempre na conta cujo semanal renova antes, mesmo sem bater a linha de troca. Entre as que renovam juntas, vai na que tem mais cota sobrando. Troca mais vezes.",
+      desc: "Usa primeiro a conta cuja cota semanal zera antes. Também troca antes da linha quando outra conta está prestes a zerar com cota sobrando.",
     },
     {
-      id: "priority-consume-first",
+      id: "priority",
       name: "Por prioridade",
-      desc: "Como “Aproveitar ao máximo”, mas respeitando a prioridade que você der a cada conta (número maior primeiro).",
+      desc: "Segue a prioridade que você der a cada conta (número maior primeiro). Em empate, a que renova antes.",
     },
   ];
 
@@ -68,10 +63,10 @@
   }
 
   const send = (msg) => vscode.postMessage(msg);
-  const num = (v, d) => (v === null || v === undefined || v === "" || isNaN(Number(v)) ? d : Number(v));
   const clamp = (v) => Math.max(0, Math.min(100, Number(v) || 0));
-  const sev = (pct) => (pct >= 85 ? "bad" : pct >= 70 ? "warn" : "");
   const fmt = (v) => String(Math.round(Number(v) * 10) / 10).replace(".", ",");
+  const sevClass = (lv) => (lv === "bad" ? "bad" : lv === "warn" ? "warn" : "");
+  const sevOf = (pct, line) => (pct >= line ? "bad" : pct >= Math.min(70, line) ? "warn" : "");
 
   function toast(text, kind) {
     const t = $("toast");
@@ -85,25 +80,8 @@
     return S ? S.accounts.find((a) => a.active) : null;
   }
 
-  function parseModels(value, names) {
-    if (!value) return [];
-    if (String(value).trim().toLowerCase() === "all") return [...names];
-    return String(value).split(",").map((s) => s.trim()).filter(Boolean);
-  }
-
   function draftFromState() {
-    const r = S.rules;
-    const th = num(r["autoswitch.threshold"], 90);
-    return {
-      th5h: th,
-      thWeekly: num(r["autoswitch.weeklyThreshold"], th),
-      strategy: r["autoswitch.strategy"] || "best",
-      models: parseModels(r["autoswitch.model"], S.modelNames),
-      interval: num(r["autoswitch.intervalSeconds"], 60),
-      cooldownMin: Math.round(num(r["autoswitch.cooldownSeconds"], 300) / 60),
-      hyst: num(r["autoswitch.hysteresisPct"], 10),
-      alerts: { ...S.alerts },
-    };
+    return { ...S.rules, alerts: { ...S.alerts } };
   }
 
   function markDirty() {
@@ -117,7 +95,7 @@
   function sliderRow(o) {
     const off = o.toggle && !o.enabled;
     const val = h("span", { class: "val", text: fmt(o.value) + o.suffix });
-    const range = h("input", { type: "range", min: o.min, max: o.max, step: o.step, value: o.value, disabled: off || o.readonly });
+    const range = h("input", { type: "range", min: o.min, max: o.max, step: o.step, value: o.value, disabled: off });
     range.addEventListener("input", () => {
       val.textContent = fmt(range.value) + o.suffix;
       o.onInput(Number(range.value));
@@ -132,9 +110,11 @@
   function track(current, marks) {
     const t = h("div", { class: "track" });
     if (current !== null && current !== undefined) {
-      const f = h("div", { class: "tfill " + sev(current) });
+      const f = h("div", { class: "tfill" });
       f.style.width = clamp(current) + "%";
       t.append(f);
+      t._fill = f;
+      t._current = current;
     }
     for (const m of marks) {
       if (!m.show) continue;
@@ -146,6 +126,10 @@
     return t;
   }
 
+  function paintTrack(t, line) {
+    if (t._fill) t._fill.className = "tfill " + sevOf(t._current, line);
+  }
+
   function moveMark(m, pct) {
     m.pct = pct;
     if (m.el) {
@@ -154,9 +138,10 @@
     }
   }
 
-  function nowText(w) {
+  function nowText(w, what) {
     if (!w) return "conta ativa: sem dados";
-    return `conta ativa: ${fmt(w.pct)}%${w.in ? ` · renova em ${w.in}` : ""}`;
+    if (w.idle) return "conta ativa: sem uso nas últimas 5h";
+    return `conta ativa: ${fmt(w.pct)}% ${what}${w.in ? ` · renova em ${w.in}` : ""}`;
   }
 
   // ------------------------------------------------------------ regras
@@ -168,120 +153,75 @@
     const autoOn = S.auto.enabled;
     const switchHint = autoOn ? null : "Só troca com a “Troca automática” ligada lá em cima.";
 
-    // --- janela de 5 horas
-    {
-      const mA = { cls: "alert", pct: draft.alerts.fiveHourPct, show: draft.alerts.fiveHourEnabled };
-      const mS = { cls: "switch", pct: draft.th5h, show: true };
-      const cur = act && act.fiveHour ? act.fiveHour : null;
-      box.append(
-        h(
-          "div",
-          { class: "rulegroup" },
-          h("div", { class: "rulehead" }, h("h4", { text: "Janela de 5 horas" }), h("span", { class: "now", text: nowText(cur) })),
-          track(cur ? cur.pct : null, [mA, mS]),
-          sliderRow({
-            label: "Avisar quando chegar em",
-            toggle: true,
-            enabled: draft.alerts.fiveHourEnabled,
-            value: draft.alerts.fiveHourPct,
-            min: 30, max: 99, step: 1, suffix: "%",
-            onToggle: (v) => { draft.alerts.fiveHourEnabled = v; markDirty(); renderRules(); },
-            onInput: (v) => { draft.alerts.fiveHourPct = v; moveMark(mA, v); markDirty(); },
-          }),
-          sliderRow({
-            label: "Trocar de conta quando chegar em",
-            value: draft.th5h,
-            min: 50, max: 99, step: 1, suffix: "%",
-            hint: switchHint,
-            onInput: (v) => { draft.th5h = v; moveMark(mS, v); markDirty(); },
-          })
-        )
-      );
-    }
-
-    // --- semanal (todos os modelos)
-    {
-      const mA = { cls: "alert", pct: draft.alerts.weeklyPct, show: draft.alerts.weeklyEnabled };
-      const mS = { cls: "switch", pct: draft.thWeekly, show: true };
-      const cur = act && act.sevenDay ? act.sevenDay : null;
-      box.append(
-        h(
-          "div",
-          { class: "rulegroup" },
-          h("div", { class: "rulehead" }, h("h4", { text: "Limite semanal (todos os modelos)" }), h("span", { class: "now", text: nowText(cur) })),
-          track(cur ? cur.pct : null, [mA, mS]),
-          sliderRow({
-            label: "Avisar quando chegar em",
-            toggle: true,
-            enabled: draft.alerts.weeklyEnabled,
-            value: draft.alerts.weeklyPct,
-            min: 30, max: 99, step: 1, suffix: "%",
-            onToggle: (v) => { draft.alerts.weeklyEnabled = v; markDirty(); renderRules(); },
-            onInput: (v) => { draft.alerts.weeklyPct = v; moveMark(mA, v); markDirty(); },
-          }),
-          sliderRow({
-            label: "Trocar de conta quando chegar em",
-            value: draft.thWeekly,
-            min: 50, max: 99, step: 1, suffix: "%",
-            hint: switchHint,
-            onInput: (v) => {
-              draft.thWeekly = v;
-              moveMark(mS, v);
-              markDirty();
-              document.querySelectorAll("[data-weekly-line]").forEach((el) => (el.textContent = fmt(v) + "%"));
-              modelMarks.forEach((m) => moveMark(m, v));
-            },
-          })
-        )
-      );
-    }
-
-    // --- semanal por modelo (Fable etc.)
-    const modelMarks = [];
-    for (const name of S.modelNames) {
-      const on = draft.models.includes(name);
-      const mA = { cls: "alert", pct: draft.alerts.modelPct, show: draft.alerts.modelEnabled };
-      const mS = { cls: "switch", pct: draft.thWeekly, show: on };
-      modelMarks.push(mS);
-      const sc = act ? act.scoped.find((s) => s.name === name) : null;
-      const switchRow = h(
+    // --- modelo em uso
+    const inUse = S.modelsInUse || [];
+    box.append(
+      h(
         "div",
-        { class: "rule" + (on ? "" : " off") },
-        h(
-          "label",
-          { class: "tg" },
-          h("input", {
-            type: "checkbox",
-            checked: on,
-            onchange: (e) => {
-              draft.models = e.target.checked ? [...new Set([...draft.models, name])] : draft.models.filter((m) => m !== name);
-              markDirty();
-              renderRules();
-            },
-          }),
-          h("span", { text: `Trocar de conta quando o ${name} chegar na linha do semanal` })
-        ),
-        h("span", { class: "fixed", text: "usa a mesma linha do limite semanal acima" }),
-        h("span", { class: "val", "data-weekly-line": "1", text: fmt(draft.thWeekly) + "%" }),
-        !on ? h("small", { class: "hint", text: `Desligado: o ${name} pode esgotar numa conta sem a troca acontecer, se o semanal geral ainda tiver folga.` }) : null
+        { class: "modelnow" },
+        h("b", { text: "Modelo em uso agora: " }),
+        inUse.length ? inUse.map((m, i) => `${i ? ", " : ""}${m.label}${m.minutesAgo ? ` (há ${m.minutesAgo} min)` : ""}`).join("") : "nenhum nos últimos 30 min",
+        h("div", {
+          class: "muted small",
+          text: "A escolha do modelo fica no Claude Code, não na conta: depois de uma troca ele continua no mesmo modelo. O limite de um modelo só dispara troca enquanto ele está em uso.",
+        })
+      )
+    );
+
+    const group = (title, cur, what, alertKey, alertEnabledKey, switchKey, line, extra) => {
+      const mA = { cls: "alert", pct: draft.alerts[alertKey], show: draft.alerts[alertEnabledKey] };
+      const mS = { cls: "switch", pct: draft[switchKey], show: true };
+      const tr = track(cur && !cur.idle ? cur.pct : cur && cur.idle ? 0 : null, [mA, mS]);
+      paintTrack(tr, draft[switchKey]);
+      return h(
+        "div",
+        { class: "rulegroup" },
+        h("div", { class: "rulehead" }, h("h4", null, title, extra && extra.badge ? extra.badge : null), h("span", { class: "now", text: nowText(cur, what) })),
+        tr,
+        sliderRow({
+          label: "Avisar quando chegar em",
+          toggle: true,
+          enabled: draft.alerts[alertEnabledKey],
+          value: draft.alerts[alertKey],
+          min: 30, max: 99, step: 1, suffix: "%",
+          onToggle: (v) => { draft.alerts[alertEnabledKey] = v; markDirty(); renderRules(); },
+          onInput: (v) => { draft.alerts[alertKey] = v; moveMark(mA, v); markDirty(); },
+        }),
+        sliderRow({
+          label: "Trocar de conta quando chegar em",
+          value: draft[switchKey],
+          min: 50, max: 100, step: 1, suffix: "%",
+          hint: (extra && extra.hint) || switchHint,
+          onInput: (v) => { draft[switchKey] = v; moveMark(mS, v); paintTrack(tr, v); markDirty(); },
+        }),
+        extra && extra.after ? extra.after : null
+      );
+    };
+
+    box.append(group("Sessão de 5 horas", act && act.session, "usado", "fiveHourPct", "fiveHourEnabled", "sessionPct"));
+    box.append(group("Limite semanal (todos os modelos)", act && act.weekly, "usado", "weeklyPct", "weeklyEnabled", "weeklyPct"));
+
+    for (const name of S.modelNames) {
+      const watching = (S.watch || []).includes(name);
+      const sc = act ? act.models.find((m) => m.name === name) : null;
+      const prefer = h(
+        "label",
+        { class: "check prefer" },
+        h("input", {
+          type: "checkbox",
+          checked: draft.preferModel === name,
+          onchange: (e) => { draft.preferModel = e.target.checked ? name : ""; markDirty(); },
+        }),
+        `Ao trocar, dar preferência a contas com ${name} disponível`
       );
       box.append(
-        h(
-          "div",
-          { class: "rulegroup" },
-          h("div", { class: "rulehead" }, h("h4", { text: `Limite semanal do ${name}` }), h("span", { class: "now", text: nowText(sc) })),
-          track(sc ? sc.pct : null, [mA, mS]),
-          sliderRow({
-            label: "Avisar quando chegar em",
-            toggle: true,
-            enabled: draft.alerts.modelEnabled,
-            value: draft.alerts.modelPct,
-            min: 30, max: 99, step: 1, suffix: "%",
-            onToggle: (v) => { draft.alerts.modelEnabled = v; markDirty(); renderRules(); },
-            onInput: (v) => { draft.alerts.modelPct = v; moveMark(mA, v); markDirty(); },
-          }),
-          switchRow
-        )
+        group(`Limite semanal do ${name}`, sc, "usado", "modelPct", "modelEnabled", "modelPct", null, {
+          badge: h("span", { class: "tag" + (watching ? " on" : ""), text: watching ? "em uso agora" : "não está em uso" }),
+          hint: watching
+            ? `O ${name} está em uso: esta linha vale agora.` + (autoOn ? "" : " (Só troca com a “Troca automática” ligada.)")
+            : `Vale quando o ${name} estiver em uso. Agora ele não está, então só a sessão e o semanal decidem.`,
+          after: prefer,
+        })
       );
     }
 
@@ -302,63 +242,67 @@
         )
       )
     );
+    const maxBox = $("maxOptions");
+    maxBox.replaceChildren();
+    if (draft.strategy === "max") {
+      maxBox.append(
+        sliderRow({
+          label: "Trocar antes para uma conta que zera em até",
+          value: draft.expiringHours, min: 1, max: 72, step: 1, suffix: " h",
+          hint: "Só se a outra conta tiver pelo menos 20% do semanal sobrando e renovar antes da conta atual.",
+          onInput: (v) => { draft.expiringHours = v; markDirty(); },
+        })
+      );
+    }
 
     // --- avançado
     $("advanced").replaceChildren(
       sliderRow({
         label: "Verificar a cada",
-        value: draft.interval, min: 15, max: 600, step: 15, suffix: " s",
-        onInput: (v) => { draft.interval = v; markDirty(); },
+        value: draft.intervalSec, min: 15, max: 600, step: 15, suffix: " s",
+        onInput: (v) => { draft.intervalSec = v; markDirty(); },
       }),
       sliderRow({
-        label: "Tempo mínimo entre trocas",
+        label: "Tempo mínimo entre trocas antecipadas",
         value: draft.cooldownMin, min: 0, max: 60, step: 1, suffix: " min",
-        hint: "Evita trocas em sequência. Não vale quando a conta bate o limite de verdade.",
+        hint: "Não vale quando a conta chega numa linha de troca: aí troca na hora.",
         onInput: (v) => { draft.cooldownMin = v; markDirty(); },
       }),
       sliderRow({
         label: "Folga mínima da conta de destino",
-        value: draft.hyst, min: 0, max: 30, step: 1, suffix: " pts",
-        hint: "A conta de destino precisa ter pelo menos essa folga a mais. Evita ficar pulando entre duas contas parecidas.",
-        onInput: (v) => { draft.hyst = v; markDirty(); },
+        value: draft.marginPct, min: 0, max: 30, step: 1, suffix: " pts",
+        hint: "A conta de destino precisa estar pelo menos isso abaixo de cada linha. Evita trocar para uma conta que logo precisaria trocar de novo.",
+        onInput: (v) => { draft.marginPct = v; markDirty(); },
       })
     );
   }
 
   function saveRules() {
-    const values = {
-      "autoswitch.threshold": draft.th5h,
-      "autoswitch.weeklyThreshold": draft.thWeekly,
-      "autoswitch.strategy": draft.strategy,
-      "autoswitch.model": draft.models.length ? draft.models.join(",") : null,
-      "autoswitch.intervalSeconds": draft.interval,
-      "autoswitch.cooldownSeconds": draft.cooldownMin * 60,
-      "autoswitch.hysteresisPct": draft.hyst,
-    };
+    const { alerts, ...rules } = draft;
     rulesDirty = false;
     $("rulesDirty").classList.add("hidden");
-    send({ type: "saveRules", values, alerts: draft.alerts });
+    send({ type: "saveRules", rules, alerts });
   }
 
   // ------------------------------------------------------------ contas
 
   function meter(label, w) {
     if (!w) return h("div", { class: "meter" }, h("span", { class: "lbl", text: label }), h("div", { class: "bar" }), h("span", { class: "pct muted", text: "—" }));
-    const fill = h("div", { class: "fill " + sev(w.pct) });
+    const fill = h("div", { class: "fill " + sevClass(w.level) });
     fill.style.width = clamp(w.pct) + "%";
     return h(
       "div",
       { class: "meter" },
       h("span", { class: "lbl", text: label }),
       h("div", { class: "bar" }, fill),
-      h("span", { class: "pct", text: fmt(w.pct) + "%" }),
-      w.in ? h("span", { class: "reset", text: `renova em ${w.in}${w.when ? ` · ${w.when}` : ""}` }) : null
+      h("span", { class: "pct " + sevClass(w.level), text: fmt(w.pct) + "%" }),
+      w.in ? h("span", { class: "reset", text: `renova em ${w.in}${w.when ? ` · ${w.when}` : ""}` }) : w.idle ? h("span", { class: "reset", text: "sem uso nas últimas 5h" }) : null
     );
   }
 
   /** Cota semanal que vai zerar em menos de 24 h sem ter sido usada. */
   function wasteNote(a) {
-    const w = a.sevenDay;
+    const w = a.weekly;
     if (!w || !w.resetTs || a.disabled) return null;
     const hours = (w.resetTs - Date.now()) / 3600000;
     const left = 100 - w.pct;
@@ -367,14 +311,14 @@
   }
 
   function accountCard(a) {
-    const strategy = draft ? draft.strategy : S.rules["autoswitch.strategy"];
-    const prioMatters = strategy === "priority-consume-first";
-    const globalTh = draft ? draft.th5h : num(S.rules["autoswitch.threshold"], 90);
+    const strategy = draft ? draft.strategy : S.rules.strategy;
+    const prioMatters = strategy === "priority";
+    const globalTh = draft ? draft.sessionPct : S.rules.sessionPct;
     const own = a.threshold !== null && a.threshold !== undefined;
     const acct = (op, value) => send({ type: "account", number: a.number, op, value });
 
     const thVal = h("span", { class: "val" + (own ? "" : " dim"), text: fmt(own ? a.threshold : globalTh) + "%" });
-    const thRange = h("input", { type: "range", min: 50, max: 99, step: 1, value: own ? a.threshold : globalTh, disabled: !own });
+    const thRange = h("input", { type: "range", min: 50, max: 100, step: 1, value: own ? a.threshold : globalTh, disabled: !own });
     thRange.addEventListener("input", () => (thVal.textContent = fmt(thRange.value) + "%"));
     thRange.addEventListener("change", () => acct("threshold", Number(thRange.value)));
 
@@ -393,8 +337,8 @@
         h(
           "div",
           null,
-          h("div", { class: "aname" }, h("span", { class: "n", text: `#${a.number}` }), a.alias || a.email),
-          h("div", { class: "sub", text: [a.alias ? a.email : null, a.plan, a.org].filter(Boolean).join(" · ") })
+          h("div", { class: "aname" }, h("span", { class: "n", text: `Conta ${a.number}` }), a.alias ? `“${a.alias}” — ` : "", a.email),
+          h("div", { class: "sub", text: [a.plan, a.org].filter(Boolean).join(" · ") })
         ),
         h(
           "div",
@@ -404,7 +348,7 @@
           a.status && a.status !== "ok" ? h("span", { class: "badge plain", text: a.statusLabel }) : null
         )
       ),
-      h("div", { class: "meters" }, meter("5 horas", a.fiveHour), meter("Semanal", a.sevenDay), a.scoped.map((s) => meter(s.name, s))),
+      h("div", { class: "meters" }, meter("Sessão 5h", a.session), meter("Semanal", a.weekly), a.models.map((m) => meter(m.name, m))),
       wasteNote(a),
       h(
         "div",
@@ -422,7 +366,7 @@
             checked: own,
             onchange: (e) => acct("threshold", e.target.checked ? Number(thRange.value) : null),
           }),
-          "Limite próprio de 5h (sair desta conta em)"
+          "Linha própria da sessão de 5h"
         ),
         thRange,
         thVal
@@ -452,10 +396,10 @@
     const list = [...S.accounts];
     if (sortByReset) {
       list.sort((a, b) => {
-        const ra = a.sevenDay && a.sevenDay.resetTs ? a.sevenDay.resetTs : Infinity;
-        const rb = b.sevenDay && b.sevenDay.resetTs ? b.sevenDay.resetTs : Infinity;
+        const ra = a.weekly && a.weekly.resetTs ? a.weekly.resetTs : Infinity;
+        const rb = b.weekly && b.weekly.resetTs ? b.weekly.resetTs : Infinity;
         if (ra !== rb) return ra - rb;
-        return (a.sevenDay ? a.sevenDay.pct : 100) - (b.sevenDay ? b.sevenDay.pct : 100);
+        return (a.weekly ? a.weekly.pct : 100) - (b.weekly ? b.weekly.pct : 100);
       });
     }
     const sortBox = h(
@@ -470,7 +414,7 @@
           renderAccounts(true);
         },
       }),
-      "Ordenar por quem renova o semanal primeiro (menos usada na frente)"
+      "Ordenar por quem renova o semanal primeiro"
     );
     const grid = h("div", { class: "accounts" }, list.length ? list.map(accountCard) : h("p", { class: "muted", text: "Nenhuma conta cadastrada ainda." }));
     $("accounts").replaceWith(h("div", { id: "accounts" }, sortBox, grid));
@@ -497,10 +441,10 @@
   function renderAuto() {
     $("autoToggle").checked = S.auto.enabled;
     const r = S.rules;
-    const st = STRATS.find((s) => s.id === (r["autoswitch.strategy"] || "best"));
-    const th = num(r["autoswitch.threshold"], 90);
+    const st = STRATS.find((s) => s.id === r.strategy);
+    const models = S.modelNames.length ? `, ${S.modelNames.join("/")} ≥ ${fmt(r.modelPct)}% (quando em uso)` : "";
     $("autoStatus").textContent = S.auto.enabled
-      ? `Ligada — verifica a cada ${fmt(num(r["autoswitch.intervalSeconds"], 60))} s · troca em 5h ≥ ${fmt(th)}% ou semanal ≥ ${fmt(num(r["autoswitch.weeklyThreshold"], th))}% · ${st ? st.name : r["autoswitch.strategy"]}`
+      ? `Ligada — verifica a cada ${fmt(r.intervalSec)} s · troca em sessão ≥ ${fmt(r.sessionPct)}%, semanal ≥ ${fmt(r.weeklyPct)}%${models} · ${st ? st.name : r.strategy}`
       : "Desligada — nenhuma troca acontece sozinha. Os avisos continuam funcionando.";
     const last = S.auto.last;
     $("autoLast").textContent = last ? `Última verificação (${S.auto.lastWhen || "?"}): ${last.text}` : "";
@@ -511,6 +455,7 @@
     $("uiBox").replaceChildren(
       h("label", { class: "check" }, h("input", { type: "checkbox", checked: S.ui.showAccountNumber, onchange: (e) => set("statusBar.showAccountNumber", e.target.checked) }), "Mostrar o número da conta ao lado do ícone de e-mail"),
       h("label", { class: "check" }, h("input", { type: "checkbox", checked: S.ui.showModelWeekly, onchange: (e) => set("statusBar.showModelWeekly", e.target.checked) }), "Mostrar o semanal por modelo (ex.: Fable) na barra"),
+      h("p", { class: "muted small", text: "Cores na barra e na lista: verde abaixo de 70%, amarelo a partir de 70%, vermelho na linha de troca." }),
       h(
         "div",
         { class: "uirule" },

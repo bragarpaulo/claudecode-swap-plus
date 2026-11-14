@@ -45,11 +45,12 @@
     <h2>Regras</h2>
     <span id="rulesDirty" class="dirty hidden">Alterações não salvas</span>
   </div>
-  <p class="muted small">Para cada limite: quando a conta ativa chegar em X%, avisar e/ou trocar de conta. A barrinha mostra o uso atual da conta ativa e onde estão as linhas.</p>
+  <p class="muted small">Para cada limite: quando a conta ativa chegar em X%, avisar e/ou trocar de conta. A barrinha mostra o uso atual da conta ativa e onde estão as linhas. As regras valem depois de clicar em “Salvar regras”.</p>
   <div id="rules"></div>
 
   <h3>Quando trocar, ir para qual conta</h3>
   <div id="strategies" class="strategies"></div>
+  <div id="maxOptions"></div>
 
   <details id="adv">
     <summary>Avançado</summary>
@@ -67,7 +68,7 @@
     <h2>Contas</h2>
     <button id="btnAdd" class="secondary">+ Adicionar conta</button>
   </div>
-  <p class="muted small">Mudanças aqui valem na hora. <b>Limite próprio</b> troca o limite de 5h só daquela conta (ex.: 70% para guardar folga numa conta compartilhada). <b>Prioridade</b> só vale na estratégia “Por prioridade”.</p>
+  <p class="muted small">Mudanças aqui valem na hora. <b>Linha própria</b> muda a linha da sessão de 5h só daquela conta (ex.: 70% para guardar folga). <b>Prioridade</b> só vale na estratégia “Por prioridade”.</p>
   <div id="accounts" class="accounts"></div>
 </section>
 

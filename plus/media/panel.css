@@ -399,3 +399,10 @@ button.linkbtn:hover { color: var(--vscode-textLink-activeForeground, var(--vsco
 .pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
 .pager .muted { font-size: 0.9em; font-variant-numeric: tabular-nums; }
 .pager button:disabled { opacity: 0.45; cursor: default; }
+
+/* "Sua conta" no cartão principal */
+.session { display: grid; grid-template-columns: 110px 1fr; gap: 4px 12px; margin: 12px 0 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); }
+.session .k { color: var(--soft); font-size: 0.9em; padding-top: 2px; }
+.session .v { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.session .sessbtns { margin-top: 6px; }
+@media (max-width: 520px) { .session { grid-template-columns: 1fr; } }

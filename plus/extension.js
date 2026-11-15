@@ -4042,6 +4042,9 @@ function serverPayload() {
       : [];
   const dg = st && st.diag ? st.diag : null;
   const status = serverStatus();
+  // "Sua conta" no cartão principal: com qual conta Google este computador entrou e qual conta Claude ele usa agora.
+  const me = devices.find((d) => d.current) || null;
+  const myAssigned = st && st.device ? st.device.assigned : null;
   const migratedAt = (extContext.globalState.get(SERVER_MIGRATED_KEY) || {})[serverUrl()] || null;
   return {
     mode: serverMode() ? "server" : "local",
@@ -4053,6 +4056,8 @@ function serverPayload() {
     host: serverHost() || null,
     via: srv.token ? meta.via || null : null,
     deviceName: meta.name || null,
+    myGoogle: srv.token && meta.via === "google" ? (priv ? "(e-mail oculto)" : (me && me.googleEmail) || meta.googleEmail || null) : null,
+    myAccount: srv.token && myAssigned !== null && myAssigned !== undefined ? accName(myAssigned) : null,
     lastOkWhen: lastContactText(),
     version: st && st.version ? String(st.version) : null,
     devices,

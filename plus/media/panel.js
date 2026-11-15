@@ -559,9 +559,46 @@
     $("autoToggle").disabled = !on;
     $("btnCheck").disabled = !on;
     $("btnSim").disabled = !on;
+    renderSession();
     $("masterNote").textContent = isServer()
       ? "Desligado, o Swap Plus não fala com o servidor e não mexe no login: o Claude Code fica com o acesso que tem agora. Ligado (modo servidor), ele recebe do servidor a conta escolhida para este computador e envia ao servidor todo login novo que você fizer no Claude Code."
       : "Desligado, o Swap Plus não consulta as contas, não troca de conta e não mexe no login: o Claude Code funciona normalmente com a conta em que você entrar. Ligado, ele também salva na hora o login do Claude Code sempre que ele muda (login novo ou token renovado).";
+  }
+
+  // "Sua conta": a sessão deste VS Code no servidor, no mesmo cartão em que se liga o Swap Plus.
+  function renderSession() {
+    const sv = S.server || {};
+    const busy = !!sv.connecting;
+    const needLogin = !sv.connected || sv.status === "revoked" || (sv.status === "disconnected" && sv.addressChanged);
+    const kids = [h("div", { class: "k", text: "Sua conta" })];
+    if (needLogin) {
+      kids.push(
+        h(
+          "div",
+          { class: "v" },
+          h("span", { class: "muted", text: sv.status === "revoked" ? "acesso recusado pelo servidor — entre de novo" : "não conectado ao servidor" }),
+          h(
+            "div",
+            { class: "row gap wrap sessbtns" },
+            h("button", { text: busy ? "Conectando…" : "Entrar com Google", disabled: busy, onclick: () => send({ type: "connectServer", method: "google" }) }),
+            h("button", { class: "secondary", text: "Colar código", disabled: busy, onclick: () => send({ type: "connectServer", method: "code" }) })
+          )
+        )
+      );
+    } else {
+      const who = sv.myGoogle || (sv.via === "code" ? "conectado por código de conexão" : "conectado");
+      kids.push(
+        h(
+          "div",
+          { class: "v" },
+          h("div", null, h("b", { text: who })),
+          h("div", { class: "muted small", text: [sv.deviceName, sv.host ? `servidor ${sv.host}` : null].filter(Boolean).join(" · ") }),
+          sv.myAccount ? h("div", { class: "small", text: `Conta Claude em uso aqui: ${sv.myAccount}` }) : null,
+          h("div", { class: "row gap wrap sessbtns" }, h("button", { class: "secondary", text: "Sair", onclick: () => send({ type: "disconnectServer" }) }))
+        )
+      );
+    }
+    $("sessionBox").replaceChildren(...kids);
   }
 
   // ------------------------------------------------------------ servidor

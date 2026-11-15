@@ -69,7 +69,7 @@ Imagem: `server/web/` vai para `/app/server/web/` (Dockerfile + .dockerignore).
 | `GET /web/api/me` | `{ email, admin: true, csrf, expiresAt }` ou 401 |
 | `GET /web/api/state` | PanelState (abaixo) |
 | `PUT /web/api/rules` | `{ rules?, autoSwitch? }` → `engine.setRules` |
-| `PATCH /web/api/accounts/:n` | `{ disabled?, threshold?, priority?, alias? }` → `engine.updateAccount` |
+| `PATCH /web/api/accounts/:n` | `{ disabled?, threshold?, weeklyThreshold?, modelThreshold?, priority?, alias? }` → `engine.updateAccount` (linhas: 50–100 ou null) |
 | `DELETE /web/api/accounts/:n` | `engine.removeAccount` (a tela pede confirmação) |
 | `POST /web/api/devices/:id/switch` | `{ number \| null }` → `engine.switchDevice(id, number, "painel")` |
 | `DELETE /web/api/devices/:id` | revoga o computador |
@@ -93,7 +93,7 @@ PanelState:
 ```js
 { version, serverTime, me: { email, admin: true },
   adminEmails: [ ... ],                                  // ADMIN_EMAILS (definidos no servidor)
-  accounts: [ PublicAccount + { loginExpiresAt, accessExpiresAt, lastRefreshAt, gen, disabled, threshold, priority, alias, assignedDevices: [{ id, name }] } ],
+  accounts: [ PublicAccount + { loginExpiresAt, accessExpiresAt, lastRefreshAt, gen, disabled, threshold, weeklyThreshold, modelThreshold, priority, alias, assignedDevices: [{ id, name }] } ],
   rules, ruleDefaults, autoSwitch,
   devices: [ { id, name, platform, googleEmail, createdAt, lastSeen, active, assigned } ],
   allowedEmails: [ ... ],                                // contas que podem conectar computadores (como foram guardadas)
@@ -186,6 +186,14 @@ Sem perfis de regras: as regras são UMA só (gerais), ficam dentro de **Contas*
   `state.accountDevices["<n>"] = null | [deviceId...]` (null = todos). Remover computador/conta limpa as listas.
 - Abaixo da lista, seção **Regras de troca** (o formulário de regras de hoje: sessão/semanal/modelo %, modelo
   preferido, estratégia, horas, intervalo, margem, limite do modelo) + **troca automática** ligada/desligada.
+- Nas Regras de troca, escolha **Computadores** (`rules.devicePlacement`, logo abaixo da troca automática; faz parte do
+  rascunho: só vale em "Salvar regras"; "Voltar ao padrão" volta para Separados):
+  - **Separados** (`"separate"`, padrão): "Cada computador numa conta (cada um com a sua sessão de 5 h)."
+  - **Juntos** (`"together"`): "Todos na mesma conta, a do topo da fila, e trocam juntos (gastam a mesma sessão de 5 h)."
+  - Aviso: um computador só usa contas liberadas para ele (Computadores permitidos); se não puder usar a conta dos outros,
+    fica na melhor conta liberada para ele. O resumo do topo mostra "computadores juntos na mesma conta" quando Juntos.
+  - Vai em `PUT /web/api/rules { rules: { devicePlacement } }` (rota de hoje; o motor recusa outro valor com 400 `invalid_rules`).
+    Motor: SPEC.md, "Regra Computadores".
 
 **Computadores**: grade de quadradinhos, um por computador: nome (renomear), sistema, usuário (conta Google), último
 contato (ativo/parado), **conta Claude logada nele agora** (número + e-mail) com o uso dela em barras pequenas; ações:
@@ -196,7 +204,8 @@ computador" (passo a passo + código de reserva).
 (e-mail), tirar (admin não sai). É quem pode conectar computadores; o painel continua só do administrador.
 
 **Regra de uso no motor**: um computador só recebe/troca para contas cujo `accountDevices` é null ou contém o id
-dele. Regras de troca: as gerais (`{...RULE_DEFAULTS, ...state.rules}`), iguais para todos.
+dele. Regras de troca: as gerais (`{...RULE_DEFAULTS, ...state.rules}`), iguais para todos. Com **Computadores: Juntos**
+a permissão continua valendo mais: a conta do grupo nunca é posta num computador que não pode usá-la.
 
 **Rotas** (além das de hoje): `PUT /web/api/accounts/:n/devices { devices: null | [id] }`,
 `PATCH /web/api/devices/:id { name }`, `PUT /web/api/rules` (já existe), e as de "Adicionar conta pela assinatura".

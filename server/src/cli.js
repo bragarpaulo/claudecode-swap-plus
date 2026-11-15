@@ -34,6 +34,10 @@ const USO = `Uso: node server/src/cli.js <comando>
                  continuam (para desconectar um: revoke <id>). O administrador não sai por aqui.
   allowed        mostra o administrador, as contas liberadas e se o login com Google está ligado
 
+  rule <chave> <valor>       muda uma regra de troca (ex.: rule devicePlacement together;
+                 rule weeklyPct 96; rule strategy max)
+  auto on|off    liga ou desliga a troca automática (vale para todos os computadores)
+
   login-expires <n> <data>   diz até quando vale o login da conta n (o painel avisa 3 dias antes);
                  data em ISO, ex.: 2026-12-01T18:00 (hora daqui) ou 2026-12-01 (meia-noite)
 `;
@@ -348,6 +352,19 @@ async function cmdLoginExpires(nArg, atArg) {
   console.log("O painel avisa quando faltarem menos de 3 dias.");
 }
 
+async function cmdRule(key, value) {
+  if (!key || value === undefined) throw new CliError("diga a regra e o valor: node server/src/cli.js rule <chave> <valor>   (ex.: rule devicePlacement together)");
+  const v = /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : value;
+  const r = await call("PUT", "/admin/rules", { rules: { [key]: v } });
+  console.log(`Regra ${key} = ${JSON.stringify(r.rules[key])}. Vale agora, para todos os computadores.`);
+}
+
+async function cmdAuto(onoff) {
+  if (onoff !== "on" && onoff !== "off") throw new CliError("use: node server/src/cli.js auto on   (ou auto off)");
+  const r = await call("PUT", "/admin/rules", { autoSwitch: onoff === "on" });
+  console.log(`Troca automática ${r.autoSwitch ? "ligada" : "desligada"} (vale para todos os computadores).`);
+}
+
 async function cmdRevoke(idArg) {
   if (!idArg) throw new CliError("diga qual: node server/src/cli.js revoke <id>   (veja os ids com: devices)");
   const list = await call("GET", "/admin/devices");
@@ -381,6 +398,10 @@ async function main(argv) {
       return cmdAllowed();
     case "login-expires":
       return cmdLoginExpires(arg, arg2);
+    case "rule":
+      return cmdRule(arg, arg2);
+    case "auto":
+      return cmdAuto(arg);
     case undefined:
     case "help":
     case "-h":

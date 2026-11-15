@@ -585,6 +585,15 @@ test("cada rota chama o método certo do engine", async (t) => {
   assert.deepEqual(E.last("updateAccount").args, [2, { disabled: true, threshold: 85, alias: "Trabalho" }]);
   r = await call("PATCH", "/v1/accounts/2", { threshold: null, priority: 3, alias: "" });
   assert.deepEqual(E.last("updateAccount").args, [2, { threshold: null, priority: 3, alias: null }]);
+  r = await call("PATCH", "/v1/accounts/2", { weeklyThreshold: "75", modelThreshold: 90 });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(E.last("updateAccount").args, [2, { weeklyThreshold: 75, modelThreshold: 90 }]);
+  r = await call("PATCH", "/v1/accounts/2", { weeklyThreshold: null, modelThreshold: null });
+  assert.deepEqual(E.last("updateAccount").args, [2, { weeklyThreshold: null, modelThreshold: null }]);
+  for (const body of [{ weeklyThreshold: 40 }, { modelThreshold: 101 }, { threshold: 10 }]) {
+    r = await call("PATCH", "/v1/accounts/2", body);
+    assert.equal(r.status, 400, JSON.stringify(body));
+  }
   r = await call("PATCH", "/v1/accounts/99", { disabled: true });
   assert.equal(r.status, 404);
   r = await call("PATCH", "/v1/accounts/2", { disabled: "sim" });

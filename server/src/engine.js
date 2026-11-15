@@ -15,12 +15,16 @@
 //   ou ganha o acesso de uma conta liberada para ele. É permissão, não preferência: vale com a troca
 //   automática ligada ou desligada. records() continua global (extensão e painel); as escolhas usam
 //   recordsFor(dev).
+// - Regra "Computadores" (rules.devicePlacement): "separate" (padrão) = cada computador ativo numa conta (as dos
+//   outros ficam ocupadas, para não dividirem a sessão de 5 h; spreadOut separa); "together" = todos os ativos na
+//   MESMA conta (a do grupo) e trocam juntos (togetherStep). Quem não pode usar a conta do grupo fica com a melhor
+//   conta liberada para ele — a permissão sempre vale mais que o "juntos".
 
 const crypto = require("crypto");
 const { RULE_DEFAULTS, STRATEGY_LABELS, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.2.2";
+const VERSION = "2.3.0";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
 const POLL_ACTIVE_MS = 3 * 60 * 1000; // conta de dispositivo ativo: uso a cada 3 min
@@ -62,7 +66,13 @@ const RULE_LIMITS = {
   marginPct: [0, 30],
   intervalSec: [15, 3600],
 };
+// Linhas próprias por conta (updateAccount / records): sessão 5h, semanal, modelo. null = a regra geral.
+const OWN_LINE_KEYS = ["threshold", "weeklyThreshold", "modelThreshold"];
 const MODEL_LIMIT_MODES = ["sameAccount", "switchAccount"];
+const DEVICE_PLACEMENTS = ["separate", "together"]; // rules.devicePlacement
+// Modo "together": trocas que definem a conta do grupo (a atribuição "assign" não define: no modo "separate" ela
+// escolhe uma conta livre, não a do topo da fila).
+const GROUP_LEADER_BY = new Set(["auto", "limit", "manual", "painel", "group"]);
 
 /** Status HTTP sugerido para cada `.code` de erro lançado pelo motor. */
 const ERROR_STATUS = {
@@ -96,6 +106,10 @@ function str(v) {
 }
 
 const notAllowedText = (n) => `a conta ${n} não está liberada para este computador`;
+const TOGETHER_TEXT = "computadores juntos na mesma conta";
+/** "A", "A e B", "A, B e C" */
+const joinNames = (names) => (names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`);
+const devName = (d) => d.name || d.id;
 const lower = (s) => String(s || "").trim().toLowerCase();
 const cap = (t) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
 const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
@@ -217,6 +231,10 @@ function checkRule(key, value) {
   }
   if (key === "onModelLimit") {
     if (!MODEL_LIMIT_MODES.includes(value)) throw fail("invalid_rules", `onModelLimit precisa ser ${MODEL_LIMIT_MODES.join(" ou ")}`);
+    return value;
+  }
+  if (key === "devicePlacement") {
+    if (!DEVICE_PLACEMENTS.includes(value)) throw fail("invalid_rules", `devicePlacement precisa ser ${DEVICE_PLACEMENTS.join(" ou ")}`);
     return value;
   }
   if (key === "preferModel") {
@@ -437,7 +455,13 @@ class Engine {
     const own = isObj(this.st.rules) ? this.st.rules : {};
     const r = { ...RULE_DEFAULTS, ...own };
     if (!STRATEGY_LABELS[r.strategy]) r.strategy = RULE_DEFAULTS.strategy;
+    if (!DEVICE_PLACEMENTS.includes(r.devicePlacement)) r.devicePlacement = RULE_DEFAULTS.devicePlacement;
     return r;
+  }
+
+  /** Regra "Computadores: Juntos" ligada (todos os ativos na mesma conta, trocando juntos)? */
+  together() {
+    return this.rulesEffective().devicePlacement === "together";
   }
 
   records() {
@@ -446,6 +470,8 @@ class Engine {
       out[String(a.number)] = {
         disabled: !!a.disabled,
         threshold: a.threshold === undefined ? null : a.threshold,
+        weeklyThreshold: a.weeklyThreshold === undefined ? null : a.weeklyThreshold,
+        modelThreshold: a.modelThreshold === undefined ? null : a.modelThreshold,
         priority: Number(a.priority) || 0,
         alias: a.alias || null,
       };
@@ -1016,13 +1042,19 @@ class Engine {
   // ------------------------------------------------------------------ 3) decisões
 
   async decisionStep() {
-    const t = this.now();
+    if (this.decideAll()) await this.saveQuiet();
+  }
+
+  /** Decide a conta de todos os dispositivos ativos (síncrono). true = mudou algo. */
+  decideAll(t = this.now()) {
+    // "Juntos": uma decisão para o grupo inteiro.
+    if (this.together()) return this.togetherStep(t);
     let changed = false;
     for (const dev of this.deviceList()) {
       if (!this.isActive(dev, t)) continue;
       if (this.decideDevice(dev)) changed = true;
     }
-    if (changed) await this.saveQuiet();
+    return changed;
   }
 
   /** Motivo para (re)atribuir a conta do dispositivo, ou null. */
@@ -1037,8 +1069,12 @@ class Engine {
     return null;
   }
 
-  /** Decide a conta de um dispositivo (síncrono: lê e muda o estado sem esperar nada). true = mudou algo. */
+  /**
+   * Decide a conta de um dispositivo (síncrono: lê e muda o estado sem esperar nada). true = mudou algo.
+   * Modo "together": decide o grupo inteiro (togetherStep), não só este dispositivo.
+   */
   decideDevice(dev) {
+    if (this.together()) return this.togetherStep();
     const why = this.needsAssign(dev);
     if (why) return this.assignBest(dev, why);
     if (this.st.autoSwitch === false) return false;
@@ -1081,23 +1117,205 @@ class Engine {
     return true;
   }
 
-  applySwitch(dev, to, by, kind, text) {
+  // ------------------------------------------------------------------ modo "together" (computadores juntos)
+
+  /** records() com `disabled` nas contas que algum destes computadores não pode usar. */
+  sharedRecords(devs) {
+    return devs.reduce((recs, d) => access.filterRecordsForDevice(recs, this.st, d), this.records());
+  }
+
+  /** publicList com a conta `n` como a ativa (para o decide() do grupo). */
+  listWithActive(n) {
+    return { ...this.publicList(null), activeAccountNumber: n };
+  }
+
+  /**
+   * Conta do grupo entre os dispositivos `active`: a do que trocou por último (troca automática, por limite, à mão
+   * ou entrando no grupo — GROUP_LEADER_BY; a atribuição "assign" não conta), se ainda serve para ele (existe, viva,
+   * liberada para ele e, com a troca automática ligada, na rotação); empate: a conta com mais ativos nela. Senão a
+   * melhor conta (bestAccountFor, mesma estratégia), primeiro entre as que todos os ativos podem usar.
+   * Se a conta passou de uma linha, quem decide é o groupDecide (troca o grupo inteiro de uma vez).
+   * → { account, leader } | null (nenhuma conta para ninguém)
+   */
+  groupAccount(active, t = this.now()) {
+    if (!active.length) return null;
+    const onIt = new Map();
+    for (const d of active) {
+      if (d.assigned === null || d.assigned === undefined) continue;
+      onIt.set(Number(d.assigned), (onIt.get(Number(d.assigned)) || 0) + 1);
+    }
+    const cands = active
+      .map((d, i) => ({ d, i }))
+      .filter(({ d }) => d.assigned !== null && d.assigned !== undefined && GROUP_LEADER_BY.has(d.lastSwitchBy))
+      .sort(
+        (x, y) =>
+          (Number(y.d.lastSwitchAt) || 0) - (Number(x.d.lastSwitchAt) || 0) ||
+          (onIt.get(Number(y.d.assigned)) || 0) - (onIt.get(Number(x.d.assigned)) || 0) ||
+          x.i - y.i
+      );
+    for (const { d } of cands) if (!this.needsAssign(d)) return { account: Number(d.assigned), leader: d };
+    let n = this.bestAccountFor(null, { records: this.sharedRecords(active) });
+    if (n !== null) return { account: n, leader: active.find((d) => access.canUse(this.st, d, n)) || active[0] };
+    for (const d of active) {
+      n = this.bestAccountFor(d);
+      if (n !== null) return { account: n, leader: d };
+    }
+    return null;
+  }
+
+  /**
+   * decide() para a conta do grupo: modelos em uso de TODOS os computadores do grupo (união), intervalo mínimo
+   * contado da última troca de qualquer um deles, destino entre as contas que todos eles podem usar. Sem destino
+   * assim (blocked), tenta entre as liberadas para o `leader` (dividir o grupo é melhor que parar).
+   */
+  groupDecide(account, team, leader, t = this.now(), limitHit = null) {
+    const devs = team.length ? team : [leader];
+    const modelIds = [...new Set(devs.flatMap((d) => (Array.isArray(d.models) ? d.models : [])))];
+    const lastSwitchAt = Math.max(0, ...devs.map((d) => Number(d.lastSwitchAt) || 0));
+    const args = { list: this.listWithActive(account), r: this.rulesEffective(), modelIds, now: t, lastSwitchAt, limitHit };
+    let d = decide({ ...args, records: this.sharedRecords(devs) });
+    if (d.kind === "blocked" && devs.length > 1) d = decide({ ...args, records: this.recordsFor(leader) });
+    return d;
+  }
+
+  /**
+   * Leva os computadores `devs` para a conta `to` (quem já está nela fica). Um só trocando: o texto de sempre
+   * ("Trocou [na hora] da conta X para a conta Y: motivo", no histórico dele); dois ou mais: um registro
+   * "Computadores trocados juntos [na hora] para a conta Y: motivo — A e B". → o texto, ou null se ninguém trocou.
+   */
+  moveGroup(devs, to, by, reason, { now = false, deviceId = null } = {}) {
+    const moving = devs.filter((d) => Number(d.assigned) !== to);
+    if (!moving.length) return null;
+    const hora = now ? " na hora" : "";
+    if (moving.length === 1) {
+      const d = moving[0];
+      const from = d.assigned === null || d.assigned === undefined ? null : Number(d.assigned);
+      const text = from === null ? `Conta ${to} atribuída a ${devName(d)}: ${reason}` : `Trocou${hora} da conta ${from} para a conta ${to}: ${reason}`;
+      this.applySwitch(d, to, by, "switch", text);
+      return text;
+    }
+    for (const d of moving) this.moveDevice(d, to, by);
+    const text = `Computadores trocados juntos${hora} para a conta ${to}: ${reason} — ${joinNames(moving.map(devName))}`;
+    this.pushHistory("switch", text, deviceId);
+    return text;
+  }
+
+  /**
+   * Modo "together" (síncrono; true = mudou algo). Entre os dispositivos ativos:
+   *   1) conta do grupo = groupAccount;
+   *   2) com a troca automática ligada, decide() para ela (groupDecide); se trocar, todos os que podem usar a conta
+   *      nova vão juntos para ela;
+   *   3) senão, quem pode usar a conta do grupo e está em outra entra nela (com a troca automática desligada, só
+   *      quem precisa de conta: sem conta, conta morta/removida/não liberada);
+   *   4) quem não pode usar a conta do grupo segue sozinho (decideSolo): a melhor conta liberada para ele.
+   */
+  togetherStep(t = this.now()) {
+    const active = this.deviceList().filter((d) => this.isActive(d, t));
+    if (!active.length) return false;
+    const auto = this.st.autoSwitch !== false;
+    const g = this.groupAccount(active, t);
+    let changed = false;
+    let target = g ? g.account : null;
+    let reason = null;
+    if (g && auto) {
+      const team = active.filter((d) => access.canUse(this.st, d, g.account));
+      const d = this.groupDecide(g.account, team, g.leader, t);
+      if (d.action === "switch") {
+        target = d.to;
+        reason = d.reason;
+      } else if (d.kind === "blocked" && this.noteOnce(g.leader, `blocked:${g.account}`, "blocked", cap(d.text))) {
+        changed = true;
+      }
+    }
+    if (target !== null) {
+      const group = active.filter((d) => access.canUse(this.st, d, target));
+      if (reason !== null) {
+        if (this.moveGroup(group, target, "auto", reason)) changed = true;
+      } else {
+        for (const d of group) {
+          const from = d.assigned === null || d.assigned === undefined ? null : Number(d.assigned);
+          if (from === target) continue;
+          const why = this.needsAssign(d);
+          if (!why && !auto) continue; // troca automática desligada: só quem precisa de conta
+          if (from === null) this.applySwitch(d, target, "group", "info", `Conta ${target} atribuída a ${devName(d)}`);
+          else this.applySwitch(d, target, "group", "switch", `Trocou da conta ${from} para a conta ${target}: ${why ? this.assignReason(why, from) : TOGETHER_TEXT}`);
+          changed = true;
+        }
+      }
+    }
+    for (const d of active) {
+      if (target !== null && access.canUse(this.st, d, target)) continue;
+      if (this.decideSolo(d)) changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * Modo "together", computador que não pode usar a conta do grupo: segue sozinho, como no modo "separate" mas sem
+   * contas ocupadas — a melhor conta liberada para ele, trocando quando ela chega numa linha.
+   */
+  decideSolo(dev) {
+    const why = this.needsAssign(dev);
+    if (why) return this.assignBest(dev, why);
+    if (this.st.autoSwitch === false) return false;
+    const t = this.now();
+    const d = decide({
+      list: this.publicList(dev.id),
+      records: this.recordsFor(dev),
+      r: this.rulesEffective(),
+      modelIds: dev.models || [],
+      now: t,
+      lastSwitchAt: Number(dev.lastSwitchAt) || 0,
+    });
+    if (d.action === "switch") {
+      this.applySwitch(dev, d.to, "auto", "switch", `Trocou ${d.text}`);
+      return true;
+    }
+    if (d.kind === "blocked") return this.noteOnce(dev, `blocked:${dev.assigned}`, "blocked", cap(d.text));
+    return false;
+  }
+
+  /**
+   * Modo "together": para onde vai um computador que precisa de conta — a do grupo (dos outros ativos), se ele puder
+   * usá-la; senão a melhor liberada para ele (sozinho, ele começa o grupo). → { to, group }
+   */
+  placeFor(dev, t = this.now()) {
+    const others = this.deviceList().filter((d) => d.id !== dev.id && this.isActive(d, t));
+    const g = others.length ? this.groupAccount(others, t) : null;
+    if (g && access.canUse(this.st, dev, g.account)) return { to: g.account, group: true };
+    return { to: this.bestAccountFor(dev), group: !others.length };
+  }
+
+  /** Muda a conta do dispositivo (sem histórico). */
+  moveDevice(dev, to, by) {
     dev.assigned = Number(to);
     dev.lastSwitchAt = this.now();
     dev.lastSwitchBy = by;
     this.notes.delete(dev.id);
+  }
+
+  applySwitch(dev, to, by, kind, text) {
+    this.moveDevice(dev, to, by);
     this.pushHistory(kind, text, dev.id);
   }
 
-  assignBest(dev, why) {
-    const from = dev.assigned === null || dev.assigned === undefined ? null : Number(dev.assigned);
-    const to = this.bestAccountFor(dev);
-    const reason = {
+  /** Texto do motivo de needsAssign (para o histórico). */
+  assignReason(why, from) {
+    return {
       dead: `o login da conta ${from} não vale mais`,
       disabled: `a conta ${from} foi desativada`,
       removed: `a conta ${from} foi removida`,
       not_allowed: notAllowedText(from),
     }[why];
+  }
+
+  assignBest(dev, why) {
+    const from = dev.assigned === null || dev.assigned === undefined ? null : Number(dev.assigned);
+    // "Juntos": a conta do grupo, se este computador puder usá-la; senão a melhor liberada para ele.
+    const place = this.together() ? this.placeFor(dev) : { to: this.bestAccountFor(dev), group: false };
+    const to = place.to;
+    const by = place.group ? "group" : "assign";
+    const reason = this.assignReason(why, from);
     if (to === null) {
       // Sem outra conta: o computador sai da conta que não existe mais ou que não está liberada para ele
       // (nunca fica numa conta não permitida, nem morta e não permitida).
@@ -1112,14 +1330,10 @@ class Engine {
     }
     if (to === from) return false;
     if (from === null) {
-      dev.assigned = to;
-      dev.lastSwitchAt = this.now();
-      dev.lastSwitchBy = "assign";
-      this.notes.delete(dev.id);
-      this.pushHistory("info", `Conta ${to} atribuída a ${dev.name || dev.id}`, dev.id);
+      this.applySwitch(dev, to, by, "info", `Conta ${to} atribuída a ${dev.name || dev.id}`);
       return true;
     }
-    this.applySwitch(dev, to, "assign", "switch", `Trocou da conta ${from} para a conta ${to}: ${reason}`);
+    this.applySwitch(dev, to, by, "switch", `Trocou da conta ${from} para a conta ${to}: ${reason}`);
     return true;
   }
 
@@ -1132,12 +1346,14 @@ class Engine {
    *   - ninguém livre: vale conta de outro dispositivo
    * freeOnly: só livres. requireOk: só abaixo das linhas (com margem) e com uso conhecido.
    * Só contas liberadas para o computador (recordsFor); dev null = sem restrição.
+   * records: records já filtrados (ex.: só as contas que todos os computadores do grupo podem usar), no lugar de recordsFor(dev).
+   * Modo "together": nenhuma conta está ocupada (os computadores dividem a conta de propósito).
    */
-  bestAccountFor(dev, { freeOnly = false, requireOk = false } = {}) {
+  bestAccountFor(dev, { freeOnly = false, requireOk = false, records = null } = {}) {
     const t = this.now();
     const r = this.rulesEffective();
-    const recs = this.recordsFor(dev);
-    const others = this.othersAccounts(dev ? dev.id : null, t);
+    const recs = records || this.recordsFor(dev);
+    const others = r.devicePlacement === "together" ? new Set() : this.othersAccounts(dev ? dev.id : null, t);
     const list = this.publicList(dev ? dev.id : null);
     const live = list.accounts.filter((p) => !p.dead && !(recs[String(p.number)] || {}).disabled);
 
@@ -1210,10 +1426,16 @@ class Engine {
   async heartbeat(deviceId, { models, live } = {}) {
     const dev = this.needDevice(deviceId);
     const t = this.now();
+    const returning = !this.isActive(dev, t);
     dev.lastSeen = t;
     dev.models = cleanModels(models);
     dev.live = cleanLive(live, t);
     this.dirty = true; // lastSeen/modelos vão para o cofre no próximo ciclo
+    // "Juntos": quem conecta ou volta a ficar ativo entra na conta do grupo (a dos outros ativos), em vez de puxar o
+    // grupo para a conta dele (uma troca antiga dele não define mais a conta do grupo).
+    if (returning && this.together() && GROUP_LEADER_BY.has(dev.lastSwitchBy) && this.deviceList().some((d) => d.id !== dev.id && this.isActive(d, t))) {
+      dev.lastSwitchBy = "follow";
+    }
     if (this.decideDevice(dev)) await this.saveQuiet();
     return this.stateFor(deviceId);
   }
@@ -1279,6 +1501,7 @@ class Engine {
 
   /**
    * Troca a conta do dispositivo. number null = melhor conta (só entre as liberadas para ele).
+   * Modo "together": troca o grupo inteiro (os ativos + este); quem não pode usar a conta fica onde está.
    * Erros (.code): not_found, dead_account, not_allowed (a conta não está liberada para este computador).
    * → { switched, from, to, text }
    */
@@ -1299,15 +1522,35 @@ class Engine {
       }
       to = n;
     }
-    if (to === from) return { switched: false, from, to, text: `já está na conta ${to}` };
     const best = number === null || number === undefined ? " (melhor conta)" : "";
+    const kind = by === "manual" ? "manual" : "switch";
+    if (this.together()) {
+      const t = this.now();
+      const moving = this.deviceList().filter(
+        (d) => (d.id === dev.id || this.isActive(d, t)) && Number(d.assigned) !== to && access.canUse(this.st, d, to)
+      );
+      if (moving.length && !(moving.length === 1 && moving[0] === dev)) {
+        const who = by === "painel" ? "pelo painel" : `pelo computador ${devName(dev)}`;
+        const text = `Computadores trocados juntos para a conta ${to}: troca manual ${who}${best} — ${joinNames(moving.map(devName))}`;
+        // Quem pediu fica como "manual"/"painel"; os outros foram junto ("group").
+        for (const d of moving) this.moveDevice(d, to, d === dev ? by : "group");
+        this.pushHistory(kind, text, dev.id);
+        await this.saveQuiet();
+        return { switched: true, from, to, text };
+      }
+      // Só este computador troca (os outros já estão na conta ou não podem usá-la): como no modo "separate".
+    }
+    if (to === from) return { switched: false, from, to, text: `já está na conta ${to}` };
     const text = from === null ? `Troca manual para a conta ${to}${best}` : `Troca manual da conta ${from} para a conta ${to}${best}`;
-    this.applySwitch(dev, to, by, by === "manual" ? "manual" : "switch", text);
+    this.applySwitch(dev, to, by, kind, text);
     await this.saveQuiet();
     return { switched: true, from, to, text };
   }
 
-  /** O Claude Code do dispositivo registrou "You've hit your limit". → { switched, text } */
+  /**
+   * O Claude Code do dispositivo registrou "You've hit your limit". → { switched, text }
+   * Modo "together": troca na hora todos os ativos que estão na mesma conta (o grupo).
+   */
   async limitHit(deviceId, label) {
     const dev = this.needDevice(deviceId);
     const lbl = str(label) ? str(label).slice(0, 80) : "limite de uso";
@@ -1329,6 +1572,22 @@ class Engine {
     if (this.st.autoSwitch === false) {
       const text = `A conta ${acc.number} bateu o ${lbl}.`;
       this.pushHistory("alert", text, dev.id);
+      await this.saveQuiet();
+      return { switched: false, text };
+    }
+    if (this.together()) {
+      // "Juntos": decide pela conta que bateu o limite com os ativos nela (o grupo) e troca na hora todos os ativos
+      // que podem usar a conta nova (o grupo inteiro vai junto).
+      const live = this.deviceList().filter((d) => d.id === dev.id || this.isActive(d, t));
+      const team = live.filter((d) => Number(d.assigned) === acc.number);
+      const d = this.groupDecide(acc.number, team, dev, t, lbl);
+      if (d.action === "switch") {
+        const text = this.moveGroup(live.filter((x) => access.canUse(this.st, x, d.to)), d.to, "limit", d.reason, { now: true, deviceId: dev.id });
+        await this.saveQuiet();
+        return { switched: true, text, to: d.to };
+      }
+      const text = cap(d.text);
+      this.pushHistory("blocked", text, dev.id);
       await this.saveQuiet();
       return { switched: false, text };
     }
@@ -1621,7 +1880,26 @@ class Engine {
     return existing ? this.withLock(`acc:${existing.number}`, async () => commit()) : commit();
   }
 
-  /** Ajustes por conta: disabled, threshold, priority, alias. → o record novo */
+  /**
+   * Texto do histórico das linhas próprias da conta. own = [sessão, semanal, modelo] (null = regra geral).
+   * "Regras próprias da conta 2: sessão 85% · semanal 80% (geral) · modelo 95% (geral)" ou
+   * "Conta 2 voltou às regras gerais".
+   */
+  ownLinesText(n, own) {
+    if (own.every((v) => v === null)) return `Conta ${n} voltou às regras gerais`;
+    const r = this.rulesEffective();
+    const parts = [
+      ["sessão", own[0], r.sessionPct],
+      ["semanal", own[1], r.weeklyPct],
+      ["modelo", own[2], r.modelPct],
+    ].map(([label, v, geral]) => (v === null ? `${label} ${geral}% (geral)` : `${label} ${v}%`));
+    return `Regras próprias da conta ${n}: ${parts.join(" · ")}`;
+  }
+
+  /**
+   * Ajustes por conta: disabled, threshold (sessão 5h), weeklyThreshold, modelThreshold (50–100 ou null = regra
+   * geral), priority, alias. → o record novo
+   */
   async updateAccount(number, patch) {
     const acc = this.acc(number);
     if (!acc) throw fail("not_found", `a conta ${number} não existe`);
@@ -1631,13 +1909,15 @@ class Engine {
       if (typeof patch.disabled !== "boolean") throw fail("invalid", "disabled precisa ser true ou false");
       next.disabled = patch.disabled;
     }
-    if ("threshold" in patch) {
-      const v = patch.threshold;
-      if (v === null) next.threshold = null;
+    // Linhas próprias da conta (sessão 5h, semanal, modelo): 50–100, ou null = a regra geral.
+    for (const k of OWN_LINE_KEYS) {
+      if (!(k in patch)) continue;
+      const v = patch[k];
+      if (v === null) next[k] = null;
       else {
         const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
-        if (!Number.isFinite(n) || n < 0 || n > 100) throw fail("invalid", "threshold precisa ser null ou um número de 0 a 100");
-        next.threshold = n;
+        if (!Number.isFinite(n) || n < 50 || n > 100) throw fail("invalid", `${k} precisa ser null ou um número de 50 a 100`);
+        next[k] = n;
       }
     }
     if ("priority" in patch) {
@@ -1653,7 +1933,11 @@ class Engine {
       else throw fail("invalid", "alias precisa ser texto ou null");
     }
     const wasDisabled = !!acc.disabled;
+    const ownOf = (a) => OWN_LINE_KEYS.map((k) => (a[k] === undefined || a[k] === null ? null : Number(a[k])));
+    const ownBefore = ownOf(acc);
     Object.assign(acc, next);
+    const ownAfter = ownOf(acc);
+    if (ownAfter.some((v, i) => v !== ownBefore[i])) this.pushHistory("info", this.ownLinesText(acc.number, ownAfter), null);
     if ("disabled" in next && next.disabled !== wasDisabled) {
       this.pushHistory("info", `Conta ${acc.number} ${next.disabled ? "fora da rotação" : "de volta à rotação"}`, null);
       if (next.disabled) for (const d of this.deviceList()) if (Number(d.assigned) === acc.number && this.isActive(d)) this.decideDevice(d);
@@ -1748,10 +2032,12 @@ class Engine {
    * rules: undefined = não mexe; null = tudo volta ao padrão; objeto = mescla com as atuais
    * (chave com null volta ao padrão; chave desconhecida é ignorada; número fora da faixa é ajustado).
    * autoSwitch: true/false. → { rules (efetivas), autoSwitch }
+   * Mudou a regra "Computadores" (devicePlacement): vale já (decideAll), sem esperar o próximo ciclo.
    */
   async setRules({ rules, autoSwitch } = {}) {
     const st = this.st;
     if (autoSwitch !== undefined && typeof autoSwitch !== "boolean") throw fail("invalid_rules", "autoSwitch precisa ser true ou false");
+    const placementBefore = this.rulesEffective().devicePlacement;
     let nextRules;
     if (rules === null) nextRules = {};
     else if (rules !== undefined) {
@@ -1775,6 +2061,17 @@ class Engine {
     if (autoSwitch !== undefined && (st.autoSwitch !== false) !== autoSwitch) {
       st.autoSwitch = autoSwitch;
       this.pushHistory("info", autoSwitch ? "Troca automática ligada" : "Troca automática desligada", null);
+    }
+    const placement = this.rulesEffective().devicePlacement;
+    if (placement !== placementBefore) {
+      this.pushHistory(
+        "info",
+        placement === "together"
+          ? "Computadores juntos: todos na mesma conta (a do topo da fila), trocando juntos"
+          : "Computadores separados: cada um na sua conta",
+        null
+      );
+      this.decideAll();
     }
     this.dirty = true;
     await this.save();

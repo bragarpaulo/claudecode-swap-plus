@@ -220,6 +220,8 @@ summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
 .badge.on { color: var(--vscode-button-foreground); background: var(--accent); }
 .badge.plain { color: var(--soft); background: transparent; border: 1px solid var(--line); }
 .badge.dead { color: var(--bad); background: transparent; border: 1px solid var(--bad); }
+/* modo servidor: "Em uso neste computador e em: ..." pode ser longo — quebra a linha em vez de empurrar o nome da conta */
+.badge.wrap { white-space: normal; text-align: right; max-width: 230px; overflow-wrap: anywhere; }
 .card.dimmed { opacity: 0.55; }
 
 .meters { display: flex; flex-direction: column; gap: 4px; }
@@ -246,6 +248,12 @@ summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
 .ctl .val.dim { color: var(--soft); font-weight: 400; }
 .ctl.dim { opacity: 0.55; }
 .ctl .cap { color: var(--soft); font-size: 0.9em; grid-column: 1 / -1; }
+/* regra própria da conta ("Usar regra padrão" desmarcado): rótulo — slider — valor */
+.ownrules { display: grid; grid-template-columns: auto 1fr 52px; align-items: center; gap: 4px 8px; padding-left: 24px; margin-top: -4px; }
+.ownrules .lbl { min-width: 62px; max-width: 110px; color: var(--soft); font-size: 0.9em; overflow-wrap: anywhere; }
+.ownrules .val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.ownrules .val.dim { color: var(--soft); font-weight: 400; }
+.ownrules .hint { grid-column: 1 / -1; color: var(--soft); font-size: 0.86em; }
 .afoot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 2px; }
 .afoot input[type="text"] { width: 130px; }
 

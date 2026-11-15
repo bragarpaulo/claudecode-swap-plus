@@ -158,6 +158,27 @@
             <p class="hint" id="rAutoHint">Desligada, nenhum computador troca de conta sozinho. A troca manual (em Computadores) continua funcionando.</p>
           </fieldset>
 
+          <fieldset class="card r-devices">
+            <legend>Computadores</legend>
+            <p class="hint">Vale para os computadores em uso agora. Um computador só usa contas liberadas para ele (“Computadores permitidos”, no cartão da conta): se não puder usar a conta dos outros, fica na melhor conta liberada para ele.</p>
+            <div class="choices two">
+              <label class="choice" for="rPlaceSeparate">
+                <input type="radio" name="devicePlacement" id="rPlaceSeparate" value="separate">
+                <span>
+                  <span class="name">Separados <span class="tag">padrão</span></span>
+                  <span class="desc">Cada computador numa conta (cada um com a sua sessão de 5 h).</span>
+                </span>
+              </label>
+              <label class="choice" for="rPlaceTogether">
+                <input type="radio" name="devicePlacement" id="rPlaceTogether" value="together">
+                <span>
+                  <span class="name">Juntos</span>
+                  <span class="desc">Todos na mesma conta, a do topo da fila, e trocam juntos (gastam a mesma sessão de 5 h).</span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
           <fieldset class="card r-lines">
             <legend>Quando trocar de conta</legend>
             <p class="hint">Quando a conta em uso num computador chegar nesta porcentagem, o servidor passa esse computador para outra conta com folga.</p>

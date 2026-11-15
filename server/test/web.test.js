@@ -839,6 +839,7 @@ test("painel: cada rota chama o engine certo; PanelState no formato da WEB-SPEC;
     "lastGoodUsage",
     "lastRefreshAt",
     "loginExpiresAt",
+    "modelThreshold",
     "number",
     "organizationName",
     "organizationUuid",
@@ -848,7 +849,10 @@ test("painel: cada rota chama o engine certo; PanelState no formato da WEB-SPEC;
     "usage",
     "usageAgeSeconds",
     "usageStatus",
+    "weeklyThreshold",
   ]);
+  assert.equal(st.accounts[0].weeklyThreshold, null, "sem linha própria do semanal: regra geral");
+  assert.equal(st.accounts[0].modelThreshold, null, "sem linha própria do modelo: regra geral");
   const a1 = st.accounts[0];
   const raw1 = ctx.store.state.accounts["1"];
   assert.equal(a1.number, 1);
@@ -912,6 +916,25 @@ test("painel: cada rota chama o engine certo; PanelState no formato da WEB-SPEC;
   assert.equal(ctx.store.state.history[0].text, `Conta 2 ajustada pelo painel (${me}): fora da rotação, apelido "Trabalho", linha da sessão 85%`);
   r = await call(ctx, "PATCH", "/web/api/accounts/2", { s, body: { priority: 3 } });
   assert.deepEqual(E.last("updateAccount").args, [2, { priority: 3 }]);
+  // linhas próprias do semanal e do modelo (50–100; null apaga = regra geral)
+  r = await call(ctx, "PATCH", "/web/api/accounts/2", { s, body: { weeklyThreshold: 70, modelThreshold: "88" } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(E.last("updateAccount").args, [2, { weeklyThreshold: 70, modelThreshold: 88 }]);
+  let a2 = r.json.state.accounts.find((a) => a.number === 2);
+  assert.deepEqual([a2.threshold, a2.weeklyThreshold, a2.modelThreshold], [85, 70, 88]);
+  assert.equal(ctx.store.state.history[0].text, `Conta 2 ajustada pelo painel (${me}): linha semanal 70%, linha do modelo 88%`);
+  r = await call(ctx, "PATCH", "/web/api/accounts/2", { s, body: { threshold: null, weeklyThreshold: null, modelThreshold: null } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(E.last("updateAccount").args, [2, { threshold: null, weeklyThreshold: null, modelThreshold: null }]);
+  a2 = r.json.state.accounts.find((a) => a.number === 2);
+  assert.deepEqual([a2.threshold, a2.weeklyThreshold, a2.modelThreshold], [null, null, null]);
+  assert.equal(ctx.store.state.history[0].text, `Conta 2 ajustada pelo painel (${me}): linha da sessão padrão, linha semanal padrão, linha do modelo padrão`);
+  const nPatch = E.count("updateAccount");
+  for (const body of [{ weeklyThreshold: 49 }, { modelThreshold: 101 }, { weeklyThreshold: "muito" }, { modelThreshold: true }, { threshold: 30 }]) {
+    r = await call(ctx, "PATCH", "/web/api/accounts/2", { s, body });
+    assert.equal(r.status, 400, JSON.stringify(body));
+  }
+  assert.equal(E.count("updateAccount"), nPatch, "recusado não chega no motor");
   r = await call(ctx, "PATCH", "/web/api/accounts/99", { s, body: { disabled: true } });
   assert.equal(r.status, 404);
   r = await call(ctx, "PATCH", "/web/api/accounts/2", { s, body: {} });

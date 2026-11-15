@@ -885,6 +885,7 @@ fieldset.subfield .check { margin: 4px 0; font-size: var(--fs-md); }
 @media (min-width: 960px) {
   #rulesForm { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #rulesForm > .r-auto,
+  #rulesForm > .r-devices,
   #rulesForm > .r-strat,
   #rulesForm > .r-fine,
   #rulesForm > .savebar { grid-column: 1 / -1; }

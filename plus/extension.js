@@ -107,11 +107,15 @@ function numSetting(key, def, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+// Regra só do modo servidor: computadores em contas separadas (padrão) ou todos juntos na mesma conta.
+const DEVICE_PLACEMENTS = ["separate", "together"];
+
 function rules() {
   // Modo servidor: as regras são as do servidor (valem para todos os computadores).
   if (serverMode() && srv.state && srv.state.rules) {
     const r = { ...RULE_DEFAULTS, ...srv.state.rules };
     if (!STRATEGY_LABELS[r.strategy]) r.strategy = "max";
+    if (!DEVICE_PLACEMENTS.includes(r.devicePlacement)) r.devicePlacement = "separate";
     return r;
   }
   return localRules();
@@ -3068,23 +3072,71 @@ async function saveServerRules(m) {
   // Os avisos ("avisar em X%") são deste computador: ficam nas configurações do VS Code.
   if (m.alerts && typeof m.alerts === "object") await saveAlerts(m.alerts);
   const body = {};
-  for (const k of Object.keys(RULE_DEFAULTS)) if (m.rules && k in m.rules) body[k] = m.rules[k];
+  // devicePlacement vai junto mesmo que o rules.js ainda não a tenha em RULE_DEFAULTS (o servidor ignora chave que não conhece).
+  for (const k of new Set([...Object.keys(RULE_DEFAULTS), "devicePlacement"])) if (m.rules && k in m.rules) body[k] = m.rules[k];
+  if ("devicePlacement" in body && !DEVICE_PLACEMENTS.includes(body.devicePlacement)) delete body.devicePlacement;
   const resp = await serverCall("PUT", "/v1/rules", { rules: body }, "salvar as regras no servidor");
   if (resp) post({ type: "toast", kind: "info", text: "Regras salvas no servidor (valem para todos os computadores conectados)." });
   else postState();
 }
 
-async function serverAccountOp(m) {
+// Regra própria de cada conta (null = segue a regra geral): sessão de 5h, semanal e limite do modelo.
+const ACCOUNT_RULE_KEYS = ["threshold", "weeklyThreshold", "modelThreshold"];
+
+/** Valor de linha própria vindo da tela: null (regra geral), número de 50 a 100, ou undefined se inválido. */
+function accountRuleValue(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return isFinite(n) && n >= 50 && n <= 100 ? n : undefined;
+}
+
+// As mudanças de uma conta vão ao servidor uma de cada vez, na ordem em que a pessoa fez
+// (os sliders mandam a cada pausa; sem a fila, duas respostas poderiam chegar fora de ordem).
+let accountOpChain = Promise.resolve();
+
+function serverAccountOp(m) {
+  const run = accountOpChain.then(() => serverAccountOpNow(m));
+  accountOpChain = run.catch(() => {});
+  return run;
+}
+
+async function serverAccountOpNow(m) {
   const n = Number(m.number);
   if (!Number.isInteger(n)) return;
+  const ruleOp = ACCOUNT_RULE_KEYS.includes(m.op) || m.op === "useDefault";
+  const done = (ok) => {
+    if (ruleOp) post({ type: "acctSaved", number: n, op: m.op, seq: m.seq ?? null, ok: !!ok });
+  };
   const patch = {};
   if (m.op === "disabled") patch.disabled = !!m.value;
-  else if (m.op === "threshold") patch.threshold = m.value === null || m.value === "" ? null : Number(m.value);
+  else if (ACCOUNT_RULE_KEYS.includes(m.op)) {
+    const v = accountRuleValue(m.value);
+    if (v === undefined) {
+      post({ type: "toast", kind: "error", text: `Conta ${n}: a linha precisa ficar entre 50% e 100%.` });
+      done(false);
+      return postState();
+    }
+    patch[m.op] = v;
+  } else if (m.op === "useDefault") for (const k of ACCOUNT_RULE_KEYS) patch[k] = null;
   else if (m.op === "priority") patch.priority = m.value === null || m.value === "" ? 0 : Number(m.value);
   else if (m.op === "alias") patch.alias = m.value ? String(m.value).slice(0, 24) : null;
   else return;
   const resp = await serverCall("PATCH", `/v1/accounts/${n}`, patch, `Conta ${n}`);
-  if (!resp) postState();
+  if (!resp) {
+    done(false);
+    return postState();
+  }
+  if (!ruleOp) return;
+  // Confere se o servidor guardou mesmo (um servidor antigo ignora weeklyThreshold/modelThreshold).
+  let stored = true;
+  if (resp.records && typeof resp.records === "object") {
+    const rec = recordOf(resp.records, n);
+    const same = (a, b) => (a === null || a === undefined ? b === null : b !== null && Math.abs(Number(a) - b) < 0.01);
+    stored = Object.keys(patch).every((k) => same(rec[k], patch[k]));
+  }
+  if (stored) post({ type: "toast", kind: "info", text: m.op === "useDefault" ? `Conta ${n} voltou à regra padrão.` : `Regra da conta ${n} salva no servidor.` });
+  else post({ type: "toast", kind: "error", text: `Conta ${n}: o servidor não guardou essa regra (ele pode estar numa versão que ainda não tem regra por conta).` });
+  done(stored);
 }
 
 /** Usar a conta escolhida pelo servidor, descartando o login atual (que o servidor recusou). */
@@ -4118,7 +4170,10 @@ function buildPayload() {
           weekly: w && w.weekly ? winPayload(w.weekly, l.weekly) : null,
           models: w ? w.models.map((m) => ({ name: m.name, ...winPayload(m, l.model) })) : [],
           disabled: !!rec.disabled,
-          threshold: rec.threshold,
+          // Regra própria da conta (null = segue a regra geral). Semanal e modelo só existem no modo servidor.
+          threshold: rec.threshold ?? null,
+          weeklyThreshold: rec.weeklyThreshold ?? null,
+          modelThreshold: rec.modelThreshold ?? null,
           priority: rec.priority || 0,
           // Modo servidor: computadores que estão usando esta conta agora.
           devices: Array.isArray(acc.assignedDevices) ? acc.assignedDevices.map(String) : [],
@@ -4279,14 +4334,21 @@ async function handleMessage(m) {
     case "account": {
       if (serverMode()) return serverAccountOp(m);
       const n = String(m.number);
+      // Modo local: o motor só tem a linha própria da sessão de 5h (semanal e modelo por conta são do servidor).
+      const ruleOp = m.op === "threshold" || m.op === "useDefault";
       let args;
       if (m.op === "disabled") args = [m.value ? "disable" : "enable", n];
+      else if (m.op === "useDefault") args = ["threshold", n, "--unset"];
       else if (m.op === "threshold") args = m.value === null || m.value === "" ? ["threshold", n, "--unset"] : ["threshold", n, String(m.value)];
       else if (m.op === "priority") args = ["priority", n, String(m.value === null || m.value === "" ? 0 : m.value)];
       else if (m.op === "alias") args = m.value ? ["alias", n, String(m.value)] : ["alias", n, "--unset"];
-      else return;
+      else {
+        if (m.op === "weeklyThreshold" || m.op === "modelThreshold") post({ type: "acctSaved", number: Number(m.number), op: m.op, seq: m.seq ?? null, ok: false });
+        return;
+      }
       const r = await runCswapWrite(args);
       if (r.code !== 0) post({ type: "toast", kind: "error", text: `Conta ${n}: ${lastLine(r.stderr) || lastLine(r.stdout) || r.spawnError || "erro"}` });
+      if (ruleOp) post({ type: "acctSaved", number: Number(m.number), op: m.op, seq: m.seq ?? null, ok: r.code === 0 });
       await refreshFresh();
       return;
     }

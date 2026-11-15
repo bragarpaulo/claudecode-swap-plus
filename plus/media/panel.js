@@ -313,6 +313,41 @@
       );
     }
 
+    // --- computadores (só no modo servidor: regra devicePlacement, vai ao servidor no "Salvar regras")
+    let pbox = $("placement");
+    if (!pbox) {
+      pbox = h("div", { id: "placement" });
+      maxBox.after(pbox);
+    }
+    if (!isServer()) {
+      pbox.replaceChildren();
+    } else {
+      const together = draft.devicePlacement === "together";
+      const place = (value, name, tag, desc) => {
+        const on = value === "together" ? together : !together;
+        return h(
+          "label",
+          { class: "strategy" + (on ? " selected" : "") },
+          h("input", {
+            type: "radio",
+            name: "devicePlacement",
+            checked: on,
+            onchange: () => { draft.devicePlacement = value; markDirty(); renderRules(); },
+          }),
+          h("div", null, h("div", { class: "name" }, name, tag ? h("span", { class: "tag", text: tag }) : null), h("div", { class: "desc", text: desc }))
+        );
+      };
+      pbox.replaceChildren(
+        h("h3", { text: "Computadores" }),
+        h(
+          "div",
+          { class: "strategies two" },
+          place("separate", "Separados", "padrão", "Cada computador numa conta (cada um com a sua sessão de 5 h)."),
+          place("together", "Juntos", null, "Todos na mesma conta, a do topo da fila, e trocam juntos (gastam a mesma sessão de 5 h).")
+        )
+      );
+    }
+
     // --- avançado
     $("advanced").replaceChildren(
       isServer()
@@ -370,17 +405,251 @@
     return h("div", { class: "waste", text: `Zera em ${w.in} com ${fmt(left)}% do semanal sem usar` });
   }
 
+  /** Modo servidor: nome deste computador como o servidor o conhece (é o nome que aparece em a.devices). */
+  function myDeviceName() {
+    const sv = S.server || {};
+    const me = (sv.devices || []).find((d) => d.current);
+    return (me && me.name) || sv.deviceName || null;
+  }
+
+  /**
+   * Um selo só dizendo onde a conta está em uso. Modo local: "Em uso". Modo servidor:
+   * "Em uso neste computador" (+ " e em: <outros>") ou "Em uso em: <computadores>".
+   */
+  function inUseBadge(a) {
+    if (!isServer()) return a.active ? h("span", { class: "badge on", text: "Em uso" }) : null;
+    const others = Array.isArray(a.devices) ? [...a.devices] : [];
+    if (a.active) {
+      // A lista do servidor traz este computador também: tira o nome dele uma vez
+      // (outro computador com o mesmo nome continua aparecendo).
+      const i = others.indexOf(myDeviceName());
+      if (i >= 0) others.splice(i, 1);
+      return h("span", {
+        class: "badge on wrap",
+        title: others.length ? "Este computador e os outros listados estão usando esta conta agora" : "Este computador está usando esta conta agora",
+        text: others.length ? `Em uso neste computador e em: ${others.join(", ")}` : "Em uso neste computador",
+      });
+    }
+    return others.length ? h("span", { class: "badge plain wrap", title: "Computadores que estão usando esta conta agora", text: `Em uso em: ${others.join(", ")}` }) : null;
+  }
+
+  // ------------------------------------------------------------ regra própria de cada conta
+  //
+  // "Usar regra padrão" marcado = a conta segue as regras gerais (os três valores null).
+  // Desmarcado: modo servidor mostra 3 sliders (sessão 5h, semanal, modelo) e cada mudança
+  // vai ao servidor na hora (pausa de 500 ms, PATCH só do campo que mudou); modo local mostra
+  // só a sessão de 5h, gravada pelo motor como antes.
+  //
+  // Rascunho por conta: o que a pessoa mudou e ainda não voltou da extensão. A atualização
+  // automática (a cada 30 s) desenha o rascunho por cima do estado até o estado confirmar o
+  // valor, a gravação falhar ou passar 1 min sem confirmação.
+  // n -> { open, fields: { [campo]: { value, seq, ts, timer } }, reset: { seq, ts } | null }
+
+  const RULE_KEYS = ["threshold", "weeklyThreshold", "modelThreshold"];
+  const RULE_DEBOUNCE_MS = 500;
+  const RULE_DRAFT_MAX_MS = 60000;
+  const acctRule = {};
+  let ruleSeq = 0;
+  let ruleMode = null; // "server" | "local": ao trocar de modo, os rascunhos são descartados
+
+  const ownOf = (v) => (v === null || v === undefined || v === "" || !isFinite(Number(v)) ? null : Number(v));
+  const sameOwn = (x, y) => (x === null || y === null ? x === y : Math.abs(x - y) < 0.01);
+  const ruleKeys = () => (isServer() ? RULE_KEYS : ["threshold"]);
+
+  function ruleDraft(n) {
+    return acctRule[n] || (acctRule[n] = { open: false, fields: {}, reset: null });
+  }
+
+  function dropRuleDraft(n) {
+    const d = acctRule[n];
+    if (!d) return;
+    for (const f of Object.values(d.fields)) clearTimeout(f.timer);
+    delete acctRule[n];
+  }
+
+  /** O que o cartão mostra: valores próprios (rascunho por cima do estado) e se "Usar regra padrão" fica marcado. */
+  function ruleView(a) {
+    const d = acctRule[a.number];
+    const keys = ruleKeys();
+    const own = {};
+    for (const k of keys) {
+      if (d && d.fields[k]) own[k] = d.fields[k].value;
+      else if (d && d.reset) own[k] = null; // voltando à regra padrão: não mostra o valor antigo
+      else own[k] = ownOf(a[k]);
+    }
+    const anyOwn = keys.some((k) => own[k] !== null);
+    return { keys, own, useDefault: !anyOwn && !(d && d.open) };
+  }
+
+  /** A cada estado novo: tira do rascunho o que o estado já confirmou (ou que passou do prazo). */
+  function reconcileRuleDrafts() {
+    const mode = isServer() ? "server" : "local";
+    if (ruleMode !== mode) {
+      for (const n of Object.keys(acctRule)) dropRuleDraft(n);
+      ruleMode = mode;
+      return;
+    }
+    const now = Date.now();
+    for (const n of Object.keys(acctRule)) {
+      const d = acctRule[n];
+      const a = S.accounts.find((x) => String(x.number) === n);
+      if (!a) {
+        dropRuleDraft(n);
+        continue;
+      }
+      for (const [k, f] of Object.entries(d.fields)) {
+        if (f.timer) continue; // ainda esperando a pausa do slider
+        if (sameOwn(ownOf(a[k]), f.value) || now - f.ts > RULE_DRAFT_MAX_MS) delete d.fields[k];
+      }
+      if (d.reset && (RULE_KEYS.every((k) => ownOf(a[k]) === null) || now - d.reset.ts > RULE_DRAFT_MAX_MS)) d.reset = null;
+      // A conta já tem regra própria no estado: o "desmarcado sem mexer" não precisa mais ficar guardado.
+      if (!d.reset && RULE_KEYS.some((k) => ownOf(a[k]) !== null)) d.open = false;
+      if (!d.open && !d.reset && !Object.keys(d.fields).length) delete acctRule[n];
+    }
+  }
+
+  /** A gravação de uma regra falhou: o rascunho daquela mudança sai e o cartão volta ao que está gravado. */
+  function ruleFailed(m) {
+    const d = acctRule[m.number];
+    if (!d) return;
+    for (const [k, f] of Object.entries(d.fields)) if (f.seq === m.seq && !f.timer) delete d.fields[k];
+    if (d.reset && d.reset.seq === m.seq) d.reset = null;
+    if (S) renderAccounts();
+  }
+
+  /** Modo servidor: guarda o valor no rascunho e manda ao servidor depois de 500 ms sem mexer. */
+  function ruleInput(n, key, value) {
+    const d = ruleDraft(n);
+    const f = d.fields[key] || (d.fields[key] = { timer: null });
+    clearTimeout(f.timer);
+    f.value = value;
+    f.ts = Date.now();
+    f.seq = ++ruleSeq;
+    const seq = f.seq;
+    f.timer = setTimeout(() => {
+      f.timer = null;
+      f.ts = Date.now();
+      send({ type: "account", number: n, op: key, value, seq });
+    }, RULE_DEBOUNCE_MS);
+  }
+
+  /** Modo local: grava na hora (pelo motor), como antes. */
+  function ruleSendNow(n, key, value) {
+    const d = ruleDraft(n);
+    const old = d.fields[key];
+    if (old) clearTimeout(old.timer);
+    const seq = ++ruleSeq;
+    d.fields[key] = { value, seq, ts: Date.now(), timer: null };
+    send({ type: "account", number: n, op: key, value, seq });
+  }
+
+  /** Desmarcou "Usar regra padrão". */
+  function ruleCustomize(n) {
+    const d = ruleDraft(n);
+    d.open = true;
+    // Modo local, como antes: já grava a linha da sessão, partindo da regra geral.
+    if (!isServer()) ruleSendNow(n, "threshold", Math.max(50, Math.min(100, Number(S.rules.sessionPct) || 90)));
+    rerenderCard(n, "ruledef");
+  }
+
+  /** Marcou "Usar regra padrão" de novo: os três voltam a null. */
+  function ruleBackToDefault(n) {
+    const d = ruleDraft(n);
+    for (const f of Object.values(d.fields)) clearTimeout(f.timer); // pausa ainda pendente não vai mais
+    d.fields = {};
+    d.open = false;
+    d.reset = { seq: ++ruleSeq, ts: Date.now() };
+    send({ type: "account", number: n, op: "useDefault", seq: d.reset.seq });
+    rerenderCard(n, "ruledef");
+  }
+
+  /** Redesenha só um cartão (sem mexer nos outros) e devolve o foco ao controle indicado. */
+  function rerenderCard(n, focusKey) {
+    const old = document.querySelector(`#accounts .acct[data-n="${n}"]`);
+    const a = S && S.accounts.find((x) => x.number === n);
+    if (!old || !a) return renderAccounts(true);
+    const card = accountCard(a, old._idx, old._total);
+    old.replaceWith(card);
+    const el = focusKey ? card.querySelector(`[data-fk="${focusKey}"]`) : null;
+    if (el) el.focus();
+  }
+
+  /** "☑ Usar regra padrão" e, desmarcado, os sliders da regra própria da conta. */
+  function ruleBlock(a) {
+    const r = S.rules || {};
+    const server = isServer();
+    const v = ruleView(a);
+    const modelName = (typeof r.preferModel === "string" && r.preferModel.trim()) || "Modelo";
+    const defs = [
+      { key: "threshold", label: "Sessão 5h", general: r.sessionPct },
+      { key: "weeklyThreshold", label: "Semanal", general: r.weeklyPct },
+      { key: "modelThreshold", label: modelName, general: r.modelPct },
+    ].filter((x) => v.keys.includes(x.key));
+
+    const head = h(
+      "div",
+      { class: "ctl" },
+      h(
+        "label",
+        null,
+        h("input", {
+          type: "checkbox",
+          "data-fk": "ruledef",
+          checked: v.useDefault,
+          onchange: (e) => (e.target.checked ? ruleBackToDefault(a.number) : ruleCustomize(a.number)),
+        }),
+        "Usar regra padrão"
+      ),
+      v.useDefault
+        ? h("span", {
+            class: "cap",
+            text: server
+              ? `Segue as regras gerais: sessão ${fmt(r.sessionPct)}% · semanal ${fmt(r.weeklyPct)}% · ${modelName} ${fmt(r.modelPct)}%`
+              : `Segue a regra geral: troca na sessão de 5h em ${fmt(r.sessionPct)}%`,
+          })
+        : null
+    );
+    if (v.useDefault) return head;
+
+    const rows = defs.map((def) => {
+      const own = v.own[def.key];
+      const start = own !== null ? own : Math.max(50, Math.min(100, Number(def.general) || 90));
+      const inherited = own === null;
+      const val = h("span", {
+        class: "val" + (inherited ? " dim" : ""),
+        title: inherited ? "Ainda segue a regra geral: mexa no slider para fixar um valor só desta conta" : null,
+        text: fmt(start) + "%",
+      });
+      const range = h("input", { type: "range", min: 50, max: 100, step: 1, value: start, "aria-label": `${def.label}: linha de troca só desta conta` });
+      range.addEventListener("input", () => {
+        val.textContent = fmt(range.value) + "%";
+        val.classList.remove("dim");
+        val.removeAttribute("title");
+        if (server) ruleInput(a.number, def.key, Number(range.value));
+      });
+      if (!server) range.addEventListener("change", () => ruleSendNow(a.number, def.key, Number(range.value)));
+      return [h("span", { class: "lbl", text: def.label }), range, val];
+    });
+    return [
+      head,
+      h(
+        "div",
+        { class: "ownrules" },
+        rows.flat(),
+        h("small", {
+          class: "hint",
+          text: server
+            ? "Linha de troca só desta conta. Cada mudança vai na hora para o servidor e vale para todos os computadores."
+            : "Linha da sessão de 5h só desta conta. Semanal e modelo por conta só existem no modo servidor.",
+        })
+      ),
+    ];
+  }
+
   function accountCard(a, idx, total) {
     const strategy = draft ? draft.strategy : S.rules.strategy;
     const prioMatters = strategy === "priority";
-    const globalTh = draft ? draft.sessionPct : S.rules.sessionPct;
-    const own = a.threshold !== null && a.threshold !== undefined;
     const acct = (op, value) => send({ type: "account", number: a.number, op, value });
-
-    const thVal = h("span", { class: "val" + (own ? "" : " dim"), text: fmt(own ? a.threshold : globalTh) + "%" });
-    const thRange = h("input", { type: "range", min: 50, max: 100, step: 1, value: own ? a.threshold : globalTh, disabled: !own });
-    thRange.addEventListener("input", () => (thVal.textContent = fmt(thRange.value) + "%"));
-    thRange.addEventListener("change", () => acct("threshold", Number(thRange.value)));
 
     const prMax = Math.max(10, a.priority || 0);
     const prVal = h("span", { class: "val", text: String(a.priority || 0) });
@@ -388,9 +657,9 @@
     prRange.addEventListener("input", () => (prVal.textContent = prRange.value));
     prRange.addEventListener("change", () => acct("priority", Number(prRange.value)));
 
-    return h(
+    const card = h(
       "div",
-      { class: "acct" + (a.active ? " active" : "") + (a.disabled ? " off" : " rot") },
+      { class: "acct" + (a.active ? " active" : "") + (a.disabled ? " off" : " rot"), "data-n": String(a.number) },
       h(
         "div",
         { class: "ahead" },
@@ -411,7 +680,7 @@
                 h("button", { class: "secondary arrow", title: "Subir uma posição", disabled: idx === 0, text: "↑", onclick: () => send({ type: "move", number: a.number, dir: "up" }) }),
                 h("button", { class: "secondary arrow", title: "Descer uma posição", disabled: idx === total - 1, text: "↓", onclick: () => send({ type: "move", number: a.number, dir: "down" }) })
               ),
-          a.active ? h("span", { class: "badge on", text: "Em uso" }) : null,
+          inUseBadge(a),
           a.disabled ? h("span", { class: "badge plain", text: "Fora da rotação" }) : null,
           a.loginDead
             ? h("span", {
@@ -424,10 +693,7 @@
             : a.status && a.status !== "ok"
               ? h("span", { class: "badge plain", text: a.statusLabel })
               : null,
-          a.stale && a.ageMin !== null ? h("span", { class: "badge plain", title: "O motor atualiza cada conta de alguns em alguns minutos (a Anthropic limita as consultas).", text: `dados de ${a.ageMin} min` }) : null,
-          isServer() && a.devices && a.devices.length
-            ? h("span", { class: "badge plain", title: "Computadores que estão usando esta conta agora", text: `em uso em: ${a.devices.join(", ")}` })
-            : null
+          a.stale && a.ageMin !== null ? h("span", { class: "badge plain", title: "O motor atualiza cada conta de alguns em alguns minutos (a Anthropic limita as consultas).", text: `dados de ${a.ageMin} min` }) : null
         )
       ),
       h("div", { class: "meters" }, meter("Sessão 5h", a.session), meter("Semanal", a.weekly), a.models.map((m) => meter(m.name, m))),
@@ -437,22 +703,7 @@
         { class: "ctl" },
         h("label", null, h("input", { type: "checkbox", class: "rotbox", checked: !a.disabled, onchange: (e) => acct("disabled", !e.target.checked) }), "Participa da troca automática")
       ),
-      h(
-        "div",
-        { class: "ctl" },
-        h(
-          "label",
-          null,
-          h("input", {
-            type: "checkbox",
-            checked: own,
-            onchange: (e) => acct("threshold", e.target.checked ? Number(thRange.value) : null),
-          }),
-          "Linha própria da sessão de 5h"
-        ),
-        thRange,
-        thVal
-      ),
+      ruleBlock(a),
       h("div", { class: "ctl" + (prioMatters ? "" : " dim") }, h("span", { class: "cap", text: prioMatters ? "Prioridade (maior = usada primeiro)" : "Prioridade (só na estratégia “Por prioridade”)" }), prRange, prVal),
       h(
         "div",
@@ -467,6 +718,9 @@
         h("button", { class: "secondary", disabled: a.active, text: a.active ? "Em uso" : "Usar esta conta", onclick: () => send({ type: "switch", number: a.number }) })
       )
     );
+    card._idx = idx; // para redesenhar só este cartão (rerenderCard)
+    card._total = total;
+    return card;
   }
 
   function renderAccounts(force) {
@@ -827,7 +1081,7 @@
       h("span", { class: "dot" + (S.auto.enabled ? " on" : "") }),
       S.auto.enabled ? h("b", { class: "ontext", text: "Ligada" }) : h("b", { text: "Desligada" }),
       S.auto.enabled
-        ? ` — ${srvOn ? "decidida pelo servidor, para todos os computadores" : `verifica a cada ${fmt(r.intervalSec)} s`} · troca em sessão ≥ ${fmt(r.sessionPct)}%, semanal ≥ ${fmt(r.weeklyPct)}%${models} · ${st ? st.name : r.strategy}`
+        ? ` — ${srvOn ? "decidida pelo servidor, para todos os computadores" : `verifica a cada ${fmt(r.intervalSec)} s`} · troca em sessão ≥ ${fmt(r.sessionPct)}%, semanal ≥ ${fmt(r.weeklyPct)}%${models} · ${st ? st.name : r.strategy}${srvOn ? ` · computadores ${r.devicePlacement === "together" ? "juntos" : "separados"}` : ""}`
         : srvOn
           ? " — no servidor: nenhuma troca acontece sozinha em nenhum computador. Os avisos continuam funcionando."
           : " — nenhuma troca acontece sozinha. Os avisos continuam funcionando."
@@ -973,6 +1227,12 @@
     $("btnClear").classList.toggle("hidden", srvOn); // o histórico do servidor não se apaga daqui
     $("rulesWhere").classList.toggle("hidden", !srvOn);
     $("acctWhere").textContent = srvOn ? "Mudanças aqui valem na hora, no servidor, para todos os computadores." : "Mudanças aqui valem na hora.";
+    $("acctRuleHelp").replaceChildren(
+      h("b", { text: "Usar regra padrão" }),
+      srvOn
+        ? ": desmarque para dar à conta linhas de troca só dela — sessão de 5h, semanal e modelo (ex.: 70% na sessão para guardar folga)."
+        : ": desmarque para dar à conta uma linha da sessão de 5h só dela (ex.: 70% para guardar folga)."
+    );
   }
 
   // ------------------------------------------------------------ eventos
@@ -981,7 +1241,10 @@
     const m = ev.data;
     if (m.type === "state") {
       S = m;
+      reconcileRuleDrafts();
       renderAll();
+    } else if (m.type === "acctSaved") {
+      if (!m.ok) ruleFailed(m);
     } else if (m.type === "busy") {
       const b = $("busy");
       b.textContent = m.text || "";

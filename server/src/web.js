@@ -548,6 +548,8 @@ function createWeb(deps) {
         gen: raw.gen === null || raw.gen === undefined || !Number.isFinite(Number(raw.gen)) ? null : Number(raw.gen),
         disabled: !!(hasOwn(rec, "disabled") ? rec.disabled : raw.disabled),
         threshold: rec.threshold ?? raw.threshold ?? null,
+        weeklyThreshold: rec.weeklyThreshold ?? raw.weeklyThreshold ?? null,
+        modelThreshold: rec.modelThreshold ?? raw.modelThreshold ?? null,
         priority: Number(hasOwn(rec, "priority") ? rec.priority : raw.priority) || 0,
         alias: (hasOwn(rec, "alias") ? rec.alias : raw.alias) || null,
         assignedDevices: devices
@@ -656,6 +658,8 @@ function createWeb(deps) {
     if (hasOwn(p, "disabled")) parts.push(p.disabled ? "fora da rotação" : "de volta à rotação");
     if (hasOwn(p, "alias")) parts.push(p.alias ? `apelido "${p.alias}"` : "sem apelido");
     if (hasOwn(p, "threshold")) parts.push(p.threshold === null ? "linha da sessão padrão" : `linha da sessão ${p.threshold}%`);
+    if (hasOwn(p, "weeklyThreshold")) parts.push(p.weeklyThreshold === null ? "linha semanal padrão" : `linha semanal ${p.weeklyThreshold}%`);
+    if (hasOwn(p, "modelThreshold")) parts.push(p.modelThreshold === null ? "linha do modelo padrão" : `linha do modelo ${p.modelThreshold}%`);
     if (hasOwn(p, "priority")) parts.push(`prioridade ${p.priority}`);
     return parts.join(", ");
   }

@@ -79,11 +79,27 @@ function recordOf(records, num) {
   return (records && records[String(num)]) || {};
 }
 
-/** Linhas de troca de uma conta: sessão (pode ter limite próprio), semanal, por modelo. */
+/** Linha própria gravada na conta (número) ou null = vale a regra geral. */
+function ownLine(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * Linhas de troca de uma conta: sessão, semanal e por modelo. Cada uma pode ter valor próprio na conta
+ * (records[n].threshold / weeklyThreshold / modelThreshold); null = a regra geral.
+ */
 function linesFor(acc, r, records) {
   const rec = recordOf(records, acc.number);
-  const own = rec.threshold !== null && rec.threshold !== undefined && isFinite(Number(rec.threshold));
-  return { session: own ? Number(rec.threshold) : r.sessionPct, weekly: r.weeklyPct, model: r.modelPct };
+  const session = ownLine(rec.threshold);
+  const weekly = ownLine(rec.weeklyThreshold);
+  const model = ownLine(rec.modelThreshold);
+  return {
+    session: session !== null ? session : r.sessionPct,
+    weekly: weekly !== null ? weekly : r.weeklyPct,
+    model: model !== null ? model : r.modelPct,
+  };
 }
 
 function scopedNames(list) {
@@ -245,6 +261,9 @@ const RULE_DEFAULTS = {
   marginPct: 5,
   intervalSec: 60,
   onModelLimit: "sameAccount",
+  // Só no modo servidor (engine.js): "separate" = cada computador numa conta; "together" = todos na mesma conta
+  // e trocam juntos. decide() não usa.
+  devicePlacement: "separate",
 };
 
 module.exports = {

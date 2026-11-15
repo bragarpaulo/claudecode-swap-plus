@@ -28,9 +28,10 @@
     marginPct: 5,
     intervalSec: 60,
     onModelLimit: "sameAccount",
+    devicePlacement: "separate", // "separate" | "together" (computadores juntos na mesma conta)
   };
   // Regras que o painel edita (intervalSec é só do modo local da extensão).
-  const RULE_KEYS = ["sessionPct", "weeklyPct", "modelPct", "preferModel", "strategy", "expiringHours", "cooldownMin", "marginPct", "onModelLimit"];
+  const RULE_KEYS = ["sessionPct", "weeklyPct", "modelPct", "preferModel", "strategy", "expiringHours", "cooldownMin", "marginPct", "onModelLimit", "devicePlacement"];
   const NUM_FIELDS = [
     { key: "expiringHours", id: "rExpiring", label: "Horas para “cota prestes a zerar”", min: 1, max: 168 },
     { key: "cooldownMin", id: "rCooldown", label: "Intervalo mínimo entre trocas", min: 0, max: 240 },
@@ -82,8 +83,14 @@
   let addTimer = null;
   let outOpen = false; // grupo "Fora da troca" aberto
 
-  const acctDraft = new Map(); // número da conta → rascunho dos ajustes { alias, own, threshold, priority, devAll, devPicked }
+  const acctDraft = new Map(); // número da conta → rascunho dos ajustes { alias, priority, devAll, devPicked }
   const acctOpen = new Set(); // contas com "Ajustes desta conta" aberto
+  // Linhas próprias por conta (sessão 5h, semanal, modelo): salvas na hora, sem o "Salvar ajustes".
+  const OWN_KEYS = ["threshold", "weeklyThreshold", "modelThreshold"];
+  const OWN_SAVE_MS = 500; // espera depois do último movimento do slider antes de salvar
+  const ownUi = new Set(); // contas com "Usar regra padrão" desmarcado (sliders à mostra, mesmo sem linha própria gravada)
+  const ownLive = new Map(); // número da conta → { campo: valor } mexido no slider e ainda não confirmado pelo servidor
+  const ownTimers = new Map(); // "n:campo" → espera para salvar
   const devChoice = new Map(); // id do computador → opção escolhida em "Trocar para"
   const devRename = new Map(); // id do computador → nome sendo digitado (renomear aberto)
   const pending = new Set(); // vistas que esperam o foco sair para redesenhar
@@ -384,6 +391,10 @@
     outOpen = false;
     acctDraft.clear();
     acctOpen.clear();
+    ownUi.clear();
+    ownLive.clear();
+    for (const t of ownTimers.values()) clearTimeout(t);
+    ownTimers.clear();
     devChoice.clear();
     devRename.clear();
     pending.clear();
@@ -518,6 +529,7 @@
   function rules() {
     const r = { ...defaults(), ...(S && isObj(S.rules) ? S.rules : {}) };
     if (!STRATEGY_LABELS[r.strategy]) r.strategy = RULE_DEFAULTS.strategy;
+    if (r.devicePlacement !== "together") r.devicePlacement = "separate";
     return r;
   }
 
@@ -527,13 +539,25 @@
     return `Conta ${a.number}${a.alias ? ` “${a.alias}”` : ""}${a.email ? ` · ${a.email}` : ""}`;
   }
 
+  /** Linha própria gravada na conta (k: threshold, weeklyThreshold, modelThreshold) ou null = vale a regra geral. */
+  function ownVal(a, k) {
+    const v = a[k];
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
   function hasOwnLine(a) {
-    return a.threshold !== null && a.threshold !== undefined && a.threshold !== "" && Number.isFinite(Number(a.threshold));
+    return ownVal(a, "threshold") !== null;
   }
 
   function linesFor(a) {
     const r = rules();
-    return { session: hasOwnLine(a) ? Number(a.threshold) : Number(r.sessionPct), weekly: Number(r.weeklyPct), model: Number(r.modelPct) };
+    const pick = (k, geral) => {
+      const v = ownVal(a, k);
+      return v !== null ? v : Number(geral);
+    };
+    return { session: pick("threshold", r.sessionPct), weekly: pick("weeklyThreshold", r.weeklyPct), model: pick("modelThreshold", r.modelPct) };
   }
 
   /** Uso que vale mostrar: o atual (ok) ou o último bom. */
@@ -790,6 +814,7 @@
       accs.length ? (inQ === 1 ? "1 na troca" : `${inQ} na troca`) : null,
       devs.length === 1 ? `1 computador (${activeDevs ? "ativo agora" : "parado"})` : `${devs.length} computadores (${activeDevs} ativo${activeDevs === 1 ? "" : "s"} agora)`,
       S.autoSwitch !== false ? "troca automática ligada" : "troca automática desligada",
+      r.devicePlacement === "together" ? "computadores juntos na mesma conta" : null,
       `estratégia “${STRATEGY_LABELS[r.strategy] || r.strategy}”`,
     ].filter(Boolean);
     $("summary").textContent = parts.join(" · ");
@@ -863,9 +888,11 @@
     const u = f.u;
     const five = isObj(u.fiveHour) ? u.fiveHour : null;
     box.append(meter(mini ? "5h" : "Sessão 5h", "Sessão de 5 horas", five ? five.pct : 0, lines.session, five ? five.resetsAt : null, { idle: !five, own, mini }));
-    if (isObj(u.sevenDay)) box.append(meter("Semanal", "Limite semanal", u.sevenDay.pct, lines.weekly, u.sevenDay.resetsAt, { mini }));
+    const ownWeekly = ownVal(a, "weeklyThreshold") !== null;
+    const ownModel = ownVal(a, "modelThreshold") !== null;
+    if (isObj(u.sevenDay)) box.append(meter("Semanal", "Limite semanal", u.sevenDay.pct, lines.weekly, u.sevenDay.resetsAt, { mini, own: ownWeekly }));
     for (const s of Array.isArray(u.scoped) ? u.scoped : []) {
-      if (s && s.name) box.append(meter(String(s.name), `Limite semanal do ${s.name}`, s.pct, lines.model, s.resetsAt, { mini }));
+      if (s && s.name) box.append(meter(String(s.name), `Limite semanal do ${s.name}`, s.pct, lines.model, s.resetsAt, { mini, own: ownModel }));
     }
     const age = Number(f.age);
     if (!mini && (f.old || (Number.isFinite(age) && age > STALE_USAGE_SEC))) {
@@ -1023,21 +1050,124 @@
     );
   }
 
+  /** Tira o valor do slider ainda não confirmado (se ainda for o mesmo). */
+  function dropOwnLive(n, k, v) {
+    const l = ownLive.get(n);
+    if (!l || !hasOwn(l, k) || (v !== undefined && l[k] !== v)) return;
+    delete l[k];
+    if (!Object.keys(l).length) ownLive.delete(n);
+  }
+
+  /** Salva a linha própria k da conta n ~500 ms depois do último movimento do slider (PATCH só desse campo). */
+  function scheduleOwnSave(n, k, word) {
+    const key = `${n}:${k}`;
+    clearTimeout(ownTimers.get(key));
+    ownTimers.set(
+      key,
+      setTimeout(async () => {
+        ownTimers.delete(key);
+        const l = ownLive.get(n);
+        if (!l || !hasOwn(l, k)) return;
+        const v = l[k];
+        const ok = await act(null, () => api("PATCH", `/web/api/accounts/${n}`, { [k]: v }), {
+          before: () => dropOwnLive(n, k, v),
+          ok: `Conta ${n}: ${word} ${v}% salvo.`,
+        });
+        if (!ok) {
+          dropOwnLive(n, k, v); // volta a mostrar o que está gravado no servidor
+          paint("accounts");
+        }
+      }, OWN_SAVE_MS)
+    );
+  }
+
   /**
-   * "Ajustes desta conta": apelido, linha própria da sessão, prioridade e computadores permitidos,
-   * com rascunho (sobrevive à atualização de 30 s) e Salvar/Desfazer.
+   * "Regras de troca desta conta" (dentro de "Ajustes desta conta"): "Usar regra padrão" ou linhas próprias de
+   * sessão 5h, semanal e modelo. Vale na hora, sem o "Salvar ajustes": cada slider salva só o campo dele; marcar
+   * "Usar regra padrão" de novo apaga as três (null = a regra geral).
+   */
+  function ownRulesBlock(a) {
+    const n = Number(a.number);
+    const r = rules();
+    const id = (s) => `acc-${n}-${s}`;
+    const live = ownLive.get(n) || {};
+    const cur = (k) => (hasOwn(live, k) ? live[k] : ownVal(a, k));
+    const useDefault = !ownUi.has(n) && OWN_KEYS.every((k) => cur(k) === null);
+    const modelName = r.preferModel ? String(r.preferModel) : "Modelo";
+    const specs = [
+      { k: "threshold", label: "Sessão 5h", word: "sessão", geral: r.sessionPct },
+      { k: "weeklyThreshold", label: "Semanal", word: "semanal", geral: r.weeklyPct },
+      { k: "modelThreshold", label: modelName, word: modelName, geral: r.modelPct },
+    ];
+    const fDef = h("input", { type: "checkbox", id: id("ruledef"), "data-k": id("ruledef"), checked: useDefault, "aria-describedby": id("ruledefHint") });
+    const sliders = specs.map((s) => {
+      const v = cur(s.k);
+      const val = Math.round(v !== null ? v : Number(s.geral));
+      const input = h("input", { type: "range", id: id(`own-${s.k}`), "data-k": id(`own-${s.k}`), min: "50", max: "100", step: "1", value: String(val), "aria-valuetext": `${val}%` });
+      const out = h("output", { for: input.id, text: `${val}%` });
+      const tag = h("span", { class: "muted small", text: v === null ? " · regra geral" : "" });
+      input.addEventListener("input", () => {
+        out.textContent = `${input.value}%`;
+        input.setAttribute("aria-valuetext", `${input.value}%`);
+      });
+      input.addEventListener("change", () => {
+        ownLive.set(n, { ...(ownLive.get(n) || {}), [s.k]: Number(input.value) });
+        tag.textContent = "";
+        scheduleOwnSave(n, s.k, s.word);
+      });
+      return h("div", { class: "field range" }, h("label", { for: input.id }, s.label, tag), input, out);
+    });
+    const box = h(
+      "div",
+      { class: useDefault ? "hidden" : null },
+      sliders,
+      h("small", { class: "hint", text: "Cada mudança vale na hora. A linha que você não mexer continua igual à regra geral." })
+    );
+    fDef.addEventListener("change", () => {
+      if (!fDef.checked) {
+        ownUi.add(n);
+        box.classList.remove("hidden");
+        return;
+      }
+      ownUi.delete(n);
+      box.classList.add("hidden");
+      const hadLive = ownLive.has(n);
+      for (const k of OWN_KEYS) {
+        clearTimeout(ownTimers.get(`${n}:${k}`));
+        ownTimers.delete(`${n}:${k}`);
+      }
+      ownLive.delete(n);
+      if (!hadLive && OWN_KEYS.every((k) => ownVal(a, k) === null)) return; // nada gravado: só fecha
+      act(fDef, () => api("PATCH", `/web/api/accounts/${n}`, { threshold: null, weeklyThreshold: null, modelThreshold: null }), {
+        ok: `Conta ${n} voltou à regra padrão.`,
+      });
+    });
+    return h(
+      "fieldset",
+      { class: "subfield" },
+      h("legend", { text: "Quando trocar desta conta" }),
+      h("label", { class: "check", for: id("ruledef") }, fDef, h("span", { text: "Usar regra padrão" })),
+      h("small", {
+        class: "hint",
+        id: id("ruledefHint"),
+        text: `Regra padrão (em “Regras de troca”): sessão ${fmtPct(r.sessionPct)} · semanal ${fmtPct(r.weeklyPct)} · ${modelName} ${fmtPct(r.modelPct)}.`,
+      }),
+      box
+    );
+  }
+
+  /**
+   * "Ajustes desta conta": apelido, regras de troca desta conta (salvas na hora, ver ownRulesBlock), prioridade e
+   * computadores permitidos, com rascunho (sobrevive à atualização de 30 s) e Salvar/Desfazer.
    */
   function adjustForm(a) {
     const n = Number(a.number);
-    const own = hasOwnLine(a);
     const r = rules();
     const permitted = accDevices(a); // undefined = servidor antigo
     const devKnown = permitted !== undefined;
     const knownIds = new Set(devices().map((x) => String(x.id)));
     const orig = {
       alias: a.alias || "",
-      own,
-      threshold: String(own ? Number(a.threshold) : Number(r.sessionPct)),
       priority: String(Number(a.priority) || 0),
       devAll: !permitted,
       devPicked: permitted ? permitted.filter((x) => knownIds.has(x)).sort() : [],
@@ -1046,19 +1176,6 @@
     const id = (s) => `acc-${n}-${s}`;
 
     const fAlias = h("input", { type: "text", id: id("alias"), "data-k": id("alias"), maxlength: "40", autocomplete: "off", value: d.alias });
-    const fOwn = h("input", { type: "checkbox", id: id("own"), "data-k": id("own"), checked: d.own });
-    const fTh = h("input", {
-      type: "number",
-      id: id("th"),
-      "data-k": id("th"),
-      min: "50",
-      max: "100",
-      step: "1",
-      inputmode: "numeric",
-      value: d.threshold,
-      disabled: !d.own,
-      "aria-describedby": id("thHint"),
-    });
     const fPr = h("input", {
       type: "number",
       id: id("pr"),
@@ -1128,17 +1245,11 @@
     const save = h("button", { type: "submit", "data-k": id("save"), text: "Salvar ajustes", "aria-label": `Salvar ajustes da Conta ${n}` });
     const undo = h("button", { type: "button", class: "secondary", "data-k": id("undo"), text: "Desfazer", "aria-label": `Desfazer ajustes da Conta ${n}` });
 
-    const read = () => ({ alias: fAlias.value, own: fOwn.checked, threshold: fTh.value, priority: fPr.value, ...readDevs() });
+    const read = () => ({ alias: fAlias.value, priority: fPr.value, ...readDevs() });
     const sameDevs = (x) => x.devAll === orig.devAll && (x.devAll || sameList(x.devPicked, orig.devPicked));
-    const same = (x) =>
-      x.alias.trim() === orig.alias &&
-      x.own === orig.own &&
-      (!x.own || Number(x.threshold) === Number(orig.threshold)) &&
-      Number(x.priority) === Number(orig.priority) &&
-      sameDevs(x);
+    const same = (x) => x.alias.trim() === orig.alias && Number(x.priority) === Number(orig.priority) && sameDevs(x);
     const sync = () => {
       const x = read();
-      fTh.disabled = !x.own;
       syncDevs(x);
       if (same(x)) acctDraft.delete(n);
       else acctDraft.set(n, x);
@@ -1150,18 +1261,7 @@
       "form",
       { class: "adjform", novalidate: true },
       h("div", { class: "field" }, h("label", { for: id("alias"), text: "Apelido" }), fAlias),
-      h("label", { class: "check", for: id("own") }, fOwn, h("span", { text: "Linha própria para a sessão de 5 horas" })),
-      h(
-        "div",
-        { class: "field num" },
-        h("label", { for: id("th"), text: "Linha da sessão desta conta" }),
-        h("span", { class: "numwrap" }, fTh, h("span", { class: "unit", "aria-hidden": "true", text: "%" })),
-        h("small", {
-          class: "hint",
-          id: id("thHint"),
-          text: `De 50 a 100. Sem linha própria vale a das regras de troca (${fmtPct(r.sessionPct)}). Ex.: 70% para guardar folga nesta conta.`,
-        })
-      ),
+      ownRulesBlock(a),
       h(
         "div",
         { class: "field num" },
@@ -1189,17 +1289,6 @@
       const patch = {};
       const alias = x.alias.trim();
       if (alias !== orig.alias) patch.alias = alias || null;
-      if (x.own) {
-        const th = Number(x.threshold);
-        if (x.threshold.trim() === "" || !Number.isFinite(th) || th < 50 || th > 100) {
-          fTh.setAttribute("aria-invalid", "true");
-          fTh.focus();
-          toast("Linha da sessão: use um número de 50 a 100.", "error");
-          return;
-        }
-        if (!orig.own || th !== Number(orig.threshold)) patch.threshold = Math.round(th);
-      } else if (orig.own) patch.threshold = null;
-      fTh.removeAttribute("aria-invalid");
       const pr = Number(x.priority);
       if (x.priority.trim() === "" || !Number.isFinite(pr) || pr < 0 || pr > 1000) {
         fPr.setAttribute("aria-invalid", "true");
@@ -1268,6 +1357,7 @@
 
   function renderAccounts(box) {
     for (const n of [...acctDraft.keys()]) if (!accById(n)) acctDraft.delete(n);
+    for (const n of [...ownUi]) if (!accById(n)) ownUi.delete(n);
     const all = accounts();
     if (!all.length) {
       box.replaceChildren(
@@ -1717,6 +1807,7 @@
       cooldownMin: numVal($("rCooldown")),
       marginPct: numVal($("rMargin")),
       onModelLimit: checkedValue("onModelLimit") || "sameAccount",
+      devicePlacement: checkedValue("devicePlacement") === "together" ? "together" : "separate",
     };
   }
 
@@ -1763,6 +1854,7 @@
     }
     for (const el of $("rulesForm").querySelectorAll('input[name="strategy"]')) el.checked = el.value === v.strategy;
     for (const el of $("rulesForm").querySelectorAll('input[name="onModelLimit"]')) el.checked = el.value === (v.onModelLimit === "switchAccount" ? "switchAccount" : "sameAccount");
+    for (const el of $("rulesForm").querySelectorAll('input[name="devicePlacement"]')) el.checked = el.value === (v.devicePlacement === "together" ? "together" : "separate");
     fillPreferOptions(v.preferModel);
     paintChoices();
   }
@@ -2327,7 +2419,7 @@
 
   // ------------------------------------------------------------ entrada / saída
 
-  const hasUnsaved = () => rulesDirty || acctDraft.size > 0 || [...devRename.entries()].some(([id, v]) => v.trim() !== ((devById(id) || {}).name || ""));
+  const hasUnsaved = () => rulesDirty || acctDraft.size > 0 || ownTimers.size > 0 || [...devRename.entries()].some(([id, v]) => v.trim() !== ((devById(id) || {}).name || ""));
 
   async function logout(btn) {
     if (hasUnsaved()) {

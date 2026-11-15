@@ -43,7 +43,7 @@ const {
 const { createWeb, webReplacer, uaSummary } = require("./web");
 const access = require("./access");
 
-const VERSION = "2.2.2";
+const VERSION = "2.3.0";
 const MAX_BODY = 256 * 1024; // corpo máximo aceito
 const HARD_BODY = MAX_BODY * 4; // acima disso nem lê o resto: responde 413 e fecha
 const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -554,13 +554,16 @@ function cleanAccountPatch(body) {
     if (typeof body.disabled !== "boolean") throw bad("disabled precisa ser true ou false");
     patch.disabled = body.disabled;
   }
-  if (hasOwn(body, "threshold")) patch.threshold = numOrNull(body.threshold, "threshold", 0, 100);
+  // Linhas próprias da conta (sessão 5h, semanal, modelo): 50–100, ou null/"" = a regra geral.
+  for (const k of ["threshold", "weeklyThreshold", "modelThreshold"]) {
+    if (hasOwn(body, k)) patch[k] = numOrNull(body[k], k, 50, 100);
+  }
   if (hasOwn(body, "priority")) patch.priority = numOrNull(body.priority, "priority", -1000, 1000) ?? 0;
   if (hasOwn(body, "alias")) {
     if (body.alias !== null && typeof body.alias !== "string") throw bad("alias precisa ser um texto ou null");
     patch.alias = cleanText(body.alias, 40) || null;
   }
-  if (Object.keys(patch).length === 0) throw bad("nada para mudar (use disabled, threshold, priority ou alias)");
+  if (Object.keys(patch).length === 0) throw bad("nada para mudar (use disabled, threshold, weeklyThreshold, modelThreshold, priority ou alias)");
   return patch;
 }
 
@@ -1498,6 +1501,29 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     { m: "POST", p: /^\/admin\/allow$/, body: true, fn: ({ body }) => allowEmail(body.email) },
     { m: "POST", p: /^\/admin\/deny$/, body: true, fn: ({ body }) => denyEmail(body.email) },
     { m: "POST", p: /^\/admin\/accounts\/(\d{1,6})\/login-expires$/, body: true, fn: setLoginExpires },
+    // Regras pela linha de comando do servidor (ex.: computadores juntos, troca automática).
+    {
+      m: "PUT",
+      p: /^\/admin\/rules$/,
+      body: true,
+      fn: async ({ body }) => {
+        const patch = {};
+        if (body.rules !== undefined) {
+          if (body.rules !== null && !isObj(body.rules)) throw bad("rules precisa ser um objeto (ou null para voltar ao padrão)");
+          patch.rules = body.rules === null ? null : { ...(state().rules || {}), ...body.rules };
+        }
+        if (body.autoSwitch !== undefined) patch.autoSwitch = !!body.autoSwitch;
+        if (!("rules" in patch) && !("autoSwitch" in patch)) throw bad("envie { rules } e/ou { autoSwitch }");
+        try {
+          await engine.setRules(patch);
+        } catch (e) {
+          if (e && (e.code === "invalid_rules" || e.code === "invalid")) throw new HttpError(400, e.code, String(e.message || "regra inválida").slice(0, 300));
+          throw e;
+        }
+        log.info("[regras] alteradas pelo admin (linha de comando)");
+        return { ok: true, rules: engine.rulesEffective(), autoSwitch: state().autoSwitch !== false };
+      },
+    },
   ];
 
   // ----- montagem -----

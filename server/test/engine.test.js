@@ -14,6 +14,7 @@ const { Store, decrypt } = require("../src/store");
 const { createAnthropic, CLIENT_ID } = require("../src/anthropic");
 const { Engine, ERROR_STATUS } = require("../src/engine");
 const access = require("../src/access");
+const { linesFor, RULE_DEFAULTS } = require("../../plus/rules");
 
 const TOKEN_URL = "https://anthropic.falsa/v1/oauth/token";
 const API = "https://api.anthropic.falsa";
@@ -885,6 +886,8 @@ test("updateAccount, removeAccount e setRules", async (t) => {
   assert.deepEqual(await engine.updateAccount(1, { alias: "  Trabalho ", threshold: 70, priority: 2 }), {
     disabled: false,
     threshold: 70,
+    weeklyThreshold: null,
+    modelThreshold: null,
     priority: 2,
     alias: "Trabalho",
   });
@@ -919,6 +922,134 @@ test("updateAccount, removeAccount e setRules", async (t) => {
   assert.equal(store.state.rules, null);
   assert.equal(store.state.autoSwitch, false);
   assert.equal(engine.stateFor("d1").autoSwitch, false);
+});
+
+test("linesFor: linhas próprias da conta (sessão, semanal, modelo); null, ausente ou inválida = regra geral", () => {
+  const r = { ...RULE_DEFAULTS, sessionPct: 90, weeklyPct: 80, modelPct: 95 };
+  const acc = { number: 2 };
+  const geral = { session: 90, weekly: 80, model: 95 };
+  assert.deepEqual(linesFor(acc, r, {}), geral);
+  assert.deepEqual(linesFor(acc, r, null), geral);
+  assert.deepEqual(linesFor(acc, r, { 2: { threshold: 70, weeklyThreshold: 60, modelThreshold: 85 } }), { session: 70, weekly: 60, model: 85 });
+  assert.deepEqual(linesFor(acc, r, { 2: { threshold: null, weeklyThreshold: 75, modelThreshold: null } }), { session: 90, weekly: 75, model: 95 });
+  assert.deepEqual(linesFor(acc, r, { 2: { modelThreshold: 88 } }), { session: 90, weekly: 80, model: 88 }, "campo ausente = regra geral");
+  assert.deepEqual(linesFor(acc, r, { 2: { weeklyThreshold: "66" } }), { session: 90, weekly: 66, model: 95 }, "texto numérico vale");
+  assert.deepEqual(linesFor(acc, r, { 2: { weeklyThreshold: "", modelThreshold: "abc" } }), geral, "vazio ou inválido = regra geral");
+  assert.deepEqual(linesFor(acc, r, { 1: { threshold: 60, weeklyThreshold: 60, modelThreshold: 60 } }), geral, "a linha de outra conta não vale");
+});
+
+test("linhas próprias por conta: o semanal próprio muda a decisão; null volta à regra geral", async (t) => {
+  const { engine, fake, clock, store } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  await engine.addLogin(fake.login("bia@x.com"));
+  setUsage(engine, 1, { session: 10, weekly: 70 });
+  setUsage(engine, 2, { session: 10, weekly: 10 });
+  const d1 = addDevice(engine, "d1", { assigned: 1, lastSeen: clock.t, lastSwitchBy: "auto" });
+
+  // Regra geral (semanal 80%): 70% não troca.
+  engine.decideDevice(d1);
+  assert.equal(d1.assigned, 1);
+
+  // Linha própria do semanal em 65%: troca.
+  assert.deepEqual(await engine.updateAccount(1, { weeklyThreshold: 65 }), {
+    disabled: false,
+    threshold: null,
+    weeklyThreshold: 65,
+    modelThreshold: null,
+    priority: 0,
+    alias: null,
+  });
+  assert.equal(store.state.history[0].text, "Regras próprias da conta 1: sessão 90% (geral) · semanal 65% · modelo 95% (geral)");
+  assert.equal(engine.stateFor("d1").records["1"].weeklyThreshold, 65, "StateResponse leva a linha própria");
+  assert.equal(engine.decideDevice(d1), true);
+  assert.equal(d1.assigned, 2);
+  assert.equal(store.state.history[0].kind, "switch");
+  assert.match(store.state.history[0].text, /^Trocou da conta 1 para a conta 2: semanal em 70% \(linha 65%\)/);
+
+  // null (os três null) = de volta à regra geral: 70% não troca mais.
+  Object.assign(d1, { assigned: 1, lastSwitchAt: 0, lastSwitchBy: "auto" });
+  await engine.updateAccount(1, { weeklyThreshold: null });
+  assert.equal(store.state.history[0].text, "Conta 1 voltou às regras gerais");
+  assert.equal(engine.records()["1"].weeklyThreshold, null);
+  engine.decideDevice(d1);
+  assert.equal(d1.assigned, 1);
+});
+
+test("linhas próprias por conta: a linha do modelo própria muda a decisão (conta ativa e conta de destino)", async (t) => {
+  const { engine, fake, clock, store } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  await engine.addLogin(fake.login("bia@x.com"));
+  setUsage(engine, 1);
+  setUsage(engine, 2);
+  const setFable = (n, pct) => {
+    store.state.accounts[String(n)].usage.scoped = [{ name: "Fable", pct, resetsAt: new Date(clock.t + 3 * DAY).toISOString() }];
+  };
+  setFable(1, 90);
+  setFable(2, 60);
+  await engine.setRules({ rules: { onModelLimit: "switchAccount" } });
+  const d1 = addDevice(engine, "d1", { assigned: 1, lastSeen: clock.t, lastSwitchBy: "auto", models: ["claude-fable-5"] });
+
+  // Regra geral do modelo (95%): 90% não troca.
+  engine.decideDevice(d1);
+  assert.equal(d1.assigned, 1);
+
+  // Linha própria do modelo em 85% na conta 1; a conta 2 também com linha própria (50%) abaixo do uso dela (60%):
+  // nenhuma conta serve → fica (bloqueado).
+  await engine.updateAccount(1, { modelThreshold: 85 });
+  assert.equal(store.state.history[0].text, "Regras próprias da conta 1: sessão 90% (geral) · semanal 80% (geral) · modelo 85%");
+  await engine.updateAccount(2, { modelThreshold: 50 });
+  engine.decideDevice(d1);
+  assert.equal(d1.assigned, 1);
+  assert.equal(store.state.history[0].kind, "blocked");
+
+  // A conta 2 volta à regra geral (95%): 60% serve → troca.
+  await engine.updateAccount(2, { modelThreshold: null });
+  assert.equal(store.state.history[0].text, "Conta 2 voltou às regras gerais");
+  assert.equal(engine.decideDevice(d1), true);
+  assert.equal(d1.assigned, 2);
+  assert.match(store.state.history[0].text, /^Trocou da conta 1 para a conta 2: Fable em 90% \(linha 85%\)/);
+});
+
+test("linhas próprias por conta: validação (50–100 ou null), nada muda quando recusa, histórico só quando muda", async (t) => {
+  const { engine, fake, store } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  const own = () => {
+    const rec = engine.records()["1"];
+    return [rec.threshold, rec.weeklyThreshold, rec.modelThreshold];
+  };
+  assert.deepEqual(own(), [null, null, null], "conta nova: regra geral");
+
+  for (const patch of [
+    { weeklyThreshold: 49 },
+    { weeklyThreshold: 101 },
+    { modelThreshold: 0 },
+    { modelThreshold: "abc" },
+    { weeklyThreshold: "" },
+    { modelThreshold: true },
+    { threshold: 30 },
+    { weeklyThreshold: 70, modelThreshold: 20 }, // um campo ruim recusa o pedido inteiro
+  ]) {
+    await assert.rejects(engine.updateAccount(1, patch), (e) => e.code === "invalid", JSON.stringify(patch));
+  }
+  assert.deepEqual(own(), [null, null, null]);
+  assert.ok(!store.state.history.some((h) => /Regras próprias|voltou às regras gerais/.test(h.text)), "recusado não vai para o histórico");
+
+  await engine.updateAccount(1, { threshold: 50, weeklyThreshold: "75", modelThreshold: 100 });
+  assert.deepEqual(own(), [50, 75, 100]);
+  assert.equal(store.state.history[0].text, "Regras próprias da conta 1: sessão 50% · semanal 75% · modelo 100%");
+  const n = store.state.history.length;
+  await engine.updateAccount(1, { weeklyThreshold: 75 });
+  assert.equal(store.state.history.length, n, "mesmo valor: sem entrada nova no histórico");
+  await engine.updateAccount(1, { alias: "Trabalho" });
+  assert.equal(store.state.history.length, n, "outro ajuste não fala das linhas");
+
+  // Só uma de volta à regra geral: as outras continuam próprias.
+  await engine.updateAccount(1, { threshold: null });
+  assert.deepEqual(own(), [null, 75, 100]);
+  assert.equal(store.state.history[0].text, "Regras próprias da conta 1: sessão 90% (geral) · semanal 75% · modelo 100%");
+  await engine.updateAccount(1, { weeklyThreshold: null, modelThreshold: null });
+  assert.deepEqual(own(), [null, null, null]);
+  assert.equal(store.state.history[0].text, "Conta 1 voltou às regras gerais");
 });
 
 test("addLogin: número preferido (o mesmo do computador) quando está livre; ocupado → próximo", async (t) => {
@@ -1932,4 +2063,203 @@ test("storeFreshLogin: refresh token já gasto → stale_login; cofre sem gravar
   assert.deepEqual(Object.keys(store.state.accounts), ["1"]);
   await assert.rejects(engine.storeFreshLogin(fake.login("eva@x.com")), (e) => e.code === "refresh_failed");
   assert.equal(fake.count("refresh"), 1, "só a renovação do addLogin do começo");
+});
+
+// ------------------------------------------------------------------ regra "Computadores" (devicePlacement)
+
+test("computadores juntos: os ativos ficam na mesma conta (a do topo da fila) e trocam juntos pela linha (modelos de todos)", async (t) => {
+  const { engine, fake, store } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  await engine.addLogin(fake.login("bia@x.com"));
+  setUsage(engine, 1);
+  setUsage(engine, 2, { weeklyResetIn: 2 * DAY }); // zera antes: topo da fila
+  addDevice(engine, "d1");
+  addDevice(engine, "d2");
+  await engine.heartbeat("d1", {});
+  await engine.heartbeat("d2", {});
+  const d1 = store.state.devices.d1;
+  const d2 = store.state.devices.d2;
+  assert.equal(engine.rulesEffective().devicePlacement, "separate", "padrão");
+  assert.deepEqual([d1.assigned, d2.assigned], [2, 1], "Separados (padrão): cada um numa conta");
+
+  // Juntos: vale na hora (sem esperar o ciclo), todos na conta do topo da fila.
+  await assert.rejects(engine.setRules({ rules: { devicePlacement: "misturado" } }), (e) => e.code === "invalid_rules");
+  const res = await engine.setRules({ rules: { devicePlacement: "together" } });
+  assert.equal(res.rules.devicePlacement, "together");
+  assert.deepEqual([d1.assigned, d2.assigned], [2, 2]);
+  assert.equal(store.state.history[0].text, "Trocou da conta 1 para a conta 2: computadores juntos na mesma conta");
+  assert.equal(store.state.history[0].device, "d2");
+  assert.equal(store.state.history[1].text, "Computadores juntos: todos na mesma conta (a do topo da fila), trocando juntos");
+  assert.equal(engine.stateFor("d1").rules.devicePlacement, "together");
+
+  // O ciclo não separa (nada de "conta ocupada" nem spreadOut).
+  await engine.tick();
+  assert.deepEqual([d1.assigned, d2.assigned], [2, 2]);
+
+  // A conta do grupo passou da linha: os dois trocam juntos, num registro só.
+  setUsage(engine, 2, { session: 95, weeklyResetIn: 2 * DAY });
+  await engine.tick();
+  assert.deepEqual([d1.assigned, d2.assigned], [1, 1]);
+  const h = store.state.history[0];
+  assert.equal(h.kind, "switch");
+  assert.equal(h.device, null);
+  assert.equal(h.text, "Computadores trocados juntos para a conta 1: sessão em 95% (linha 90%) — PC d1 e PC d2");
+  assert.deepEqual([d1.lastSwitchBy, d2.lastSwitchBy], ["auto", "auto"]);
+  await engine.tick();
+  assert.deepEqual([d1.assigned, d2.assigned], [1, 1], "estável");
+
+  // Limite de um modelo ("Trocar de conta"): vale o modelo em uso em QUALQUER computador do grupo (união).
+  setUsage(engine, 2, { weeklyResetIn: 2 * DAY });
+  store.state.accounts["1"].usage.scoped = [{ name: "Fable", pct: 97, resetsAt: null }];
+  await engine.setRules({ rules: { onModelLimit: "switchAccount" } });
+  d1.models = ["claude-opus-4-5"];
+  d2.models = [];
+  await engine.tick();
+  assert.deepEqual([d1.assigned, d2.assigned], [1, 1], "ninguém usa o Fable: fica");
+  d2.models = ["claude-fable-5"];
+  await engine.tick();
+  assert.deepEqual([d1.assigned, d2.assigned], [2, 2], "o d2 usa o Fable: o grupo inteiro troca");
+  assert.equal(store.state.history[0].text, "Computadores trocados juntos para a conta 2: Fable em 97% (linha 95%) — PC d1 e PC d2");
+});
+
+test("computadores juntos: limitHit de um computador troca o grupo inteiro na hora", async (t) => {
+  const { engine, fake, clock, store } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  await engine.addLogin(fake.login("bia@x.com"));
+  setUsage(engine, 1, { session: 40 }); // o dado ainda não mostra o limite
+  setUsage(engine, 2);
+  await engine.setRules({ rules: { devicePlacement: "together" } });
+  const d1 = addDevice(engine, "d1", { assigned: 1, lastSeen: clock.t, lastSwitchAt: clock.t - MIN, lastSwitchBy: "auto" });
+  const d2 = addDevice(engine, "d2", { assigned: 1, lastSeen: clock.t, lastSwitchAt: clock.t - MIN, lastSwitchBy: "auto" });
+  const d3 = addDevice(engine, "d3", { assigned: 1, lastSeen: 0 }); // parado: não conta
+
+  const r = await engine.limitHit("d1", "limite da sessão de 5h");
+  assert.deepEqual([r.switched, r.to], [true, 2]);
+  assert.equal(r.text, "Computadores trocados juntos na hora para a conta 2: a conta 1 bateu o limite da sessão de 5h — PC d1 e PC d2");
+  assert.deepEqual([d1.assigned, d2.assigned, d3.assigned], [2, 2, 1]);
+  assert.deepEqual([d1.lastSwitchBy, d2.lastSwitchBy], ["limit", "limit"]);
+  assert.equal(store.state.history[0].kind, "switch");
+  assert.equal(store.state.history[0].device, "d1");
+  assert.ok(engine.pollSoon.has(1), "relê o uso da conta que bateu o limite");
+
+  // Sozinho na conta: o texto de sempre.
+  d2.lastSeen = 0;
+  const r2 = await engine.limitHit("d1", "limite semanal");
+  assert.equal(r2.switched, true);
+  assert.equal(r2.text, "Trocou na hora da conta 2 para a conta 1: a conta 2 bateu o limite semanal");
+  assert.deepEqual([d1.assigned, d2.assigned], [1, 2]);
+});
+
+test("computadores juntos: switchDevice (painel ou computador) troca o grupo inteiro", async (t) => {
+  const { engine, fake, clock, store } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  await engine.addLogin(fake.login("bia@x.com"));
+  await engine.addLogin(fake.login("caio@x.com"));
+  setUsage(engine, 1);
+  setUsage(engine, 2);
+  setUsage(engine, 3);
+  await engine.setRules({ rules: { devicePlacement: "together" } });
+  const d1 = addDevice(engine, "d1", { assigned: 1, lastSeen: clock.t, lastSwitchBy: "auto" });
+  const d2 = addDevice(engine, "d2", { assigned: 1, lastSeen: clock.t, lastSwitchBy: "auto" });
+  const d3 = addDevice(engine, "d3", { assigned: 1, lastSeen: 0 }); // parado: fica
+
+  let r = await engine.switchDevice("d1", 3, "painel");
+  assert.deepEqual([r.switched, r.from, r.to], [true, 1, 3]);
+  assert.equal(r.text, "Computadores trocados juntos para a conta 3: troca manual pelo painel — PC d1 e PC d2");
+  assert.deepEqual([d1.assigned, d2.assigned, d3.assigned], [3, 3, 1]);
+  assert.deepEqual([d1.lastSwitchBy, d2.lastSwitchBy], ["painel", "group"]);
+  assert.equal(store.state.history[0].kind, "switch");
+  assert.equal(store.state.history[0].device, "d1");
+
+  // O ciclo não desfaz a escolha.
+  await engine.tick();
+  assert.deepEqual([d1.assigned, d2.assigned], [3, 3]);
+
+  // Pelo computador (extensão).
+  r = await engine.switchDevice("d2", 2);
+  assert.equal(r.text, "Computadores trocados juntos para a conta 2: troca manual pelo computador PC d2 — PC d1 e PC d2");
+  assert.deepEqual([d1.assigned, d2.assigned], [2, 2]);
+  assert.equal(store.state.history[0].kind, "manual");
+  assert.equal(store.state.history[0].device, "d2");
+
+  // Melhor conta: sem contas "ocupadas" no modo juntos.
+  r = await engine.switchDevice("d1", null);
+  assert.equal(r.to, 1);
+  assert.equal(r.text, "Computadores trocados juntos para a conta 1: troca manual pelo computador PC d1 (melhor conta) — PC d1 e PC d2");
+  assert.deepEqual([d1.assigned, d2.assigned], [1, 1]);
+
+  r = await engine.switchDevice("d1", 1);
+  assert.deepEqual([r.switched, r.text], [false, "já está na conta 1"]);
+});
+
+test("computadores juntos: conta não liberada para um computador nunca é forçada nele", async (t) => {
+  const { engine, fake, store } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  await engine.addLogin(fake.login("bia@x.com"));
+  await engine.addLogin(fake.login("caio@x.com"));
+  setUsage(engine, 1, { weeklyResetIn: 2 * DAY }); // topo da fila, mas só do d1
+  setUsage(engine, 2);
+  setUsage(engine, 3);
+  await engine.setRules({ rules: { devicePlacement: "together" } });
+  const d1 = addDevice(engine, "d1");
+  const d2 = addDevice(engine, "d2");
+  await engine.setAccountDevices(1, ["d1"]);
+
+  await engine.heartbeat("d1", {});
+  await engine.heartbeat("d2", {});
+  assert.equal(d1.assigned, 1, "o grupo está na conta do topo da fila");
+  assert.equal(d2.assigned, 2, "o d2 não pode usar a 1: fica com a melhor liberada para ele");
+  assert.equal((await engine.credentialFor("d2")).number, 2);
+  await engine.tick();
+  assert.deepEqual([d1.assigned, d2.assigned], [1, 2]);
+
+  // A conta do grupo passou da linha: vai para uma que os dois podem usar; o d2 já está nela.
+  setUsage(engine, 1, { session: 95, weeklyResetIn: 2 * DAY });
+  await engine.tick();
+  assert.deepEqual([d1.assigned, d2.assigned], [2, 2]);
+  assert.equal(store.state.history[0].text, "Trocou da conta 1 para a conta 2: sessão em 95% (linha 90%)");
+
+  // Troca manual do grupo para a 1: só o d1 vai; o d2 fica (e não consegue trocar para ela).
+  setUsage(engine, 1, { weeklyResetIn: 2 * DAY });
+  const r = await engine.switchDevice("d1", 1);
+  assert.deepEqual([r.switched, r.text], [true, "Troca manual da conta 2 para a conta 1"]);
+  assert.deepEqual([d1.assigned, d2.assigned], [1, 2]);
+  await assert.rejects(engine.switchDevice("d2", 1), (e) => e.code === "not_allowed");
+  await engine.tick();
+  assert.deepEqual([d1.assigned, d2.assigned], [1, 2], "o ciclo também não força a 1 no d2");
+  assert.ok(!store.state.history.some((h) => h.device === "d2" && /para a conta 1\b/.test(h.text)));
+});
+
+test("computadores juntos: quem volta a ficar ativo entra na conta do grupo; Separados volta a separar", async (t) => {
+  const { engine, fake, clock, store } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  await engine.addLogin(fake.login("bia@x.com"));
+  await engine.addLogin(fake.login("caio@x.com"));
+  setUsage(engine, 1);
+  setUsage(engine, 2);
+  setUsage(engine, 3);
+  await engine.setRules({ rules: { devicePlacement: "together" } });
+  const d1 = addDevice(engine, "d1", { assigned: 2, lastSeen: clock.t, lastSwitchAt: clock.t - 10 * MIN, lastSwitchBy: "auto" });
+  // Parado há 30 min, com uma troca mais nova que a do d1: ao voltar, entra no grupo (não puxa o grupo para a 3).
+  const d2 = addDevice(engine, "d2", { assigned: 3, lastSeen: clock.t - 30 * MIN, lastSwitchAt: clock.t - MIN, lastSwitchBy: "auto" });
+  await engine.heartbeat("d2", {});
+  assert.deepEqual([d1.assigned, d2.assigned], [2, 2]);
+  assert.equal(store.state.history[0].text, "Trocou da conta 3 para a conta 2: computadores juntos na mesma conta");
+  assert.equal(store.state.history[0].device, "d2");
+
+  // Computador novo também entra na conta do grupo.
+  const d3 = addDevice(engine, "d3");
+  await engine.heartbeat("d3", {});
+  assert.equal(d3.assigned, 2);
+  assert.equal(store.state.history[0].text, "Conta 2 atribuída a PC d3");
+  d3.lastSeen = 0; // desconectou
+
+  // Separados (com intervalo mínimo 0 para não esperar): o que chegou por último sai da conta dividida.
+  await engine.setRules({ rules: { devicePlacement: "separate", cooldownMin: 0 } });
+  assert.equal(d1.assigned, 2);
+  assert.equal(d2.assigned, 1);
+  assert.match(store.state.history[0].text, /^Trocou da conta 2 para a conta 1: a conta 2 já está em uso em PC d1$/);
+  assert.ok(store.state.history.some((h) => h.text === "Computadores separados: cada um na sua conta"));
+  await engine.tick();
+  assert.deepEqual([d1.assigned, d2.assigned], [2, 1], "estável, cada um na sua");
 });

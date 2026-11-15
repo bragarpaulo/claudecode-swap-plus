@@ -80,14 +80,15 @@ Account = {
   gen: 1,                       // sobe a cada token novo (renovação ou login novo)
   loginWarnedOn: null | "AAAA-MM-DD",   // último dia (fuso do servidor) em que avisou "o login vence"
   dead: null | { reason: "relogin_required", at },
-  disabled: false, threshold: null, priority: 0,
+  disabled: false, threshold: null, priority: 0,   // + weeklyThreshold, modelThreshold (ausente = null = regra geral)
   usage: null | Usage, usageFetchedAt: null, usageError: null,
   lastGoodUsage: null | Usage, lastGoodAt: null,
   nextPollAt: 0, pollBackoffUntil: 0, refreshBackoffUntil: 0, refreshFailures: 0,
   addedAt, lastRefreshAt: null,
 }
 Usage = { fiveHour?: { pct, resetsAt }, sevenDay?: { pct, resetsAt }, scoped?: [ { name, pct, resetsAt } ] }
-Device = { id, name, platform, googleEmail: "e-mail"|null /*null = pareado por código*/, tokenHash, createdAt, lastSeen, assigned: n|null, lastSwitchAt: 0, models: [] }
+Device = { id, name, platform, googleEmail: "e-mail"|null /*null = pareado por código*/, tokenHash, createdAt, lastSeen, assigned: n|null, lastSwitchAt: 0, models: [],
+           lastSwitchBy /* "assign" | "auto" | "limit" | "manual" | "painel" | "group" | "follow" (só o motor lê) */ }
 ```
 
 ## anthropic.js
@@ -122,14 +123,14 @@ class Engine {
   async tick()                          // 1) renovações  2) uma leitura de uso (se o orçamento deixar)  3) decisões por dispositivo
   rulesEffective()                      // { ...RULE_DEFAULTS, ...state.rules }
   publicList(deviceId)                  // { schemaVersion: 1, activeAccountNumber, accounts: PublicAccount[] }
-  records()                             // { "<n>": { disabled, threshold, priority, alias } }
+  records()                             // { "<n>": { disabled, threshold, weeklyThreshold, modelThreshold, priority, alias } } (linhas próprias: null = regra geral; linesFor)
   stateFor(deviceId)                    // StateResponse (abaixo)
   async heartbeat(deviceId, { models, live })   // lastSeen/models; sem conta → atribui; roda a decisão desse dispositivo
   async credentialFor(deviceId)         // { number, gen, claudeAiOauth: {accessToken, expiresAt, scopes, subscriptionType, rateLimitTier, refreshTokenExpiresAt?}, oauthAccount } | null
-  async switchDevice(deviceId, number|null, by = "manual")  // null = melhor conta
-  async limitHit(deviceId, label)       // decide com limitHit; { switched, text }
+  async switchDevice(deviceId, number|null, by = "manual")  // null = melhor conta; "together": troca o grupo inteiro
+  async limitHit(deviceId, label)       // decide com limitHit; { switched, text }; "together": troca o grupo inteiro na hora
   async addLogin({ claudeAiOauth, oauthAccount, plan })   // { number, created } ou lança Error com .code
-  async updateAccount(number, patch)    // disabled/threshold/priority/alias
+  async updateAccount(number, patch)    // disabled/threshold/weeklyThreshold/modelThreshold (50–100 ou null)/priority/alias
   async setLoginExpiresAt(number, ms)   // preenche cred.refreshTokenExpiresAt à mão → { number, loginExpiresAt (ISO) }; erros not_found / invalid
   async removeAccount(number)
   async setRules({ rules, autoSwitch })
@@ -182,6 +183,34 @@ estratégia `max` → menor `sevenDay.resetsAt` com ≥ 20% sobrando e abaixo da
 (`min(linha - pct)` entre sessão e semanal). Sem uso conhecido → a viva de menor número. Ninguém livre → permitir as de outros dispositivos.
 `autoSwitch === false` → só a atribuição inicial; `limitHit` só registra.
 
+Regra **Computadores** (`rules.devicePlacement`, só do servidor; `decide()` não usa): `"separate"` (padrão) = o que está acima
+(cada computador ativo numa conta; contas dos outros ocupadas; `spreadOut` separa quem caiu na mesma conta). `"together"` = todos os
+ativos na MESMA conta e trocando juntos (gastam a mesma sessão de 5 h). `setRules` aceita só esses dois valores (senão `invalid_rules`);
+quando a regra muda, vale na hora (decide todos os ativos) e o histórico registra "Computadores juntos: ..." / "Computadores separados: ...".
+No modo `"together"` nenhuma conta fica ocupada e não há `spreadOut`; uma decisão para o grupo inteiro (`togetherStep`, a cada ciclo e
+em todo `decideDevice`):
+- **Conta do grupo**, entre os ativos: a do que trocou por último (`lastSwitchBy` ∈ auto, limit, manual, painel, group — a atribuição
+  `"assign"` não conta), se ela ainda serve para ele (existe, viva, liberada para ele e, com a troca automática ligada, na rotação);
+  empate: a conta com mais ativos nela. Senão a melhor conta (`bestAccountFor`, mesma estratégia), primeiro entre as que todos podem usar.
+- **Troca**: `decide()` para a conta do grupo com os modelos em uso de TODOS os computadores do grupo (união), intervalo mínimo contado da
+  última troca de qualquer um deles e destino entre as contas que todos podem usar (sem nenhuma: as liberadas para o computador da conta
+  do grupo). Se trocar, todos os ativos que podem usar a conta nova vão para ela: histórico `kind:"switch"`, `device: null`,
+  "Computadores trocados juntos para a conta N: <motivo> — A e B" (um só trocando: o texto de sempre, "Trocou da conta X para a conta N: ...").
+- Sem troca: quem pode usar a conta do grupo e está em outra entra nela ("Trocou da conta X para a conta N: computadores juntos na mesma
+  conta"; sem conta: "Conta N atribuída a ..."); com a troca automática desligada, só quem precisa de conta (sem conta, morta, removida,
+  não liberada).
+- Quem **não pode** usar a conta do grupo (`accountDevices`) nunca vai para ela: segue sozinho — a melhor conta liberada para ele, com o
+  seu próprio `decide()`.
+- `limitHit`: `decide()` com o limite para a conta do computador (com os ativos nela) e todos os ativos que podem usar a conta nova
+  trocam na hora: "Computadores trocados juntos na hora para a conta N: a conta X bateu o ... — A e B" (`device` = quem bateu).
+- `switchDevice`: troca o grupo inteiro (os ativos + este) para a conta escolhida; quem não pode usá-la fica. Histórico
+  "Computadores trocados juntos para a conta N: troca manual pelo painel" / "pelo computador X" (+ " (melhor conta)"); quem pediu fica com
+  `lastSwitchBy` = by, os outros `"group"`. Só este trocando: o texto de sempre ("Troca manual da conta X para a conta N").
+- Computador que conecta ou volta a ficar ativo (heartbeat depois de mais de 5 min parado) entra na conta do grupo dos outros ativos:
+  a troca antiga dele deixa de valer para escolher a conta do grupo (`lastSwitchBy = "follow"`).
+- `assignBest` (sem conta, morta, removida, não liberada, desativada): a conta do grupo dos outros ativos, se puder usá-la; senão a melhor
+  liberada para ele.
+
 addLogin: exige `claudeAiOauth.refreshToken` e `oauthAccount.emailAddress`. Só aceita login **comprovadamente vivo**:
 - refresh token já gasto pelo servidor (`spentRefresh`) → `stale_login`; o mesmo refresh token que a conta já guarda → nada a fazer.
 - se o access token enviado ainda vale, confere a identidade com `profile()` ANTES de gastar o login (errada → `identity_mismatch`, nada gasto).
@@ -210,7 +239,7 @@ Autenticação: `Authorization: Bearer <token do dispositivo>`; guardado como sh
 | `POST /v1/logins` | `{ claudeAiOauth, oauthAccount, plan? }` | `{ number, created }` ou 422 `{error: code, message}` |
 | `POST /v1/switch` | `{ number \| null }` | StateResponse |
 | `POST /v1/events` | `{ kind: "limit_hit", label }` | `{ switched, text, state }` |
-| `PATCH /v1/accounts/:n` | `{ disabled?, threshold?, priority?, alias? }` | StateResponse |
+| `PATCH /v1/accounts/:n` | `{ disabled?, threshold?, weeklyThreshold?, modelThreshold?, priority?, alias? }` (linhas: 50–100 ou null = regra geral) | StateResponse |
 | `DELETE /v1/accounts/:n` | — | StateResponse |
 | `PUT /v1/rules` | `{ rules?, autoSwitch? }` | StateResponse |
 | `GET /v1/devices` | — | `[ { id, name, platform, googleEmail, createdAt, lastSeen, assigned, current } ]` |

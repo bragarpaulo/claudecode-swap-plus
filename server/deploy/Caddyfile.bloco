@@ -1,0 +1,25 @@
+
+# Swap Plus Servidor (grupo próprio, stack `swap-plus`) — 14/11/2026. API dos computadores do Paulo (extensão Swap Plus
+# no VS Code, modo servidor): o servidor guarda os logins das contas Claude e entrega a cada computador só o acesso da
+# conta escolhida. O container responde na rede própria swap-plus pelo nome swap-plus:8443, em HTTP puro (TLS_MODE=off):
+# o TLS é este Caddy, e na frente dele a Cloudflare (registro proxied). Instalação em server/deploy/LEIA-ME.md do
+# repositório swap-plus-vscode.
+# O servidor confia no X-Forwarded-For (TRUST_PROXY=1) para o limite de tentativas por IP: por isso este bloco manda só
+# o IP real ({client_ip}, tirado do CF-Connecting-IP de um par da Cloudflare) e, igual ao bloco do Stafy, derruba quem
+# não vem das faixas da Cloudflare.
+# Sem `encode`: as respostas levam o acesso das contas e o cliente (Node) não pede compressão. Cache-Control no-store
+# para nenhuma resposta da API ficar guardada no caminho.
+swap.assistentes.si {
+	@fora_da_cloudflare not remote_ip 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+	abort @fora_da_cloudflare
+
+	header {
+		X-Robots-Tag "noindex, nofollow"
+		Cache-Control "no-store"
+		-Server
+	}
+
+	reverse_proxy swap-plus:8443 {
+		header_up X-Forwarded-For {client_ip}
+	}
+}

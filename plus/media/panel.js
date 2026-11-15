@@ -39,7 +39,15 @@
     warn: "Aviso",
     alert: "Alerta de uso",
     info: "Info",
+    // modo servidor
+    assign: "Atribuição",
+    login: "Login",
+    dead: "Login morto",
+    refresh: "Renovação",
+    device: "Computador",
   };
+
+  const isServer = () => !!(S && S.serverMode);
 
   // ------------------------------------------------------------ utilitários
 
@@ -307,11 +315,13 @@
 
     // --- avançado
     $("advanced").replaceChildren(
-      sliderRow({
-        label: "Verificar a cada",
-        value: draft.intervalSec, min: 15, max: 600, step: 15, suffix: " s",
-        onInput: (v) => { draft.intervalSec = v; markDirty(); },
-      }),
+      isServer()
+        ? ""
+        : sliderRow({
+            label: "Verificar a cada",
+            value: draft.intervalSec, min: 15, max: 600, step: 15, suffix: " s",
+            onInput: (v) => { draft.intervalSec = v; markDirty(); },
+          }),
       sliderRow({
         label: "Tempo mínimo entre trocas antecipadas",
         value: draft.cooldownMin, min: 0, max: 60, step: 1, suffix: " min",
@@ -393,7 +403,7 @@
         h(
           "div",
           { class: "badges" },
-          !manualOrder
+          !manualOrder || isServer()
             ? null
             : h(
                 "div",
@@ -403,8 +413,21 @@
               ),
           a.active ? h("span", { class: "badge on", text: "Em uso" }) : null,
           a.disabled ? h("span", { class: "badge plain", text: "Fora da rotação" }) : null,
-          a.status && a.status !== "ok" ? h("span", { class: "badge plain", text: a.statusLabel }) : null,
-          a.stale && a.ageMin !== null ? h("span", { class: "badge plain", title: "O motor atualiza cada conta de alguns em alguns minutos (a Anthropic limita as consultas).", text: `dados de ${a.ageMin} min` }) : null
+          a.loginDead
+            ? h("span", {
+                class: "badge dead",
+                title: isServer()
+                  ? "O login desta conta não vale mais no servidor. A troca automática pula esta conta. Para usar de novo: entre com ela no Claude Code em qualquer computador conectado e o Swap Plus envia o login novo ao servidor."
+                  : "O login guardado desta conta não vale mais. A troca automática pula esta conta. Para usar de novo: entre com ela no Claude Code e o Swap Plus salva o login sozinho.",
+                text: "Login morto — entrar de novo",
+              })
+            : a.status && a.status !== "ok"
+              ? h("span", { class: "badge plain", text: a.statusLabel })
+              : null,
+          a.stale && a.ageMin !== null ? h("span", { class: "badge plain", title: "O motor atualiza cada conta de alguns em alguns minutos (a Anthropic limita as consultas).", text: `dados de ${a.ageMin} min` }) : null,
+          isServer() && a.devices && a.devices.length
+            ? h("span", { class: "badge plain", title: "Computadores que estão usando esta conta agora", text: `em uso em: ${a.devices.join(", ")}` })
+            : null
         )
       ),
       h("div", { class: "meters" }, meter("Sessão 5h", a.session), meter("Semanal", a.weekly), a.models.map((m) => meter(m.name, m))),
@@ -472,12 +495,14 @@
           renderAccounts(true);
         },
       }),
-      "Ordenar pelo número da conta (e mudar a posição com as setas ↑ ↓)"
+      isServer() ? "Ordenar pelo número da conta" : "Ordenar pelo número da conta (e mudar a posição com as setas ↑ ↓)"
     );
     const hint = h("p", {
       class: "muted small",
       text: manualOrder
-        ? "As setas ↑ ↓ mudam a posição (o número) da conta. Apelido, ajustes e histórico vão junto; a sessão aberta não é afetada."
+        ? isServer()
+          ? "No modo servidor o número de cada conta é dado pelo servidor."
+          : "As setas ↑ ↓ mudam a posição (o número) da conta. Apelido, ajustes e histórico vão junto; a sessão aberta não é afetada."
         : "Ordem automática: primeiro as contas que participam da troca automática, de quem renova o semanal antes para quem renova depois; no fim, as que não participam, na mesma ordem.",
     });
     const grid = h("div", { class: "accounts" }, list.length ? list.map((a, i) => accountCard(a, i, list.length)) : h("p", { class: "muted", text: "Nenhuma conta cadastrada ainda." }));
@@ -488,6 +513,7 @@
       h("span", { class: "dot on" }),
       "Em uso agora: ",
       h("b", { text: act ? `Conta ${act.number}${!S.privacy && act.email ? ` — ${act.email}` : ""}` : "nenhuma conta" }),
+      isServer() ? " (neste computador, escolhida pelo servidor)" : "",
       act && act.session ? ` · sessão ${fmt(act.session.pct)}%` : "",
       act && act.weekly ? ` · semanal ${fmt(act.weekly.pct)}%` : ""
     );
@@ -521,6 +547,235 @@
 
   // ------------------------------------------------------------ resto
 
+  function renderMaster() {
+    const on = S.swapOn !== false;
+    $("masterToggle").checked = on;
+    $("masterStatus").replaceChildren(
+      h("span", { class: "dot" + (on ? " on" : "") }),
+      on ? h("b", { class: "ontext", text: "Ligado" }) : h("b", { text: "Desligado" }),
+      on ? " — acompanhando as contas" : " — o Claude Code está funcionando normalmente, sem troca de conta"
+    );
+    $("autoCard").classList.toggle("dimmed", !on);
+    $("autoToggle").disabled = !on;
+    $("btnCheck").disabled = !on;
+    $("btnSim").disabled = !on;
+    $("masterNote").textContent = isServer()
+      ? "Desligado, o Swap Plus não fala com o servidor e não mexe no login: o Claude Code fica com o acesso que tem agora. Ligado (modo servidor), ele recebe do servidor a conta escolhida para este computador e envia ao servidor todo login novo que você fizer no Claude Code."
+      : "Desligado, o Swap Plus não consulta as contas, não troca de conta e não mexe no login: o Claude Code funciona normalmente com a conta em que você entrar. Ligado, ele também salva na hora o login do Claude Code sempre que ele muda (login novo ou token renovado).";
+  }
+
+  // ------------------------------------------------------------ servidor
+
+  const SRV_TITLES = {
+    local: "Modo local",
+    off: "Desligado",
+    disconnected: "Não conectado",
+    connecting: "Conectando",
+    online: "Conectado",
+    offline: "Servidor fora do ar",
+    revoked: "Acesso recusado",
+  };
+
+  function renderServer() {
+    const sv = S.server || { mode: "local", status: "local", devices: [] };
+    const st = sv.status;
+    const good = st === "online";
+    const badSt = st === "offline" || st === "revoked" || st === "disconnected";
+    $("serverStatus").replaceChildren(
+      h("span", { class: "dot" + (good ? " on" : badSt ? " bad" : "") }),
+      h("b", { class: good ? "ontext" : badSt ? "badtext" : "", text: SRV_TITLES[st] || st }),
+      sv.statusText ? ` — ${sv.statusText}` : ""
+    );
+    // Conectar: entrar com Google (padrão) ou colar o código de conexão gerado no servidor.
+    const busyConn = !!sv.connecting;
+    const connectBtns = () => [
+      h("button", {
+        text: busyConn ? "Conectando…" : "Entrar com Google",
+        title: `Abre o navegador para você entrar com a sua conta Google${sv.host ? ` em ${sv.host}` : ""}. O dono do servidor precisa ter liberado essa conta.`,
+        disabled: busyConn,
+        onclick: () => send({ type: "connectServer", method: "google" }),
+      }),
+      h("button", {
+        class: "secondary",
+        text: "Colar código",
+        title: "Colar o código de conexão (swapplus1:…) gerado no servidor com o comando pair",
+        disabled: busyConn,
+        onclick: () => send({ type: "connectServer", method: "code" }),
+      }),
+    ];
+    const disconnectBtn = () => h("button", { class: "secondary", text: "Desconectar", onclick: () => send({ type: "disconnectServer" }) });
+    // Conectado mas recusado, ou o endereço mudou: conectar de novo (ou desconectar de vez).
+    const reconnect = st === "revoked" || (st === "disconnected" && sv.addressChanged);
+    $("serverBtns").replaceChildren(
+      ...(!sv.connected ? connectBtns() : reconnect ? [...connectBtns(), disconnectBtn()] : [disconnectBtn()])
+    );
+
+    const kids = [];
+    const choice = (value, label, desc) =>
+      h(
+        "label",
+        { class: "strategy mini" + (sv.mode === value ? " selected" : "") },
+        h("input", { type: "radio", name: "srvMode", checked: sv.mode === value, onchange: () => send({ type: "setMode", mode: value }) }),
+        h("div", null, h("div", { class: "name", text: label }), h("div", { class: "desc", text: desc }))
+      );
+    kids.push(
+      h(
+        "div",
+        { class: "strategies two srvmode" },
+        choice("local", "Local", "Os logins ficam neste computador (motor swap-plus) e este VS Code decide as trocas. Bom para um computador só."),
+        choice("server", "Servidor", "Os logins ficam no servidor, que renova e decide as trocas para todos os computadores. Este computador recebe só o acesso da conta escolhida para ele.")
+      )
+    );
+
+    // Onde o Claude Code lê o login (ex.: Windows com o Gerenciador de Credenciais, variável de ambiente que passa na frente).
+    for (const w of sv.storeWarnings || []) {
+      kids.push(
+        h(
+          "div",
+          { class: "srvwarn" },
+          h("b", { text: sv.storeBlocked && /Gerenciador de Credenciais/.test(w) ? "O Swap Plus não está gravando o login neste computador: " : "Atenção: " }),
+          w
+        )
+      );
+    }
+
+    if (sv.rejected) {
+      kids.push(
+        h(
+          "div",
+          { class: "srvwarn" },
+          h("b", { text: "Login do Claude Code recusado pelo servidor: " }),
+          `${sv.rejected.reason}. Esse login fica como está; o envio é tentado de novo em 10 min.`,
+          h("button", { text: "Usar a conta do servidor", onclick: () => send({ type: "useServerAccount" }) })
+        )
+      );
+    }
+
+    if (!sv.connected || reconnect) {
+      kids.push(
+        h(
+          "p",
+          { class: "muted small srvhow" },
+          h("b", { text: "Entrar com Google: " }),
+          `o navegador abre, você entra com a sua conta Google e este computador fica conectado${sv.host ? ` a ${sv.host}` : ""}. O dono do servidor precisa ter liberado a sua conta. `,
+          h("button", {
+            class: "linkbtn",
+            text: "Outro endereço…",
+            title: "Entrar com Google em outro servidor Swap Plus",
+            disabled: busyConn,
+            onclick: () => send({ type: "connectServer", method: "googleOther" }),
+          }),
+          h("br"),
+          h("b", { text: "Colar código: " }),
+          "o código que começa com swapplus1:, gerado no servidor (comando pair). Vale 10 minutos e uma vez só."
+        )
+      );
+    }
+
+    if (sv.connected || sv.url) {
+      const row = (k, v) => [h("span", { class: "k", text: k }), h("span", { class: "v", text: v })];
+      kids.push(
+        h(
+          "div",
+          { class: "srvinfo" },
+          row("Endereço", sv.url || "—"),
+          sv.connected ? row("Este computador", sv.deviceName || "—") : null,
+          sv.connected && sv.via ? row("Conectado com", sv.via === "google" ? "conta Google" : "código de conexão") : null,
+          sv.connected ? row("Último contato", sv.lastOkWhen || "ainda não houve") : null,
+          sv.version ? row("Versão do servidor", sv.version) : null
+        )
+      );
+    }
+
+    if (sv.connected && sv.devices && sv.devices.length) {
+      kids.push(h("h3", { text: "Computadores conectados" }));
+      kids.push(
+        h(
+          "div",
+          { class: "devs" },
+          sv.devices.map((d) =>
+            h(
+              "div",
+              { class: "dev" + (d.current ? " me" : "") },
+              h(
+                "div",
+                { class: "dname" },
+                h("span", { class: "dot" + (d.active ? " on" : "") }),
+                h("b", { text: d.name }),
+                d.current ? h("span", { class: "tag on", text: "este computador" }) : null
+              ),
+              h(
+                "div",
+                { class: "dacc" },
+                h("div", { text: `usa: ${d.account}` }),
+                d.google
+                  ? h("div", {
+                      class: "dgoogle",
+                      text: `Google: ${d.googleEmail || "(e-mail oculto)"}`,
+                      title: "Conta Google com que este computador entrou no servidor",
+                    })
+                  : null
+              ),
+              h("div", { class: "dseen", text: d.active ? "ativo agora" : d.lastSeenWhen ? `visto ${d.lastSeenWhen}` : "ainda não apareceu" }),
+              h("button", {
+                class: "secondary",
+                text: d.current ? "Desconectar" : "Revogar",
+                title: d.current ? "Desconectar este computador do servidor" : "Ele para de receber o login das contas na hora",
+                onclick: () => send(d.current ? { type: "disconnectServer" } : { type: "revokeDevice", id: d.id }),
+              })
+            )
+          )
+        )
+      );
+    }
+
+    if (sv.loginPromptOff) {
+      kids.push(
+        h("p", {
+          class: "muted small",
+          text: `${sv.loginPromptNote || "Enquanto estiver no modo servidor, o login do Claude Code é feito pelo Swap Plus"}: a tela de login do Claude Code fica desligada (claudeCode.disableLoginPrompt) e volta como estava ao sair do modo servidor ou desconectar.`,
+        })
+      );
+    }
+
+    if (sv.otherWindow) {
+      kids.push(h("p", { class: "muted small", text: "Outra janela do VS Code está cuidando do login deste computador (batimento e gravação); esta janela só mostra o estado." }));
+    }
+
+    if (sv.connected && sv.canMigrate) {
+      kids.push(
+        h(
+          "div",
+          { class: "xrow srvmig" },
+          h("button", { class: "secondary", text: "Enviar os logins deste computador", onclick: () => send({ type: "migrate" }) }),
+          h("span", {
+            class: "muted small",
+            text: `Manda ao servidor o login de cada conta guardada aqui pelo motor swap-plus. Contas que o servidor já tem funcionando ficam como estão.${sv.migratedWhen ? ` Último envio: ${sv.migratedWhen}.` : ""}`,
+          })
+        )
+      );
+    }
+
+    if (sv.connected && sv.diag) {
+      const v = sv.diag.value;
+      kids.push(
+        h("p", {
+          class: "muted small diag",
+          text:
+            "Diagnóstico: depois que o servidor renova o login de uma conta, o acesso anterior " +
+            (v === true
+              ? "continua valendo por um tempo — um computador que demorar alguns minutos para receber o acesso novo não fica sem conta."
+              : v === false
+                ? "deixa de valer na hora — cada computador depende de receber o acesso novo (o que acontece em até 30 s)."
+                : "ainda não foi testado (o servidor testa na primeira renovação).") +
+            (sv.diag.when ? ` Testado ${sv.diag.when}.` : ""),
+        })
+      );
+    }
+
+    $("serverBox").replaceChildren(...kids);
+  }
+
   function renderAuto() {
     $("autoToggle").checked = S.auto.enabled;
     const r = S.rules;
@@ -530,15 +785,23 @@
       : r.onModelLimit === "switchAccount"
         ? `, ${S.modelNames.join("/")} ≥ ${fmt(r.modelPct)}% (quando em uso)`
         : ` · quando o ${S.modelNames.join("/")} acaba, segue na mesma conta com o Opus 5.5`;
+    const srvOn = isServer();
     $("autoStatus").replaceChildren(
       h("span", { class: "dot" + (S.auto.enabled ? " on" : "") }),
       S.auto.enabled ? h("b", { class: "ontext", text: "Ligada" }) : h("b", { text: "Desligada" }),
       S.auto.enabled
-        ? ` — verifica a cada ${fmt(r.intervalSec)} s · troca em sessão ≥ ${fmt(r.sessionPct)}%, semanal ≥ ${fmt(r.weeklyPct)}%${models} · ${st ? st.name : r.strategy}`
-        : " — nenhuma troca acontece sozinha. Os avisos continuam funcionando."
+        ? ` — ${srvOn ? "decidida pelo servidor, para todos os computadores" : `verifica a cada ${fmt(r.intervalSec)} s`} · troca em sessão ≥ ${fmt(r.sessionPct)}%, semanal ≥ ${fmt(r.weeklyPct)}%${models} · ${st ? st.name : r.strategy}`
+        : srvOn
+          ? " — no servidor: nenhuma troca acontece sozinha em nenhum computador. Os avisos continuam funcionando."
+          : " — nenhuma troca acontece sozinha. Os avisos continuam funcionando."
     );
     const last = S.auto.last;
-    $("autoLast").textContent = last ? `Última verificação (${S.auto.lastWhen || "?"}): ${last.text}` : "";
+    $("autoLast").textContent = last ? `${srvOn ? "Última decisão do servidor" : "Última verificação"} (${S.auto.lastWhen || "?"}): ${last.text}` : "";
+    $("btnSim").classList.toggle("hidden", srvOn);
+    $("btnCheck").textContent = srvOn ? "Consultar o servidor agora" : "Verificar agora";
+    $("autoNote").textContent = srvOn
+      ? "Quem decide é o servidor, olhando o uso de todas as contas e quais computadores estão usando cada uma. Este computador recebe a conta nova em até 30 s e o Claude Code aberto passa a usá-la sozinho. Ligar ou desligar aqui vale para todos os computadores conectados."
+      : "A sessão não para: a troca é feita antes da conta esgotar e o Claude Code aberto passa a usar a conta nova sozinho (até ~30 s). Funciona enquanto o VS Code estiver aberto.";
   }
 
   function renderUi() {
@@ -552,16 +815,18 @@
       h("label", { class: "check" }, h("input", { type: "checkbox", checked: S.ui.showAccountNumber, onchange: (e) => set("statusBar.showAccountNumber", e.target.checked) }), "Mostrar o número da conta ao lado do ícone de e-mail"),
       h("label", { class: "check" }, h("input", { type: "checkbox", checked: S.ui.showModelWeekly, onchange: (e) => set("statusBar.showModelWeekly", e.target.checked) }), "Mostrar o semanal por modelo (ex.: Fable) na barra"),
       h("p", { class: "muted small", text: "Cor do item na barra: normal abaixo de 70%, amarelo a partir de 70% e vermelho na linha de troca — vale o limite mais perto do fim." }),
-      h(
-        "div",
-        { class: "uirule" },
-        sliderRow({
-          label: "Atualizar o uso a cada",
-          value: S.ui.pollIntervalMinutes, min: 0.5, max: 10, step: 0.5, suffix: " min",
-          onInput: () => {},
-          onCommit: (v) => set("pollIntervalMinutes", v),
-        })
-      )
+      isServer()
+        ? h("p", { class: "muted small", text: "No modo servidor este computador fala com o servidor a cada 30 s; o servidor consulta o uso das contas na Anthropic." })
+        : h(
+            "div",
+            { class: "uirule" },
+            sliderRow({
+              label: "Atualizar o uso a cada",
+              value: S.ui.pollIntervalMinutes, min: 0.5, max: 10, step: 0.5, suffix: " min",
+              onInput: () => {},
+              onCommit: (v) => set("pollIntervalMinutes", v),
+            })
+          )
     );
   }
 
@@ -580,12 +845,18 @@
       return false;
     };
     const cell = (v, flag) => h("span", { class: flag ? "new" : "", text: v || "—" });
+    // Modo servidor: o motor (swap-plus) não é usado; o atualizador não o consulta.
+    const engine = u.engine !== false;
     const rows = [
       h("span", { class: "hd", text: "" }), h("span", { class: "hd", text: "Nesta máquina" }), h("span", { class: "hd", text: "No seu fork" }), h("span", { class: "hd", text: "No original" }),
-      h("span", { class: "nm", text: "Motor (swap-plus)" }),
-      cell(L ? L.cli.installed : null),
-      cell(L ? L.cli.latest : null, L && newer(L.cli.latest, L.cli.installed)),
-      cell(L ? L.cli.upstream : null, L && newer(L.cli.upstream, L.cli.latest)),
+      ...(engine
+        ? [
+            h("span", { class: "nm", text: "Motor (swap-plus)" }),
+            cell(L ? L.cli.installed : null),
+            cell(L ? L.cli.latest : null, L && newer(L.cli.latest, L.cli.installed)),
+            cell(L ? L.cli.upstream : null, L && newer(L.cli.upstream, L.cli.latest)),
+          ]
+        : []),
       h("span", { class: "nm", text: "Extensão Swap Plus" }),
       cell(u.extInstalled),
       cell(L ? L.ext.latest : null, L && newer(L.ext.latest, u.extInstalled)),
@@ -599,6 +870,7 @@
           ? `Última verificação: ${L.when || L.ts} (${REASONS[L.reason] || L.reason})${L.error ? ` — erro: ${L.error}` : ""}.`
           : "Ainda não verificou.",
       }),
+      ...(engine ? [] : [h("p", { class: "muted small", text: "No modo servidor o motor (swap-plus) não é usado: o atualizador não o verifica nem oferece instalar." })]),
       h("p", {
         class: "muted small",
         text: `Verifica ao abrir e ao fechar o VS Code e a cada 2 dias, tudo dentro do VS Code. ${u.autoUpdate ? "Instala sozinho, como as outras extensões (Extensions: Auto Update ligado)." : "Só avisa, porque o Auto Update de extensões do VS Code está desligado."} Ao fechar, só verifica: se houver versão nova, ela é instalada na próxima abertura. Versão nova do original: o GitHub roda os testes do original e só então prepara o motor no seu fork.${u.pendingOnOpen ? " Há versão nova esperando a próxima abertura do VS Code." : ""}`,
@@ -610,7 +882,15 @@
     const items = S.auto.history || [];
     $("history").replaceChildren(
       ...(items.length
-        ? items.map((it) => h("li", null, h("span", { class: "when", text: it.when || "" }), h("span", { class: "kind " + it.kind, text: KIND_LABELS[it.kind] || it.kind }), h("span", { text: it.text })))
+        ? items.map((it) =>
+            h(
+              "li",
+              null,
+              h("span", { class: "when", text: it.when || "" }),
+              h("span", { class: "kind " + it.kind, text: KIND_LABELS[it.kind] || it.kind }),
+              h("span", { class: "htext" }, it.text, it.who ? h("span", { class: "who", text: ` · ${it.who}` }) : null)
+            )
+          )
         : [h("li", { class: "empty", text: "Nada por aqui ainda. Trocas, alertas e bloqueios aparecem nesta lista." })])
     );
   }
@@ -618,7 +898,7 @@
   function renderAll() {
     const err = $("errorBox");
     if (S.error) {
-      err.textContent = `Não consegui executar o swap-plus: ${S.error}`;
+      err.textContent = isServer() ? S.error : `Não consegui executar o swap-plus: ${S.error}`;
       err.classList.remove("hidden");
     } else {
       err.classList.add("hidden");
@@ -628,6 +908,8 @@
       rulesDirty = false;
       $("rulesDirty").classList.add("hidden");
     }
+    renderMaster();
+    renderServer();
     renderAuto();
     renderRules();
     renderAccounts();
@@ -635,6 +917,11 @@
     renderUpdates();
     renderHistory();
     $("rowExportMe").classList.toggle("hidden", !!S.privacy);
+    const srvOn = isServer();
+    $("xportCard").classList.toggle("hidden", srvOn); // no modo servidor as contas ficam no servidor
+    $("btnClear").classList.toggle("hidden", srvOn); // o histórico do servidor não se apaga daqui
+    $("rulesWhere").classList.toggle("hidden", !srvOn);
+    $("acctWhere").textContent = srvOn ? "Mudanças aqui valem na hora, no servidor, para todos os computadores." : "Mudanças aqui valem na hora.";
   }
 
   // ------------------------------------------------------------ eventos
@@ -655,6 +942,7 @@
 
   $("btnRefresh").addEventListener("click", () => send({ type: "refresh" }));
   $("autoToggle").addEventListener("change", (e) => send({ type: "setAuto", enabled: e.target.checked }));
+  $("masterToggle").addEventListener("change", (e) => send({ type: "setEnabled", enabled: e.target.checked }));
   $("btnCheck").addEventListener("click", () => send({ type: "checkNow", dryRun: false }));
   $("btnSim").addEventListener("click", () => send({ type: "checkNow", dryRun: true }));
   $("btnSave").addEventListener("click", saveRules);

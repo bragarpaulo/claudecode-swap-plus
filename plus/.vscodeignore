@@ -2,3 +2,5 @@ test/**
 scripts/**
 *.vsix
 .gitignore
+**/*.cswap
+node_modules/**

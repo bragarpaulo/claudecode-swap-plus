@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<title>Swap Plus</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Crect width='256' height='256' rx='64' fill='%23D97757'/%3E%3Cpath d='M184 104L144 64V92H72V116H144V144L184 104Z' fill='white'/%3E%3Cpath d='M72 152L112 192V164H184V140H112V112L72 152Z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Pular para o conteúdo</a>
+
+<!-- ============================================================ carregando -->
+<div id="screenLoading" class="screen center">
+  <p class="muted loading" id="loadingText" role="status">Carregando…</p>
+  <button type="button" id="btnRetry" class="hidden">Tentar de novo</button>
+</div>
+
+<!-- ============================================================ entrada (sem sessão) -->
+<div id="screenLogin" class="screen center hidden">
+  <div class="logincard">
+    <svg class="logo big" viewBox="0 0 256 256" aria-hidden="true" focusable="false">
+      <rect width="256" height="256" rx="64" fill="#D97757"/>
+      <path d="M184 104L144 64V92H72V116H144V144L184 104Z" fill="#fff"/>
+      <path d="M72 152L112 192V164H184V140H112V112L72 152Z" fill="#fff"/>
+    </svg>
+    <h1>Swap Plus</h1>
+    <p class="lead">Painel das suas contas Claude</p>
+    <p id="loginMsg" class="loginmsg hidden" role="status"></p>
+    <a class="button big" href="/web/login" id="btnGoogle">
+      <svg class="gicon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.4h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.2-2.1 3.5-5.1 3.5-8.7z"/>
+        <path fill="#34A853" d="M12 24c3.2 0 6-1.1 7.9-2.9l-3.9-3c-1.1.7-2.4 1.2-4 1.2-3.1 0-5.7-2.1-6.6-4.9h-4v3.1A12 12 0 0 0 12 24z"/>
+        <path fill="#FBBC05" d="M5.4 14.4a7.2 7.2 0 0 1 0-4.7V6.6h-4a12 12 0 0 0 0 10.9l4-3.1z"/>
+        <path fill="#EA4335" d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.4 6.6l4 3.1C6.3 6.9 8.9 4.8 12 4.8z"/>
+      </svg>
+      <span>Entrar com Google</span>
+    </a>
+    <p class="muted small">Só o administrador do servidor entra neste painel.</p>
+  </div>
+</div>
+
+<!-- ============================================================ painel (com sessão) -->
+<div id="screenPanel" class="hidden">
+  <header class="top">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 256 256" aria-hidden="true" focusable="false">
+        <rect width="256" height="256" rx="64" fill="#D97757"/>
+        <path d="M184 104L144 64V92H72V116H144V144L184 104Z" fill="#fff"/>
+        <path d="M72 152L112 192V164H184V140H112V112L72 152Z" fill="#fff"/>
+      </svg>
+      <div>
+        <h1>Swap Plus</h1>
+        <p class="muted small">Painel das suas contas Claude</p>
+      </div>
+    </div>
+    <div class="topright">
+      <div class="row gap wrap end">
+        <button type="button" id="btnHistory" class="ghost" aria-haspopup="dialog" aria-controls="historyDlg">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2"/></svg>
+          <span class="optlabel">Histórico</span>
+        </button>
+        <button type="button" id="btnRefresh" class="ghost">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+          <span class="optlabel">Atualizar</span>
+        </button>
+        <button type="button" id="btnAccount" class="secondary acctbtn" aria-haspopup="dialog" aria-controls="accountDlg">
+          <span class="avatar" id="meAvatar" aria-hidden="true"></span>
+          <span class="optlabel">Minha conta</span>
+        </button>
+      </div>
+      <p class="muted small" id="syncStatus"></p>
+    </div>
+  </header>
+
+  <section id="warnings" class="warnings hidden" aria-labelledby="warningsTitle">
+    <h2 id="warningsTitle" class="visually-hidden">Avisos</h2>
+    <ul id="warningsList"></ul>
+  </section>
+
+  <nav class="tabs" aria-label="Menu do painel">
+    <div id="tablist" class="tablist">
+      <button type="button" class="tab" id="tab-contas" data-sec="contas" aria-controls="sec-contas"><span>Contas</span> <span class="count" id="count-contas"></span></button>
+      <button type="button" class="tab" id="tab-computadores" data-sec="computadores" aria-controls="sec-computadores"><span>Computadores</span> <span class="count" id="count-computadores"></span></button>
+      <button type="button" class="tab" id="tab-usuarios" data-sec="usuarios" aria-controls="sec-usuarios"><span>Usuários</span> <span class="count" id="count-usuarios"></span></button>
+    </div>
+  </nav>
+
+  <main id="main" tabindex="-1">
+    <!-- ------------------------------------------------ Contas -->
+    <section class="sec" id="sec-contas" data-sec="contas" aria-labelledby="h-contas">
+      <div class="sectop">
+        <div class="sectitle">
+          <h2 id="h-contas" class="sechead">Contas</h2>
+          <p class="muted small" id="summary"></p>
+        </div>
+        <button type="button" id="btnAddAccount" data-k="add-acc" aria-controls="addBox">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+          <span>Adicionar conta</span>
+        </button>
+      </div>
+
+      <div id="addBox" class="card addbox hidden" role="region" aria-labelledby="addTitle">
+        <div class="row between gap wrap">
+          <h3 id="addTitle">Adicionar conta Claude</h3>
+          <button type="button" id="addCancel" class="secondary">Cancelar</button>
+        </div>
+        <div id="addSteps">
+          <ol class="steps numbered">
+            <li>
+              <span>Abra a página de login da Claude.</span>
+              <span class="row gap wrap addopen">
+                <a class="button secondary" id="addLink" href="/" target="_blank" rel="noopener noreferrer">Abrir o login da Claude</a>
+                <span id="addOpened" class="muted small"></span>
+              </span>
+            </li>
+            <li>Entre com a conta Claude que quer adicionar e autorize.</li>
+            <li>A página mostra um código no fim. Copie e cole aqui.</li>
+          </ol>
+          <form id="addForm" class="addform" novalidate>
+            <label for="addCode">Código da Claude</label>
+            <div class="row gap wrap">
+              <input type="text" id="addCode" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="addInfo">
+              <button type="submit" id="addFinish" data-k="add-finish">Adicionar</button>
+            </div>
+            <small class="hint" id="addInfo"></small>
+          </form>
+        </div>
+        <p id="addOff" class="note warnbox hidden">Adicionar conta pelo painel fica disponível na próxima atualização do servidor. Por enquanto: num computador conectado, entre com a conta no Claude Code — o Swap Plus envia o login ao servidor sozinho.</p>
+        <p class="muted small">Outra forma: entrar com a conta no Claude Code de um computador conectado. O Swap Plus envia o login ao servidor sozinho.</p>
+      </div>
+
+      <details class="legend">
+        <summary>Como ler os cartões</summary>
+        <p class="muted small">As contas que participam da troca aparecem primeiro, na ordem da fila: primeiro a conta cujo limite semanal renova antes; em empate, a menos usada. As que não participam ficam no grupo “Fora da troca”, embaixo.</p>
+        <p class="muted small">As barras mostram quanto de cada limite já foi usado; o tracinho é a linha de troca. Verde: longe da linha. Amarelo: chegando perto. Vermelho: na linha (o servidor passa o computador para outra conta).</p>
+        <p class="muted small">“Acesso” é a chave de poucas horas que o servidor renova sozinho. “Login” é o que permite renovar: quando vence, é preciso entrar de novo com a conta.</p>
+      </details>
+
+      <div id="accounts"><p class="muted loading">Carregando…</p></div>
+
+      <!-- ............................................ Regras de troca (gerais) -->
+      <section class="subsec" id="rulesSection" aria-labelledby="h-regras">
+        <h3 id="h-regras" class="subhead">Regras de troca</h3>
+        <p class="muted small">Valem para todos os computadores. Nada muda até você clicar em “Salvar regras”.</p>
+        <p id="rulesChanged" class="note warnbox hidden" role="status">As regras foram mudadas em outro lugar enquanto você editava. “Desfazer” carrega as regras novas.</p>
+
+        <form id="rulesForm" novalidate>
+          <fieldset class="card r-auto">
+            <legend>Troca automática</legend>
+            <label class="switchrow" for="rAuto">
+              <input type="checkbox" role="switch" class="sw" id="rAuto" aria-describedby="rAutoHint">
+              <span id="rAutoText">Troca automática ligada</span>
+            </label>
+            <p class="hint" id="rAutoHint">Desligada, nenhum computador troca de conta sozinho. A troca manual (em Computadores) continua funcionando.</p>
+          </fieldset>
+
+          <fieldset class="card r-lines">
+            <legend>Quando trocar de conta</legend>
+            <p class="hint">Quando a conta em uso num computador chegar nesta porcentagem, o servidor passa esse computador para outra conta com folga.</p>
+            <div class="field range">
+              <label for="rSession">Sessão de 5 horas</label>
+              <input type="range" id="rSession" name="sessionPct" min="50" max="100" step="1" aria-describedby="rSessionHint">
+              <output id="rSessionOut" for="rSession"></output>
+              <small class="hint" id="rSessionHint">Padrão: <span data-def="sessionPct" data-unit="%">90%</span>. Cada conta pode ter uma linha própria (no cartão da conta, em “Ajustes desta conta”).</small>
+            </div>
+            <div class="field range">
+              <label for="rWeekly">Limite semanal (todos os modelos)</label>
+              <input type="range" id="rWeekly" name="weeklyPct" min="50" max="100" step="1" aria-describedby="rWeeklyHint">
+              <output id="rWeeklyOut" for="rWeekly"></output>
+              <small class="hint" id="rWeeklyHint">Padrão: <span data-def="weeklyPct" data-unit="%">80%</span>.</small>
+            </div>
+            <div class="field range">
+              <label for="rModel">Limite semanal de um modelo (ex.: Fable)</label>
+              <input type="range" id="rModel" name="modelPct" min="50" max="100" step="1" aria-describedby="rModelHint">
+              <output id="rModelOut" for="rModel"></output>
+              <small class="hint" id="rModelHint">Padrão: <span data-def="modelPct" data-unit="%">95%</span>. Só troca de conta por causa do modelo se, abaixo, estiver escolhido “Trocar de conta”.</small>
+            </div>
+          </fieldset>
+
+          <fieldset class="card r-model">
+            <legend>Quando o limite de um modelo acaba</legend>
+            <div class="choices two">
+              <label class="choice" for="rLimitSame">
+                <input type="radio" name="onModelLimit" id="rLimitSame" value="sameAccount">
+                <span>
+                  <span class="name">Seguir na mesma conta</span>
+                  <span class="desc">A conta não muda. O Claude Code pergunta se você quer trocar de modelo e você continua na mesma conversa com outro modelo (ex.: Opus).</span>
+                </span>
+              </label>
+              <label class="choice" for="rLimitSwitch">
+                <input type="radio" name="onModelLimit" id="rLimitSwitch" value="switchAccount">
+                <span>
+                  <span class="name">Trocar de conta</span>
+                  <span class="desc">O servidor passa o computador para outra conta que ainda tem esse modelo, quando o uso dele chegar na linha do modelo acima.</span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="card r-strat">
+            <legend>Para qual conta ir (estratégia)</legend>
+            <div class="choices">
+              <label class="choice" for="rStratMax">
+                <input type="radio" name="strategy" id="rStratMax" value="max">
+                <span>
+                  <span class="name">Aproveitar ao máximo <span class="tag">padrão</span></span>
+                  <span class="desc">Usa primeiro a conta cuja cota semanal zera antes, para não desperdiçar. Também troca antes da linha quando outra conta está prestes a zerar com cota sobrando.</span>
+                </span>
+              </label>
+              <label class="choice" for="rStratHeadroom">
+                <input type="radio" name="strategy" id="rStratHeadroom" value="headroom">
+                <span>
+                  <span class="name">Mais folga</span>
+                  <span class="desc">Troca só quando a conta chega numa linha de troca e vai para a conta com mais folga.</span>
+                </span>
+              </label>
+              <label class="choice" for="rStratPriority">
+                <input type="radio" name="strategy" id="rStratPriority" value="priority">
+                <span>
+                  <span class="name">Por prioridade</span>
+                  <span class="desc">Segue a prioridade de cada conta (número maior primeiro). Em empate, a que renova antes.</span>
+                </span>
+              </label>
+            </div>
+            <div class="field">
+              <label for="rPrefer">Modelo preferido</label>
+              <select id="rPrefer" name="preferModel" aria-describedby="rPreferHint"></select>
+              <small class="hint" id="rPreferHint">Ao trocar, contas com este modelo ainda disponível vêm primeiro.</small>
+            </div>
+          </fieldset>
+
+          <fieldset class="card r-fine">
+            <legend>Ajustes finos</legend>
+            <div class="fields">
+            <div class="field num">
+              <label for="rExpiring">Horas para “cota prestes a zerar”</label>
+              <span class="numwrap"><input type="number" id="rExpiring" name="expiringHours" min="1" max="168" step="1" inputmode="numeric" aria-describedby="rExpiringHint"><span class="unit" aria-hidden="true">h</span></span>
+              <small class="hint" id="rExpiringHint">Só na estratégia “Aproveitar ao máximo”: troca antes da linha para uma conta cuja cota semanal zera dentro deste tempo e ainda tem pelo menos 20% sobrando. De 1 a 168 horas. Padrão: <span data-def="expiringHours">24</span>.</small>
+            </div>
+            <div class="field num">
+              <label for="rCooldown">Intervalo mínimo entre trocas</label>
+              <span class="numwrap"><input type="number" id="rCooldown" name="cooldownMin" min="0" max="240" step="1" inputmode="numeric" aria-describedby="rCooldownHint"><span class="unit" aria-hidden="true">min</span></span>
+              <small class="hint" id="rCooldownHint">Vale para as trocas antecipadas. Quando a conta chega numa linha de troca, troca na hora. De 0 a 240 minutos. Padrão: <span data-def="cooldownMin">5</span>.</small>
+            </div>
+            <div class="field num">
+              <label for="rMargin">Margem da conta de destino</label>
+              <span class="numwrap"><input type="number" id="rMargin" name="marginPct" min="0" max="30" step="1" inputmode="numeric" aria-describedby="rMarginHint"><span class="unit" aria-hidden="true">pontos</span></span>
+              <small class="hint" id="rMarginHint">A conta para onde vai precisa estar pelo menos isso abaixo de cada linha. Evita trocar para uma conta que logo precisaria trocar de novo. De 0 a 30. Padrão: <span data-def="marginPct">5</span>.</small>
+            </div>
+            </div>
+          </fieldset>
+
+          <div class="savebar">
+            <span id="rulesDirty" class="dirty hidden" role="status">Alterações não salvas</span>
+            <div class="row gap wrap end">
+              <button type="button" id="rulesDefaults" class="secondary">Voltar ao padrão</button>
+              <button type="button" id="rulesUndo" class="secondary" data-k="rules-undo">Desfazer</button>
+              <button type="submit" id="rulesSave" data-k="rules-save">Salvar regras</button>
+            </div>
+          </div>
+        </form>
+      </section>
+    </section>
+
+    <!-- ------------------------------------------------ Computadores -->
+    <section class="sec" id="sec-computadores" data-sec="computadores" aria-labelledby="h-computadores">
+      <div class="sectop">
+        <div class="sectitle">
+          <h2 id="h-computadores" class="sechead">Computadores</h2>
+          <p class="muted small">Cada computador conectado recebe do servidor o acesso de uma conta Claude. Trocar aqui vale em até 30 segundos, e o Claude Code aberto passa a usar a conta nova sozinho.</p>
+        </div>
+      </div>
+      <div id="devices" class="tiles"><p class="muted loading">Carregando…</p></div>
+
+      <div class="card connect" id="connectBox">
+        <h3>Conectar um computador</h3>
+        <ol class="steps numbered">
+          <li>No computador, abra o VS Code com a extensão Swap Plus instalada.</li>
+          <li>Abra a tela do Swap Plus (comando “Swap Plus: Configurar trocas automáticas”) e, no cartão “Servidor”, clique em <b>Entrar com Google</b>.</li>
+          <li>O navegador abre: entre com a conta do administrador ou com um dos usuários liberados em <b>Usuários</b>.</li>
+          <li>Pronto. O computador aparece nesta lista e já recebe uma conta.</li>
+        </ol>
+        <p id="googleOffNote" class="note warnbox hidden">O login com Google está desligado no servidor. Por enquanto, conecte usando o código de conexão abaixo.</p>
+        <h4>Sem Google: código de conexão</h4>
+        <p class="muted small">Gere um código e cole no VS Code em “Colar código” (no mesmo cartão “Servidor”). Vale 10 minutos e uma vez só.</p>
+        <div class="row gap wrap">
+          <button type="button" id="btnPair" class="secondary">Gerar código de conexão</button>
+        </div>
+        <div id="pairBox" class="pairbox hidden">
+          <label for="pairCode">Código de conexão</label>
+          <textarea id="pairCode" rows="3" readonly spellcheck="false" aria-describedby="pairInfo"></textarea>
+          <div class="row gap wrap">
+            <button type="button" id="btnCopyPair">Copiar código</button>
+            <span id="pairInfo" class="muted small"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------ Usuários -->
+    <section class="sec" id="sec-usuarios" data-sec="usuarios" aria-labelledby="h-usuarios">
+      <div class="sectop">
+        <div class="sectitle">
+          <h2 id="h-usuarios" class="sechead">Usuários</h2>
+          <p class="muted small">Contas Google que podem conectar computadores pelo VS Code (“Entrar com Google”). O painel continua só do administrador.</p>
+        </div>
+      </div>
+
+      <div class="card tablecard">
+        <form id="allowForm" class="tabletools allowform" novalidate>
+          <label for="allowEmail">Liberar um usuário (conta Google)</label>
+          <div class="row gap wrap">
+            <input type="email" id="allowEmail" autocomplete="off" spellcheck="false" placeholder="pessoa@gmail.com" aria-describedby="allowHint">
+            <button type="submit" id="btnAllow" data-k="allow-add">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+              <span>Liberar</span>
+            </button>
+          </div>
+          <small class="hint" id="allowHint">Depois de liberada, a pessoa conecta o computador pelo VS Code com essa conta Google (“Entrar com Google”).</small>
+        </form>
+        <table class="utable">
+          <caption class="visually-hidden">Usuários que podem conectar computadores</caption>
+          <thead>
+            <tr>
+              <th scope="col">E-mail</th>
+              <th scope="col">Papel</th>
+              <th scope="col">Computadores</th>
+              <th scope="col">Desde</th>
+              <th scope="col"><span class="visually-hidden">Ações</span></th>
+            </tr>
+          </thead>
+          <tbody id="usersBody"><tr><td colspan="5" class="empty">Carregando…</td></tr></tbody>
+        </table>
+        <div class="tablefoot">
+          <p class="muted small">Tirar um usuário impede que ele conecte computadores novos. Os computadores que ele já conectou continuam funcionando; para cortar, desconecte-os em Computadores.</p>
+          <p id="usersNote" class="muted small hidden"></p>
+        </div>
+      </div>
+      <p id="googleInfo" class="muted small"></p>
+    </section>
+  </main>
+
+  <footer class="foot muted small" id="footer"></footer>
+</div>
+
+<!-- ============================================================ Minha conta (painel lateral) -->
+<dialog id="accountDlg" class="drawer" aria-labelledby="accountTitle">
+  <div class="drawerin">
+    <div class="drawerhead">
+      <h2 id="accountTitle">Minha conta</h2>
+      <button type="button" class="secondary closebtn" id="accountClose" aria-label="Fechar Minha conta">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+        <span>Fechar</span>
+      </button>
+    </div>
+    <div class="drawerbody">
+      <div class="card mecard">
+        <div class="row gap">
+          <span class="avatar big" id="meAvatarBig" aria-hidden="true"></span>
+          <div class="meinfo">
+            <p><span class="visually-hidden">Você entrou como </span><b id="meEmail"></b></p>
+            <p class="muted small" id="adminInfo"></p>
+          </div>
+        </div>
+        <div class="row gap wrap end">
+          <button type="button" id="btnLogout" class="secondary">Sair</button>
+        </div>
+      </div>
+
+      <div class="card" id="recoveryCard">
+        <h3>Recuperação</h3>
+        <p class="muted small">O kit de recuperação tem a chave mestra do cofre e a senha do backup. Guarde estas duas chaves FORA deste servidor (gerenciador de senhas ou um arquivo no seu computador). Se o servidor for perdido, só com elas o backup abre.</p>
+        <div class="row gap wrap">
+          <button type="button" id="btnRecovery" class="secondary">Mostrar o kit de recuperação</button>
+        </div>
+        <div id="recoveryReauth" class="note warnbox hidden" role="status">
+          <p>Por segurança, o kit só aparece até 15 minutos depois de entrar com o Google. Entre de novo para ver.</p>
+          <a class="button" id="recoveryLogin" href="/web/login?next=acesso">Entrar de novo com Google</a>
+        </div>
+        <div id="recoveryBox" class="pairbox hidden">
+          <label for="recoveryMaster">Chave mestra do cofre</label>
+          <textarea id="recoveryMaster" rows="2" readonly spellcheck="false" aria-describedby="recoveryMasterInfo"></textarea>
+          <div class="row gap wrap">
+            <button type="button" id="btnCopyMaster">Copiar chave mestra</button>
+            <span id="recoveryMasterInfo" class="muted small"></span>
+          </div>
+          <label for="recoveryBackup">Senha do backup</label>
+          <textarea id="recoveryBackup" rows="2" readonly spellcheck="false" aria-describedby="recoveryBackupInfo"></textarea>
+          <div class="row gap wrap">
+            <button type="button" id="btnCopyBackup">Copiar senha do backup</button>
+            <span id="recoveryBackupInfo" class="muted small"></span>
+          </div>
+          <div class="row gap wrap">
+            <button type="button" id="btnHideRecovery" class="secondary">Esconder o kit</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Sessões abertas neste painel</h3>
+        <p class="muted small">Navegadores em que o administrador entrou no painel. Encerrar uma sessão obriga a entrar de novo com Google naquele navegador.</p>
+        <ul id="sessionsList" class="plainlist sessions"><li class="empty">Carregando…</li></ul>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<!-- ============================================================ Histórico (painel lateral) -->
+<dialog id="historyDlg" class="drawer" aria-labelledby="historyTitle">
+  <div class="drawerin">
+    <div class="drawerhead">
+      <h2 id="historyTitle">Histórico</h2>
+      <button type="button" class="secondary closebtn" id="historyClose" aria-label="Fechar Histórico">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+        <span>Fechar</span>
+      </button>
+    </div>
+    <div class="drawerbody">
+      <p class="muted small">Os últimos 100 acontecimentos: trocas de conta, logins recebidos, avisos e mudanças de regra.</p>
+      <ul id="history" class="history"><li class="empty">Carregando…</li></ul>
+    </div>
+  </div>
+</dialog>
+
+<!-- ============================================================ confirmação -->
+<dialog id="confirmDlg" aria-labelledby="confirmTitle" aria-describedby="confirmText">
+  <div class="dlg">
+    <h2 id="confirmTitle"></h2>
+    <p id="confirmText"></p>
+    <div class="row gap end">
+      <button type="button" class="secondary" id="confirmCancel">Cancelar</button>
+      <button type="button" class="danger" id="confirmOk">Confirmar</button>
+    </div>
+  </div>
+</dialog>
+
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+</body>
+</html>

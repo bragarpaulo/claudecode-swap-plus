@@ -1,5 +1,14 @@
 # Swap Plus: publica a extensão quando uma tag plus-vX.Y.Z é enviada.
 # A extensão instalada em cada máquina baixa o .vsix desta release.
+#
+# Fluxo:
+#   1. testes-linux   (Ubuntu, Node 22): a tag bate com a versão, sintaxe de todos os .js de
+#                     plus/ e server/src/, testes da extensão (smoke, clientlibs, servermode)
+#                     e do servidor (server/test).
+#   2. testes-windows (Windows, Node 22): clientlibs (o caminho do Windows do claudeAuth) e smoke.
+#   3. publicar: só roda se os dois passarem. Empacota numa cópia limpa do repositório
+#                (nada que os testes gravaram entra), confere o conteúdo do .vsix e cria a release.
+# Depois, "Swap Plus — testar a instalação" instala a release nova num Mac e num Windows limpos.
 name: Swap Plus — publicar a extensão
 
 on:
@@ -7,34 +16,147 @@ on:
     tags: ["plus-v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  testes-linux:
+    name: Testes (Ubuntu, Node 22)
     runs-on: ubuntu-24.04
-    env:
-      GH_TOKEN: ${{ github.token }}
+    timeout-minutes: 15
+    outputs:
+      versao: ${{ steps.versao.outputs.versao }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: A tag bate com a versão do package.json
-        working-directory: plus
+        id: versao
         run: |
-          VER=$(node -p "require('./package.json').version")
-          [ "$GITHUB_REF_NAME" = "plus-v$VER" ] || { echo "::error::a tag $GITHUB_REF_NAME não bate com a versão $VER do package.json"; exit 1; }
-          echo "VER=$VER" >> "$GITHUB_ENV"
+          VER=$(node -p "require('./plus/package.json').version")
+          [ "$GITHUB_REF_NAME" = "plus-v$VER" ] || { echo "::error::a tag $GITHUB_REF_NAME não bate com a versão $VER do plus/package.json"; exit 1; }
+          echo "versao=$VER" >> "$GITHUB_OUTPUT"
 
-      - name: Testes (regra de troca, textos e atualizador)
-        working-directory: plus
-        run: node test/smoke.js --unit
+      - name: Sintaxe de todos os .js (plus/ e server/src/)
+        run: |
+          for d in plus server/src; do
+            [ -d "$d" ] || { echo "::error::a pasta $d não existe"; exit 1; }
+          done
+          falhou=0
+          n=0
+          while IFS= read -r -d '' f; do
+            n=$((n + 1))
+            if node --check "$f"; then
+              echo "ok     $f"
+            else
+              echo "::error file=$f::node --check falhou em $f"
+              falhou=1
+            fi
+          done < <(find plus server/src -type f -name '*.js' -not -path '*/node_modules/*' -print0 | sort -z)
+          [ "$n" -gt 0 ] || { echo "::error::nenhum .js encontrado"; exit 1; }
+          echo "$n arquivo(s) conferido(s)."
+          exit "$falhou"
+
+      - name: Testes da extensão — regra de troca, textos e atualizador (smoke --unit)
+        run: node plus/test/smoke.js --unit
+
+      - name: Testes da extensão — claudeAuth e cliente do servidor (clientlibs)
+        run: node --test plus/test/clientlibs.test.js
+
+      - name: Testes da extensão — modo servidor (servermode)
+        # Só Linux/macOS: o motor swap-plus é simulado e o teste confere os caminhos do temporário.
+        run: node --test plus/test/servermode.test.js
+
+      - name: Testes do servidor (server/test)
+        # No Node 22 o `node --test` não aceita uma pasta (tenta rodá-la como arquivo):
+        # passa os arquivos. failglob: sem nenhum arquivo de teste, falha em vez de passar com 0 testes.
+        run: |
+          shopt -s failglob
+          node --test server/test/*.test.js
+
+  testes-windows:
+    name: Testes (Windows, Node 22)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        # bash do Git for Windows: o teste https do clientlibs gera um certificado com o
+        # openssl, que vem junto com o Git. Sem openssl, o teste é pulado com o motivo no relatório.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: openssl disponível (para o teste https do clientlibs)
+        run: openssl version || echo "::warning::openssl não encontrado — o teste https do clientlibs vai ser pulado"
+
+      - name: Testes da extensão — caminho do Windows do claudeAuth (clientlibs)
+        # Temporário em runner.temp (caminho longo): o TEMP padrão do runner usa nome curto
+        # (C:\Users\RUNNER~1\...), que o realpath nativo expande e confundiria a conferência de caminhos.
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: node --test plus/test/clientlibs.test.js
+
+      - name: Testes da extensão — regra de troca, textos e atualizador (smoke --unit)
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: node plus/test/smoke.js --unit
+
+  publicar:
+    name: Empacotar e publicar
+    needs: [testes-linux, testes-windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VER: ${{ needs.testes-linux.outputs.versao }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Empacotar
         working-directory: plus
         run: npx --yes @vscode/vsce@3 package --no-dependencies -o swap-plus.vsix
+
+      - name: Conferir o conteúdo do .vsix (sem server/, testes nem .cswap)
+        working-directory: plus
+        run: |
+          LISTA="$RUNNER_TEMP/vsix.txt"
+          unzip -Z1 swap-plus.vsix | sort > "$LISTA"
+          echo "Conteúdo do .vsix:"
+          cat "$LISTA"
+
+          # Proibido: a pasta do servidor, testes e exportações de contas (.cswap levam os logins).
+          PROIBIDOS=$(grep -Ei '(^|/)(server|test|tests)/|\.test\.js$|\.cswap$' "$LISTA" || true)
+          if [ -n "$PROIBIDOS" ]; then
+            echo "::error::o .vsix tem arquivos que não podem ir para as máquinas (confira o plus/.vscodeignore):"
+            echo "$PROIBIDOS"
+            exit 1
+          fi
+
+          # Obrigatório: o package.json, todo .js da raiz de plus/ e a tela (media/).
+          falta=0
+          for f in package.json *.js media/*; do
+            grep -qxF "extension/$f" "$LISTA" || { echo "::error::faltou extension/$f no .vsix"; falta=1; }
+          done
+          [ "$falta" = 0 ] || exit 1
+
+          # O package.json de dentro do .vsix tem a versão da tag.
+          V=$(unzip -p swap-plus.vsix extension/package.json | node -e 'let s = ""; process.stdin.on("data", (c) => (s += c)).on("end", () => console.log(JSON.parse(s).version))')
+          [ "$V" = "$VER" ] || { echo "::error::o package.json do .vsix diz $V, mas a tag é da versão $VER"; exit 1; }
+          echo "OK: $(wc -l < "$LISTA") arquivo(s), versão $V."
 
       - name: Publicar a release
         run: |

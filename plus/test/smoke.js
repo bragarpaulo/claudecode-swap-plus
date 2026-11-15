@@ -185,6 +185,20 @@ function partA() {
   check("conta com dados de mais de 1 h não é destino", d.action === "switch" && d.to === 3, d.text);
   d = run([acct(1, { w: 85 }), acct(2, { w: 10, age: 1800 }), acct(3, { w: 50 })], 1);
   check("conta com dados de 30 min ainda vale como destino", d.action === "switch" && d.to === 2, d.text);
+  // 1.9 — o caso do Mac (14/11 19:59): a conta 8 tinha login morto, mas uso de 15 min atrás e semanal renovando antes.
+  const dead = (n, o) => {
+    const a = acct(n, o);
+    return { ...a, usageStatus: "relogin_required", usage: null, lastGoodUsage: a.usage, lastGoodAgeSeconds: 900 };
+  };
+  d = run([acct(4, { w: 32, wReset: 65 }), dead(8, { w: 30, wReset: 3 })], 4, { r: { strategy: "max" } });
+  check("login morto: “aproveitar ao máximo” não vai para ela", d.action === "none", d.text);
+  d = run([acct(4, { w: 85 }), dead(8, { w: 5 }), acct(7, { w: 40 })], 4);
+  check("login morto: na linha, pula a conta morta", d.action === "switch" && d.to === 7, d.text);
+  d = run([acct(4, { w: 50 }), dead(8, { w: 5 }), acct(7, { w: 40 })], 4, { limitHit: "limite de 5 horas" });
+  check("login morto: limite estourado também não vai para ela", d.action === "switch" && d.to === 7, d.text);
+  d = run([acct(4, { w: 85 }), dead(8, { w: 5 })], 4);
+  check("login morto: se só sobra ela, fica bloqueado (não derruba o Claude Code)", d.action === "none" && d.kind === "blocked", d.text);
+  check("loginDead reconhece os estados", T.loginDead({ usageStatus: "relogin_required" }) && !T.loginDead({ usageStatus: "token_expired" }) && !T.loginDead({ usageStatus: "ok" }));
   // O print do Windows (14/11 18:19): conta 7 em uso; a 8 renova o semanal em 2h41 com 70% sobrando.
   const print = [acct(7, { s: 13, w: 10, f: 4, wReset: 89 }), acct(8, { s: 0, w: 30, f: 4, wReset: 2.7 }), acct(5, { s: 0, w: 31, f: 15, wReset: 67 }), acct(6, { s: 100, w: 40, f: 30, wReset: 50 })];
   d = run(print, 7, { r: { strategy: "max", onModelLimit: "sameAccount" }, models: FABLE, lastSwitchAt: Date.now() - 15 * 60e3 });
@@ -445,8 +459,12 @@ async function partB() {
   check("lista todas as contas", accRows.length === raw.accounts.length, `${accRows.length} contas`);
   check("só a conta em uso tem o check", accRows.filter((m) => m.label.startsWith("$(check)")).length === 1 && accRows.find((m) => m.label.startsWith("$(check)")).accountNum === raw.activeAccountNumber);
   check("linha de cima: conta e e-mail", accRows.every((m) => /Conta \d+.* — .+@/.test(m.label)));
-  check("sessão ao lado do nome, no formato pedido", accRows.every((m) => /^Sessão \(5h\): \d+% usado/.test(m.description)));
-  check("linha de baixo: semanal e Fable, com renovação", accRows.every((m) => /^Semanal: \d+% usado — renova /.test(m.detail) && /Fable: \d+% usado — renova /.test(m.detail)));
+  // Contas sem dado de uso (ex.: login morto, sem leitura antiga) mostram só "Uso indisponível".
+  const withUsage = accRows.filter((m) => !/^Uso indisponível/.test(m.detail));
+  check("sessão ao lado do nome, no formato pedido", withUsage.every((m) => /^Sessão \(5h\): \d+% usado/.test(m.description)), `${withUsage.length} com uso`);
+  check("linha de baixo: semanal e Fable, com renovação", withUsage.every((m) => /Semanal: \d+% usado — renova /.test(m.detail) && /Fable: \d+% usado — renova /.test(m.detail)));
+  const deadRows = raw.accounts.filter((a) => T.loginDead(a)).map((a) => accRows.find((m) => m.accountNum === a.number));
+  check("conta com login morto aparece marcada na lista", deadRows.every((m) => m && /login morto|Uso indisponível \(precisa logar de novo\)/.test(m.detail)), `${deadRows.length} conta(s)`);
   check("lista sem emojis", !menu.some((m) => EMOJI.test(`${m.label} ${m.description || ""} ${m.detail || ""}`)));
   accRows.slice(0, 3).forEach((m) => console.log("       › " + redact(m.label) + "   " + m.description + "\n         " + m.detail));
 
@@ -730,6 +748,59 @@ async function partB() {
       await commands["swapPlus.refreshStatus"]();
     }
     check("de volta ao motor de verdade: conta em uso normal", !/não cadastrada/.test(main.text));
+  }
+
+  console.log("\n# B15. Desligar o Swap Plus e salvar o login na hora (motor de mentira)");
+  {
+    const cfg15 = vscodeMock.workspace.getConfiguration("swapPlus");
+    const log15 = path.join(SCRATCH, "fake15.log");
+    const fake15 = path.join(SCRATCH, "fake15");
+    fs.writeFileSync(path.join(SCRATCH, "list15.json"), cswap("list", "--json"));
+    fs.writeFileSync(
+      fake15,
+      `#!/bin/bash\necho "$@" >> "${log15}"\ncase "$1" in\n  list) cat "${path.join(SCRATCH, "list15.json")}";;\n  --version) echo "swap-plus 1.1.0";;\nesac\nexit 0\n`,
+      { mode: 0o755 }
+    );
+    const calls = () => (fs.existsSync(log15) ? fs.readFileSync(log15, "utf8").trim().split("\n").filter(Boolean) : []);
+    try {
+      await cfg15.update("executablePath", fake15);
+      await sleep(400);
+      await cfg15.update("enabled", false);
+      await sleep(400);
+      fs.rmSync(log15, { force: true });
+      await commands["swapPlus.refreshStatus"]();
+      await T.checkLimitErrors();
+      await T.syncMotorLines();
+      check("desligado: a barra mostra “Swap Plus desligado”", /Swap Plus desligado/.test(main.text), main.text);
+      check("desligado: nenhuma chamada ao swap-plus", calls().length === 0, calls().join(" | "));
+      await commands["swapPlus.openSettings"]();
+      await sendAndWait({ type: "refresh" }, 300);
+      check("desligado: a tela recebe o estado", lastState() && lastState().swapOn === false);
+      await commands["swapPlus.switchAccount"]();
+      check("desligado: clique na barra oferece ligar", notifications.some(([, m]) => /Swap Plus está desligado/.test(m)));
+
+      // Ligado de novo: o login atual (válido) da conta cadastrada é salvo uma vez com `swap-plus add`.
+      globalState.set("swapPlus.savedLogin", {});
+      fs.rmSync(log15, { force: true });
+      await cfg15.update("enabled", true); // ligar já dispara a atualização (e o salvamento)
+      for (let i = 0; i < 40 && !calls().includes("add"); i++) await sleep(250);
+      await commands["swapPlus.refreshStatus"]();
+      const who = T.liveIdentity();
+      const first = calls().filter((c) => c === "add").length;
+      if (who) {
+        check("ligado: salva o login atual na hora (swap-plus add)", first === 1, calls().join(" | "));
+        fs.rmSync(log15, { force: true });
+        await commands["swapPlus.refreshStatus"]();
+        check("ligado: o mesmo login não é salvo duas vezes", !calls().includes("add"), calls().join(" | "));
+      } else {
+        check("sem login no Claude Code: não tenta salvar", first === 0);
+      }
+    } finally {
+      await cfg15.update("enabled", true);
+      await cfg15.update("executablePath", "");
+      await sleep(400);
+      await commands["swapPlus.refreshStatus"]();
+    }
   }
 
   if (NO_GITHUB) {

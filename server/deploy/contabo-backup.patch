@@ -1,0 +1,108 @@
+--- a/contabo-backup.sh
++++ b/contabo-backup.sh
+@@ -8,8 +8,12 @@
+ #   home-assistant → a configuração do Home Assistant e o banco do histórico (cópia consistente do SQLite);
+ #   painel-do-servidor → o banco do painel (cofre, inventário, métricas) e os segredos dele, inclusive o vault.key;
+ #   openbot → o volume inteiro do OpenBot (banco, chaveiro, logins dos provedores, conversas), copiado com o container
+-#             parado por alguns segundos (desde 13/11/2026; ver docs/openbot.md).
+-# Uso (root):  contabo-backup init | run whatsfy|servidor|home-assistant|painel-do-servidor|openbot|todos | status | prune | check
++#             parado por alguns segundos (desde 13/11/2026; ver docs/openbot.md);
++#   swap-plus → o cofre do Swap Plus Servidor (store.enc e a cópia anterior store.enc.1: os logins das contas Claude,
++#               criptografados com a chave mestra), os segredos dele (inclusive a chave mestra, sem a qual o cofre não
++#               abre) e o compose; com o container rodando (desde 14/11/2026; ver server/deploy/LEIA-ME.md no
++#               repositório swap-plus-vscode).
++# Uso (root):  contabo-backup init | run whatsfy|servidor|home-assistant|painel-do-servidor|openbot|swap-plus|todos | status | prune | check
+ # Horários do cron em America/Sao_Paulo (o host está em horário de Brasília desde 10/11/2026, regra do Paulo).
+ # Senhas em /etc/server-contabo/secrets/restic-<alvo>.pass (600) — guardar fora do servidor também (cofre do ASI Console).
+ # Credenciais do R2 em /etc/server-contabo/secrets/r2-backup.json (cópia, fora dos dados do Hermes). Nada de segredo na tela.
+@@ -19,7 +23,7 @@
+ LOG=/var/log/contabo-backup.log
+ STAGE=/var/backups/contabo-staging
+ STATUS=/var/lib/contabo-backup
+-ALVOS="whatsfy servidor home-assistant painel-do-servidor openbot"
++ALVOS="whatsfy servidor home-assistant painel-do-servidor openbot swap-plus"
+ log() { echo "$(date '+%F %T') $*" | tee -a "$LOG"; }
+ die() { log "ERRO: $*"; exit 1; }
+ 
+@@ -129,6 +133,46 @@
+   echo "$d"
+ }
+ 
++stage_swap_plus() {
++  # Swap Plus Servidor (stack `swap-plus`): o cofre store.enc e a cópia anterior store.enc.1, os segredos (chave mestra
++  # e cliente Google) e o compose. O container continua rodando. O servidor grava o store.enc por rename atômico
++  # (temporário + fsync + rename), então o cp pega a versão velha ou a nova inteira, nunca metade; já o store.enc.1 é
++  # reescrito no lugar logo antes do rename. Por isso compara inode, tamanho e hora dos dois antes e depois da cópia e,
++  # se algum mudou no meio, copia de novo (até 5 vezes). Os temporários store.enc.tmp-* ficam de fora.
++  # O cofre sozinho não abre os logins: precisa da chave mestra, que vai junto no secrets.tar (o repositório restic tem
++  # senha própria). Lembrete: um refresh token é de uso único, então um cofre restaurado de horas atrás traz as contas
++  # renovadas depois disso como "precisa de login novo" (computadores, contas e regras voltam inteiros).
++  d=$STAGE/swap-plus; rm -rf "$d"; mkdir -p "$d"; chmod 700 "$d"
++  src=/opt/swap-plus/data
++  [ -s "$src/store.enc" ] || die "sem $src/store.enc"
++  n=0
++  while :; do
++    n=$((n + 1))
++    antes=$(stat -c '%i %s %y' "$src/store.enc" "$src/store.enc.1" 2>/dev/null || true)
++    cp -p "$src/store.enc" "$d/store.enc"
++    [ ! -e "$src/store.enc.1" ] || cp -p "$src/store.enc.1" "$d/store.enc.1"
++    depois=$(stat -c '%i %s %y' "$src/store.enc" "$src/store.enc.1" 2>/dev/null || true)
++    [ "$antes" != "$depois" ] || break
++    [ "$n" -lt 5 ] || die "o cofre do Swap Plus mudou durante as 5 cópias; nada enviado"
++    sleep 2
++  done
++  tar -C /etc/swap-plus -cf "$d/secrets.tar" secrets
++  # Recuperar TUDO (pedido do Paulo, 14/11/2026): além do cofre e dos segredos, a imagem em uso (docker save — ela é
++  # montada no servidor e não está em registry nenhum) e o código de onde ela foi montada (/opt/swap-plus/app).
++  img=$(docker container inspect -f '{{.Config.Image}}' swap-plus 2>/dev/null || true)
++  if [ -n "$img" ]; then
++    echo "$img" > "$d/imagem.txt"
++    # sem compressão: o restic deduplica os blocos e só a primeira cópia sobe
++    docker save "$img" > "$d/imagem.tar" || die "docker save $img falhou"
++  else
++    echo "(sem o container swap-plus)" > "$d/imagem.txt"
++  fi
++  tar -C /opt/swap-plus -cf "$d/app.tar" app
++  # O compose de verdade é o da stack (vai também no backup do Portainer, alvo servidor).
++  cp -a /opt/server-contabo/stacks/swap-plus/compose.yaml "$d/" 2>/dev/null || cp -a /opt/swap-plus/app/server/deploy/compose.yaml "$d/" 2>/dev/null || true
++  echo "$d"
++}
++
+ stage_servidor() {
+   d=$STAGE/servidor; rm -rf "$d"; mkdir -p "$d"; chmod 700 "$d"
+   python3 - "$d/portainer-backup.tar.gz" <<'PY'
+@@ -165,6 +209,7 @@
+     home-assistant) dir=$(stage_home_assistant); extra="" ;;
+     painel-do-servidor) dir=$(stage_painel); extra="" ;;
+     openbot) dir=$(stage_openbot); extra="" ;;
++    swap-plus) dir=$(stage_swap_plus); extra="" ;;
+     *) die "alvo desconhecido: $alvo" ;;
+   esac
+   # shellcheck disable=SC2086
+@@ -188,9 +233,10 @@
+       if restic cat config >/dev/null 2>&1; then log "repositório $alvo já existe"; else restic init >> "$LOG" 2>&1 || die "restic init $alvo falhou"; log "repositório $alvo criado"; fi
+     done
+     cat > /etc/cron.d/contabo-backup <<'EOF'
+-# Backup do Contabo fora do Hermes (WhatsFy, servidor, Home Assistant, Painel, OpenBot) para o R2 (restic).
++# Backup do Contabo fora do Hermes (WhatsFy, servidor, Home Assistant, Painel, OpenBot, Swap Plus) para o R2 (restic).
+ # Horários em America/Sao_Paulo (host em horário de Brasília desde 10/11/2026).
+ # O do OpenBot para o container por alguns segundos e vem depois do openbot-update das 02:20 (/etc/cron.d/openbot-update).
++# O do Swap Plus não para nada (o cofre é gravado por rename atômico).
+ SHELL=/bin/sh
+ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ 50 2 * * *   root  /usr/local/sbin/contabo-backup run openbot  >/dev/null 2>&1
+@@ -198,6 +244,7 @@
+ 25 3 * * *   root  /usr/local/sbin/contabo-backup run servidor >/dev/null 2>&1
+ 35 3 * * *   root  /usr/local/sbin/contabo-backup run home-assistant >/dev/null 2>&1
+ 50 3 * * *   root  /usr/local/sbin/contabo-backup run painel-do-servidor >/dev/null 2>&1
++55 3 * * *   root  /usr/local/sbin/contabo-backup run swap-plus >/dev/null 2>&1
+ 50 4 * * 0   root  /usr/local/sbin/contabo-backup prune        >/dev/null 2>&1
+ 20 5 1 * *   root  /usr/local/sbin/contabo-backup check        >/dev/null 2>&1
+ EOF
+@@ -218,5 +265,5 @@
+   check)
+     for alvo in $ALVOS; do repo_env "$alvo"; restic check --read-data-subset=5% >> "$LOG" 2>&1 && log "check $alvo ok" || log "FALHA no check de $alvo"; done
+     ;;
+-  *) echo "uso: contabo-backup init | run whatsfy|servidor|home-assistant|painel-do-servidor|openbot|todos | status | prune | check" >&2; exit 2 ;;
++  *) echo "uso: contabo-backup init | run whatsfy|servidor|home-assistant|painel-do-servidor|openbot|swap-plus|todos | status | prune | check" >&2; exit 2 ;;
+ esac

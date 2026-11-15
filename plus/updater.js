@@ -233,6 +233,8 @@ function claim(name, ms) {
 
 /**
  * deps: { context, cfg, cliVersion(): Promise<string|null>, onCliUpdated(), pushHistory(entries), postState(),
+ *         engineWanted?(): boolean — false = o motor (swap-plus) não é usado agora (modo servidor):
+ *           não consulta a versão dele, não oferece instalar nem atualizar;
  *         overrides?: { uv, gh, code, autoUpdate } }   (overrides só para testes)
  */
 function createUpdater(deps) {
@@ -247,6 +249,13 @@ function createUpdater(deps) {
   const getState = () => context.globalState.get(STATE_KEY) || {};
   const setState = (patch) => context.globalState.update(STATE_KEY, { ...getState(), ...patch });
   const enabled = () => deps.cfg().get("updates.enabled") !== false;
+  const engineWanted = () => {
+    try {
+      return typeof deps.engineWanted === "function" ? deps.engineWanted() !== false : true;
+    } catch {
+      return true;
+    }
+  };
   const autoUpdate = () => {
     if (typeof ov.autoUpdate === "boolean") return ov.autoUpdate;
     const v = vscode.workspace.getConfiguration("extensions").get("autoUpdate");
@@ -289,7 +298,7 @@ function createUpdater(deps) {
       latestPlus(REPOS.ext, VSIX_NAME, timeout),
       latestStable(REPOS.upstreamCli, timeout),
       latestStable(REPOS.upstreamExt, timeout),
-      deps.cliVersion(),
+      engineWanted() ? deps.cliVersion() : Promise.resolve(null), // modo servidor: o motor não é chamado
     ]);
     const val = (p) => (p.status === "fulfilled" ? p.value : null);
     const errors = [cliRel, extRel, upCli, upExt].filter((p) => p.status === "rejected").map((p) => String(p.reason && p.reason.message ? p.reason.message : p.reason));
@@ -305,6 +314,7 @@ function createUpdater(deps) {
   }
 
   async function applyCli(release) {
+    if (!engineWanted()) return false; // modo servidor: o motor não é instalado nem atualizado
     const uv = ov.uv || findBin("uv");
     if (!uv) {
       vscode.window.showWarningMessage(`Swap Plus: o motor ${release.version} está disponível, mas falta o uv nesta máquina. Instale com: curl -LsSf https://astral.sh/uv/install.sh | sh`);
@@ -373,7 +383,8 @@ function createUpdater(deps) {
       const auto = autoUpdate() || reason === "manual";
       const tasks = [];
 
-      const cliRel = r.cli.release;
+      // Modo servidor: o motor não é usado; nada de oferecer instalar nem atualizar.
+      const cliRel = engineWanted() ? r.cli.release : null;
       if (cliRel && !r.cli.installed) {
         tasks.push(offer(`o motor (swap-plus) não está instalado nesta máquina. Instalar a versão ${cliRel.version}?`, () => applyCli(cliRel)));
       } else if (cliRel && newer(cliRel.version, r.cli.installed)) {
@@ -410,7 +421,8 @@ function createUpdater(deps) {
     try {
       const r = await Promise.race([check({ reason: "close", timeout: 2500 }), new Promise((res) => setTimeout(() => res(null), 3000))]);
       if (!r) return null;
-      const pending = (r.cli.release && r.cli.installed && newer(r.cli.release.version, r.cli.installed)) || (r.ext.release && newer(r.ext.release.version, extVersion));
+      const pending =
+        (engineWanted() && r.cli.release && r.cli.installed && newer(r.cli.release.version, r.cli.installed)) || (r.ext.release && newer(r.ext.release.version, extVersion));
       await setState({ pendingOnOpen: !!pending });
       return r;
     } catch {
@@ -439,6 +451,7 @@ function createUpdater(deps) {
     return {
       enabled: enabled(),
       autoUpdate: autoUpdate(),
+      engine: engineWanted(), // false = modo servidor: a tela esconde a linha do motor
       pendingOnOpen: !!getState().pendingOnOpen,
       extInstalled: extVersion,
       last: last

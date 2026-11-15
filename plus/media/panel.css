@@ -219,6 +219,8 @@ summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
 }
 .badge.on { color: var(--vscode-button-foreground); background: var(--accent); }
 .badge.plain { color: var(--soft); background: transparent; border: 1px solid var(--line); }
+.badge.dead { color: var(--bad); background: transparent; border: 1px solid var(--bad); }
+.card.dimmed { opacity: 0.55; }
 
 .meters { display: flex; flex-direction: column; gap: 4px; }
 .meter { display: grid; grid-template-columns: 62px 1fr 40px; align-items: center; gap: 8px; }
@@ -348,3 +350,47 @@ input.rotbox { accent-color: var(--green); }
 /* ---------- v1.8: conta logada não cadastrada */
 .notreg { margin: 10px 0 8px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .notreg button { margin-left: auto; }
+
+/* ---------- v2.0: modo servidor */
+.dot.bad { background: var(--bad); }
+.badtext { color: var(--bad); }
+.srvmode { margin-top: 12px; }
+.srvinfo { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px; margin-top: 12px; }
+.srvinfo .k { color: var(--soft); }
+.srvinfo .v { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.devs { display: flex; flex-direction: column; gap: 6px; }
+.dev {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(160px, 1.6fr) minmax(110px, 1fr) auto;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.dev.me { border-color: var(--green); }
+.dev .dname { display: flex; align-items: center; gap: 4px; overflow-wrap: anywhere; }
+.dev .dacc { overflow-wrap: anywhere; }
+.dev .dseen { color: var(--soft); font-size: 0.9em; }
+.dev .dgoogle { color: var(--soft); font-size: 0.9em; overflow-wrap: anywhere; }
+.srvhow { margin-top: 10px; }
+button.linkbtn,
+button.linkbtn:hover {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  text-decoration: underline;
+}
+button.linkbtn:hover { color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground)); }
+.srvmig { margin-top: 14px; grid-template-columns: 260px 1fr; }
+.srvwarn { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.srvwarn button { margin-left: auto; }
+.srvnote { margin: 8px 0 0; padding: 6px 10px; border-left: 3px solid var(--accent); font-size: 0.92em; }
+.diag { margin-top: 12px; }
+.history .who { color: var(--soft); font-size: 0.9em; }
+@media (max-width: 640px) {
+  .dev { grid-template-columns: 1fr auto; }
+  .dev .dacc, .dev .dseen { grid-column: 1 / -1; }
+  .srvinfo, .srvmig { grid-template-columns: 1fr; }
+}

@@ -1,7 +1,8 @@
 # Swap Plus: testa os instaladores numa máquina limpa de verdade (Mac e Windows
 # do GitHub), do jeito que o MANUAL manda: instala o VS Code, roda o comando de
 # instalação e confere o motor e a extensão. Roda quando os instaladores mudam
-# e quando uma versão nova da extensão é publicada.
+# e quando uma versão nova da extensão é publicada (aí confere também que a versão
+# instalada é a que acabou de sair).
 name: Swap Plus — testar a instalação
 
 on:
@@ -16,10 +17,15 @@ on:
 permissions:
   contents: read
 
+env:
+  # Tag que acabou de ser publicada (plus-vX.Y.Z) quando vem da publicação; vazio nos outros casos.
+  TAG_PUBLICADA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || '' }}
+
 jobs:
   mac:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: VS Code
@@ -31,11 +37,21 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           swap-plus --version
           swap-plus list --json || true
-          "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" --list-extensions --show-versions | tee /dev/stderr | grep -q '^paulo-local.swap-plus@'
+          EXTS=$("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" --list-extensions --show-versions)
+          echo "$EXTS"
+          echo "$EXTS" | grep -q '^paulo-local\.swap-plus@' || { echo "::error::extensão não instalada"; exit 1; }
+          case "$TAG_PUBLICADA" in
+            plus-v[0-9]*)
+              ESPERADA="paulo-local.swap-plus@${TAG_PUBLICADA#plus-v}"
+              echo "$EXTS" | grep -qxF "$ESPERADA" || { echo "::error::instalou outra versão (esperada $ESPERADA)"; exit 1; }
+              echo "Versão instalada: $ESPERADA"
+              ;;
+          esac
 
   windows:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: VS Code
@@ -56,10 +72,15 @@ jobs:
           $exts = & $code --list-extensions --show-versions
           $exts
           if (-not ($exts -match '^paulo-local\.swap-plus@')) { Write-Error "extensão não instalada"; exit 1 }
+          if ($env:TAG_PUBLICADA -match '^plus-v(\d+\.\d+\.\d+)$') {
+            $esperada = "paulo-local.swap-plus@" + $Matches[1]
+            if (-not ($exts -contains $esperada)) { Write-Error "instalou outra versão (esperada $esperada)"; exit 1 }
+            "Versão instalada: $esperada"
+          }
           exit 0
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Testes da extensão no Windows (dados simulados)
         working-directory: plus
         run: node test/smoke.js --unit

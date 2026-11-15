@@ -1,0 +1,195 @@
+# Swap Plus Servidor: testes e imagem Docker a cada push ou PR que mexa no servidor
+# (server/**), nas regras compartilhadas com a extensão (plus/rules.js) ou no que entra
+# na imagem (.dockerignore). Não publica imagem nenhuma: só confere que ela é gerada,
+# roda como o usuário node e responde o /v1/health do admin local.
+name: Swap Plus — servidor (testes e imagem)
+
+on:
+  push:
+    # Só branches (tag não dispara: o filtro de caminhos não vale para tags).
+    branches: ["**"]
+    paths:
+      - "server/**"
+      - "plus/rules.js"
+      - ".dockerignore"
+      - ".github/workflows/server-ci.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - "plus/rules.js"
+      - ".dockerignore"
+      - ".github/workflows/server-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testes:
+    name: Testes do servidor (Node 22)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Sintaxe (server/src e plus/rules.js)
+        run: |
+          shopt -s failglob
+          for f in server/src/*.js plus/rules.js; do
+            node --check "$f"
+            echo "ok     $f"
+          done
+
+      - name: Testes do servidor (server/test)
+        # No Node 22 o `node --test` não aceita uma pasta (tenta rodá-la como arquivo):
+        # passa os arquivos. failglob: sem nenhum arquivo de teste, falha em vez de passar com 0 testes.
+        run: |
+          shopt -s failglob
+          node --test server/test/*.test.js
+
+  imagem:
+    name: Imagem Docker (build, usuário node e /v1/health)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      IMAGEM: swap-plus-server:ci
+      CONTAINER: swap-plus-ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gerar a imagem (contexto = raiz do repositório; nada é publicado)
+        run: docker build -f server/Dockerfile -t "$IMAGEM" .
+
+      - name: A imagem está configurada para rodar como o usuário node
+        run: |
+          USUARIO=$(docker image inspect -f '{{.Config.User}}' "$IMAGEM")
+          echo "USER da imagem: ${USUARIO:-(vazio = root)}"
+          [ "$USUARIO" = "node" ] || { echo "::error::a imagem precisa rodar como o usuário node (está: ${USUARIO:-root})"; exit 1; }
+
+      - name: A imagem só tem o código (nada de testes, deploy, .git ou exportações)
+        run: |
+          docker run --rm --entrypoint sh "$IMAGEM" -c 'cd /app && find . -type f | sort' > "$RUNNER_TEMP/imagem.txt"
+          echo "Arquivos em /app:"
+          cat "$RUNNER_TEMP/imagem.txt"
+          PROIBIDOS=$(grep -Ei '(^|/)(test|tests|deploy|\.git)/|\.test\.js$|\.cswap$' "$RUNNER_TEMP/imagem.txt" || true)
+          if [ -n "$PROIBIDOS" ]; then
+            echo "::error::a imagem tem arquivos que não deviam estar lá (confira o .dockerignore):"
+            echo "$PROIBIDOS"
+            exit 1
+          fi
+          grep -qx './server/src/server.js' "$RUNNER_TEMP/imagem.txt" || { echo "::error::faltou server/src/server.js na imagem"; exit 1; }
+          grep -qx './plus/rules.js' "$RUNNER_TEMP/imagem.txt" || { echo "::error::faltou plus/rules.js na imagem"; exit 1; }
+
+      - name: Subir o container (chave mestra de teste gerada agora, TLS_MODE=off)
+        run: |
+          SEGREDOS="$RUNNER_TEMP/segredos"
+          mkdir -p "$SEGREDOS"
+          (umask 077; openssl rand -hex 32 > "$SEGREDOS/swap_plus_master_key")
+          echo "::add-mask::$(cat "$SEGREDOS/swap_plus_master_key")"
+          # Como em produção: a chave só pode ser lida pelo usuário node do container (uid 1000).
+          sudo chown 1000:1000 "$SEGREDOS/swap_plus_master_key"
+          sudo chmod 0400 "$SEGREDOS/swap_plus_master_key"
+          # --health-interval curto: o HEALTHCHECK da própria imagem responde em segundos, não em 30 s.
+          docker run -d --name "$CONTAINER" \
+            -e TLS_MODE=off \
+            -e PUBLIC_URL=http://127.0.0.1:8443 \
+            -v "$SEGREDOS/swap_plus_master_key:/run/secrets/swap_plus_master_key:ro" \
+            -p 127.0.0.1:8443:8443 \
+            --health-interval 3s \
+            "$IMAGEM"
+
+      - name: O admin local responde /v1/health (de dentro do container)
+        run: |
+          ok=0
+          for i in $(seq 1 30); do
+            if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER")" != "true" ]; then
+              echo "::error::o container parou antes de responder"
+              docker logs "$CONTAINER"
+              exit 1
+            fi
+            if RESPOSTA=$(docker exec "$CONTAINER" node -e '
+              const http = require("http");
+              const req = http.get({ host: "127.0.0.1", port: process.env.ADMIN_PORT || 8444, path: "/v1/health", timeout: 4000 }, (res) => {
+                let b = "";
+                res.on("data", (c) => (b += c));
+                res.on("end", () => {
+                  let j = null;
+                  try { j = JSON.parse(b); } catch {}
+                  if (res.statusCode === 200 && j && j.ok === true) { console.log(b); process.exit(0); }
+                  console.error("HTTP " + res.statusCode + ": " + b);
+                  process.exit(1);
+                });
+              });
+              req.on("error", () => process.exit(1));
+              req.on("timeout", () => { req.destroy(); process.exit(1); });
+            '); then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          [ "$ok" = 1 ] || { echo "::error::o admin local não respondeu /v1/health em 30 s"; docker logs "$CONTAINER"; exit 1; }
+          echo "Admin local (127.0.0.1:8444 dentro do container): $RESPOSTA"
+
+      - name: O HEALTHCHECK da imagem fica healthy
+        run: |
+          S=""
+          for i in $(seq 1 30); do
+            S=$(docker inspect -f '{{.State.Health.Status}}' "$CONTAINER")
+            if [ "$S" = "healthy" ]; then echo "HEALTHCHECK: $S"; exit 0; fi
+            sleep 2
+          done
+          echo "::error::o HEALTHCHECK não ficou healthy (último estado: $S)"
+          docker inspect -f '{{json .State.Health}}' "$CONTAINER"
+          exit 1
+
+      - name: Os processos rodam como node (nenhum como root) e o código é só leitura
+        run: |
+          NODE_UID=$(docker exec "$CONTAINER" id -u node)
+          PID1=$(docker inspect -f '{{.State.Pid}}' "$CONTAINER")
+          echo "Processos do container (uid, pid, comando), vistos do host:"
+          ps -o uid=,pid=,args= -p "$PID1" --ppid "$PID1" | tee "$RUNNER_TEMP/processos.txt"
+          grep -q 'server/src/server.js' "$RUNNER_TEMP/processos.txt" || { echo "::error::não achei o processo do servidor"; exit 1; }
+          if awk -v u="$NODE_UID" '$1 != u { achou = 1 } END { exit !achou }' "$RUNNER_TEMP/processos.txt"; then
+            echo "::error::há processo do container rodando fora do usuário node (uid $NODE_UID)"
+            exit 1
+          fi
+          if docker exec "$CONTAINER" sh -c 'touch /app/server/src/.teste-escrita' 2>/dev/null; then
+            echo "::error::o usuário node consegue alterar o código em /app"
+            exit 1
+          fi
+          docker exec "$CONTAINER" sh -c 'test -w /data' || { echo "::error::/data não é gravável pelo usuário node"; exit 1; }
+          echo "OK: tudo como uid $NODE_UID (node); /app só leitura; /data gravável."
+
+      - name: A API responde /v1/health pela porta publicada (HTTP puro, TLS_MODE=off)
+        run: |
+          R=$(curl -fsS --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1:8443/v1/health)
+          echo "API: $R"
+          echo "$R" | node -e 'let s = ""; process.stdin.on("data", (c) => (s += c)).on("end", () => process.exit(JSON.parse(s).ok === true ? 0 : 1))' \
+            || { echo "::error::a API não respondeu { ok: true }"; exit 1; }
+
+      - name: A chave mestra não aparece nos logs
+        run: |
+          docker logs "$CONTAINER" > "$RUNNER_TEMP/logs.txt" 2>&1
+          CHAVE=$(sudo cat "$RUNNER_TEMP/segredos/swap_plus_master_key")
+          [ -n "$CHAVE" ] || { echo "::error::não consegui ler a chave de teste"; exit 1; }
+          if grep -qF "$CHAVE" "$RUNNER_TEMP/logs.txt"; then
+            echo "::error::a chave mestra apareceu nos logs do servidor"
+            exit 1
+          fi
+          echo "OK: a chave não aparece nos logs."
+
+      - name: Logs do servidor e limpeza
+        if: always()
+        run: |
+          docker logs "$CONTAINER" 2>&1 || true
+          docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+          sudo rm -rf "$RUNNER_TEMP/segredos"

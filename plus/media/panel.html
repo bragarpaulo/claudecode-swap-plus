@@ -21,7 +21,33 @@
 
 <div id="errorBox" class="errorbox hidden"></div>
 
-<section class="card">
+<section class="card" id="masterCard">
+  <div class="row between start">
+    <div>
+      <h2>Swap Plus</h2>
+      <p id="masterStatus" class="muted"></p>
+    </div>
+    <label class="onoff" title="Ligar/desligar o Swap Plus inteiro">
+      <input type="checkbox" id="masterToggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+  <p class="note" id="masterNote">Desligado, o Swap Plus não consulta as contas, não troca de conta e não mexe no login: o Claude Code funciona normalmente com a conta em que você entrar. Ligado, ele também salva na hora o login do Claude Code sempre que ele muda (login novo ou token renovado).</p>
+</section>
+
+<section class="card" id="serverCard">
+  <div class="row between start">
+    <div>
+      <h2>Servidor</h2>
+      <p id="serverStatus" class="muted"></p>
+    </div>
+    <div class="row gap" id="serverBtns"></div>
+  </div>
+  <div id="serverBox"></div>
+  <p class="note">O login de cada conta só vale para quem renovou por último. Por isso, com mais de um computador, o melhor é o modo servidor: só o servidor guarda e renova os logins, e cada computador recebe apenas o acesso da conta que o servidor escolheu para ele. As regras de troca e os ajustes de cada conta ficam no servidor e valem para todos; os avisos e a exibição continuam sendo de cada computador.</p>
+</section>
+
+<section class="card" id="autoCard">
   <div class="row between start">
     <div>
       <h2>Troca automática</h2>
@@ -37,7 +63,7 @@
     <button id="btnCheck">Verificar agora</button>
     <button id="btnSim" class="secondary">Simular (sem trocar)</button>
   </div>
-  <p class="note">A sessão não para: a troca é feita antes da conta esgotar e o Claude Code aberto passa a usar a conta nova sozinho (até ~30 s). Funciona enquanto o VS Code estiver aberto.</p>
+  <p class="note" id="autoNote">A sessão não para: a troca é feita antes da conta esgotar e o Claude Code aberto passa a usar a conta nova sozinho (até ~30 s). Funciona enquanto o VS Code estiver aberto.</p>
 </section>
 
 <section class="card">
@@ -46,6 +72,7 @@
     <span id="rulesDirty" class="dirty hidden">Alterações não salvas</span>
   </div>
   <p class="muted small">Para cada limite: quando a conta ativa chegar em X%, avisar e/ou trocar de conta. A barrinha mostra o uso atual da conta ativa e onde estão as linhas. As regras valem depois de clicar em “Salvar regras”.</p>
+  <p id="rulesWhere" class="srvnote hidden">Modo servidor: as linhas de troca e a estratégia ficam no servidor e valem para todos os computadores conectados. As linhas de aviso são só deste computador.</p>
   <div id="rules"></div>
 
   <h3>Quando trocar, ir para qual conta</h3>
@@ -68,7 +95,7 @@
     <h2>Contas</h2>
     <button id="btnAdd" class="secondary">+ Adicionar conta</button>
   </div>
-  <p class="muted small">Mudanças aqui valem na hora. <b>Linha própria</b> muda a linha da sessão de 5h só daquela conta (ex.: 70% para guardar folga). <b>Prioridade</b> só vale na estratégia “Por prioridade”.</p>
+  <p class="muted small"><span id="acctWhere">Mudanças aqui valem na hora.</span> <b>Linha própria</b> muda a linha da sessão de 5h só daquela conta (ex.: 70% para guardar folga). <b>Prioridade</b> só vale na estratégia “Por prioridade”.</p>
   <div id="accounts" class="accounts"></div>
 </section>
 
@@ -77,7 +104,7 @@
   <div id="uiBox"></div>
 </section>
 
-<section class="card">
+<section class="card" id="xportCard">
   <h2>Exportar e importar contas</h2>
   <p class="muted small">Para usar as mesmas contas no seu outro computador sem logar de novo. O arquivo leva as contas e também as regras de troca, os avisos, a exibição e os ajustes de cada conta. As credenciais vão em texto puro: transfira com cuidado e apague depois de importar.</p>
   <div class="xport">

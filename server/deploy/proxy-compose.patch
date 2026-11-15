@@ -1,0 +1,20 @@
+--- compose.yaml
++++ compose.yaml
+@@ -39,6 +39,8 @@
+       - painel
+       # Stafy (site; grupo próprio, desde 13/11/2026): stafy-web-a:3000 e stafy-web-b:3000 nesta rede própria.
+       - stafy
++      # Swap Plus Servidor (grupo próprio, desde 14/11/2026): swap-plus:8443 nesta rede própria.
++      - swap_plus
+ 
+ volumes:
+   caddy_data:
+@@ -66,3 +68,8 @@
+   stafy:
+     external: true
+     name: stafy-borda
++  # Criada pelo instalar.sh do Swap Plus (server/deploy no repositório swap-plus-vscode), 172.26.0.0/24.
++  # Se essa rede sumir, o Caddy não sobe.
++  swap_plus:
++    external: true
++    name: swap-plus

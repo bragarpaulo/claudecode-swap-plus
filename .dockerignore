@@ -1,0 +1,9 @@
+# O build do servidor usa a raiz do repo como contexto (docker build -f server/Dockerfile .).
+# Só entra o que a imagem precisa: as regras compartilhadas, o código do servidor, o painel web,
+# o entrypoint e o próprio Dockerfile. Nada de testes, deploy, extensão, segredos ou .git.
+*
+!plus/rules.js
+!server/src/
+!server/web/
+!server/entrypoint.sh
+!server/Dockerfile

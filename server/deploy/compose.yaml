@@ -1,0 +1,83 @@
+# Swap Plus Servidor — o servidor das contas Claude do Paulo, no Contabo, num grupo SEPARADO (14/11/2026).
+#
+# O que faz: guarda o login (refresh token) de cada conta Claude e é o ÚNICO lugar que renova. Os computadores do Paulo
+# (extensão Swap Plus no VS Code, modo servidor) recebem só o acesso da conta que o servidor escolheu para cada um. O
+# refresh token é de uso único: dois lugares renovando a mesma conta derrubam o login um do outro, e é por isso que ele
+# mora aqui. Funcionamento em server/SPEC.md; instalação e operação em server/deploy/LEIA-ME.md (repositório
+# swap-plus-vscode, copiado em /opt/swap-plus/app).
+#
+# Como os outros grupos do servidor:
+#  · projeto, container e rede próprios (`swap-plus`, 172.26.0.0/24): só o Swap Plus e o Caddy do servidor
+#    (contabo-caddy, que chega em swap-plus:8443 e publica https://swap.assistentes.si atrás da Cloudflare);
+#  · imagem construída no host a partir do repositório
+#    (`docker build -f /opt/swap-plus/app/server/Dockerfile -t swap-plus:<versão> /opt/swap-plus/app`, o instalar.sh
+#    faz) e a stack só a usa. A versão vem da variável SWAP_PLUS_VERSAO da stack; uma etiqueta = uma imagem, nunca
+#    reconstruída por cima, para dar para voltar à anterior;
+#  · dados em /opt/swap-plus/data (o cofre store.enc e a cópia anterior store.enc.1 — 1000:1000, 700) e segredos em
+#    /etc/swap-plus/secrets (swap_plus_master_key, google_client_id, google_client_secret e, opcional, a senha do backup
+#    restic_swap_plus_pass — 1000:1000, 400), fora do git. Sem a chave mestra o cofre não abre: guarde uma cópia dela
+#    fora do servidor (o painel mostra as duas no "kit de recuperação", aba Acesso);
+#  · backup próprio: `contabo-backup run swap-plus` (restic/swap-plus no R2, todo dia às 03:55).
+# Stack do Portainer (controle total): criada pelo Portainer com este arquivo, pelo
+# server/deploy/portainer_stack_create_swap_plus.py; caminhos absolutos.
+name: swap-plus
+
+services:
+  swap-plus:
+    image: swap-plus:${SWAP_PLUS_VERSAO:?defina SWAP_PLUS_VERSAO nas variaveis da stack}
+    pull_policy: never
+    container_name: swap-plus
+    restart: unless-stopped
+    # O usuário `node` da imagem (uid 1000), dito aqui também: é ele o dono da pasta de dados e dos segredos no host.
+    user: "1000:1000"
+    # Um processo Node só, com pouca memória. Sem swap: um container que troca atrasa as renovações.
+    cpus: "0.5"
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 64
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    # Ao parar, o servidor espera o motor terminar o que está fazendo (até 40 s), grava o cofre (tentando de novo por até
+    # 5 s se falhar) e sai; à força só em 50 s. Os 10 s padrão do Docker podiam cortar uma renovação no meio, e um token
+    # renovado que não chegou ao disco é um login perdido.
+    stop_grace_period: 75s
+    # Só local, para diagnóstico (curl http://127.0.0.1:14950/v1/health); o público passa pelo Caddy.
+    ports: ["127.0.0.1:14950:8443"]
+    environment:
+      # Horário de Brasília em tudo (regra do Paulo, 10/11/2026).
+      TZ: America/Sao_Paulo
+      DATA_DIR: /data
+      MASTER_KEY_FILE: /run/secrets/swap_plus_master_key
+      PORT: "8443"
+      # HTTP puro dentro da rede própria: o TLS é do Caddy (e, na frente dele, da Cloudflare).
+      TLS_MODE: "off"
+      # O Caddy manda no X-Forwarded-For só o IP real do visitante ({client_ip}, do CF-Connecting-IP de um par da
+      # Cloudflare); o servidor usa esse IP no limite de tentativas sem autorização.
+      TRUST_PROXY: "1"
+      # Vai dentro do código de conexão que o VS Code recebe.
+      PUBLIC_URL: https://swap.assistentes.si
+      # ADMINISTRADOR do painel web (regra do Paulo, 14/11/2026: só ele tem acesso ao painel). O e-mail fica SÓ na
+      # variável SWAP_PLUS_ADMIN_EMAILS da stack (Portainer, no servidor): o repositório é público. Lista separada por
+      # vírgula, lida só na subida: não dá para mudar pelo painel nem pela API (ninguém se promove e o dono não se tranca
+      # fora). As outras contas Google liberadas (cli.js allow) só conectam computadores.
+      ADMIN_EMAILS: ${SWAP_PLUS_ADMIN_EMAILS:?defina SWAP_PLUS_ADMIN_EMAILS nas variaveis da stack}
+      # Saída DIRETA para a internet, pelo NAT do próprio host: a Anthropic vê o IP do servidor. Nada de HTTP(S)_PROXY
+      # aqui, e o container fica fora das redes do proxy residencial e do saida-gateway (pedido do Paulo, 14/11/2026).
+    volumes:
+      - /opt/swap-plus/data:/data
+      - /etc/swap-plus/secrets:/run/secrets:ro
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "3"}
+    networks:
+      borda:
+        aliases: [swap-plus]
+
+networks:
+  borda:
+    # docker network create --subnet 172.26.0.0/24 --gateway 172.26.0.1 --label io.servidor.managed=true swap-plus
+    # (o instalar.sh cria). O contabo-caddy também entra nela (stack contabo-proxy, rede lógica swap_plus).
+    name: swap-plus
+    external: true

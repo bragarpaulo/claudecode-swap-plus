@@ -15,6 +15,7 @@ próprio no `contabo-backup`.
 | código (cópia deste repositório) | `/opt/swap-plus/app` |
 | compose da stack | `/opt/swap-plus/app/server/deploy/compose.yaml` (o Portainer guarda a cópia que está valendo) |
 | cofre (logins, computadores, regras) | `/opt/swap-plus/data/store.enc` e a cópia anterior `store.enc.1` — pasta 1000:1000, 700 |
+| avisos ao dono (caixa de saída dos e-mails) | `/opt/swap-plus/data/avisos/` — um `aviso-*.json` por aviso (pasta 700, arquivos 600, 1000:1000); o host lê e entrega ao Painel do Servidor ([Avisos por e-mail](#avisos-por-e-mail-ao-dono)) |
 | segredos | `/etc/swap-plus/secrets/` — `swap_plus_master_key`, `google_client_id`, `google_client_secret` (1000:1000, 400); `/etc/swap-plus` é só do root (700) |
 | imagem | `swap-plus:<versão>`, construída no host; a versão está na variável `SWAP_PLUS_VERSAO` da stack |
 | rede | `swap-plus`, 172.26.0.0/24 — só o Swap Plus e o `contabo-caddy` |
@@ -233,6 +234,35 @@ curl -s http://127.0.0.1:14950/v1/health
 
 O servidor nunca põe token em log. Os logs giram em 3 arquivos de 5 MB.
 
+## Avisos por e-mail ao dono
+
+Desde a 2.4.0 o servidor avisa o dono por e-mail quando:
+
+- o login de uma conta **vence em menos de 3 dias** (um aviso por conta por dia, junto com o alerta do histórico);
+- o login de uma conta **parou de valer** (na hora; diz o motivo);
+- o **cofre não está gravando** (um por incidente: "NÃO reinicie o servidor; há login renovado só na memória; veja o disco").
+
+Cada aviso diz a conta (número, apelido, e-mail) e como renovar: no painel, **Contas → conta N → Entrar de novo**, entrar com o
+e-mail da conta na página da Claude, copiar o código e colar no painel (ou `/login` no Claude Code de um computador do administrador).
+
+Como chega ao e-mail: o Swap Plus **só grava um arquivo** por aviso em `/opt/swap-plus/data/avisos/` (no container,
+`/data/avisos/`), no mesmo formato do `servidor-aviso` do servidor (`aviso-AAAAMMDD-HHMMSS-<8 hex>.json` com
+`{"id","assunto","texto","criado_em"}`, gravado de forma atômica). Um processo do host, fora do container, lê essa pasta a cada
+minuto e entrega ao Painel do Servidor, que manda o e-mail. O container não usa rede nem senha para isso. Avisos com mais de 48 h
+saem da pasta sozinhos (e nunca passam de 500 arquivos).
+
+```sh
+ls -la /opt/swap-plus/data/avisos/                                   # avisos ainda não levados pelo host
+docker exec swap-plus node -e "fetch('http://127.0.0.1:8444/admin/status').then(r=>r.json()).then(s=>console.log(s.notices))"
+                                                                     # { enabled: true, dir: '/data/avisos' } (admin local)
+# aviso de teste (vai para o e-mail do dono como qualquer outro):
+docker exec swap-plus node -e "console.log(require('/app/server/src/notify').writeNotice('/data', { subject: 'Swap Plus: teste de aviso', text: 'Teste do aviso por e-mail.' }))"
+```
+
+Para **desligar**: `NOTICES_ENABLED: "0"` no `environment` do compose e atualizar a stack (nada mais é gravado na pasta). O padrão
+(sem a variável) é ligado. O log da subida diz `[avisos] avisos por e-mail ao dono ligados` ou `desligados`; uma falha ao gravar
+um aviso aparece como `[avisos] não consegui gravar o aviso ao dono…` (o servidor segue normal).
+
 ## Backup e restauração
 
 O `contabo-backup run swap-plus` (cron das 03:55) envia ao restic `swap-plus` no R2:
@@ -287,7 +317,8 @@ rm -rf /root/swap-plus-restauro
 
 **Atenção:** o refresh token é de uso único. Um cofre de horas atrás traz como **"precisa de login novo"** as contas
 que o servidor renovou depois do backup. Computadores, contas, regras e histórico voltam inteiros. Para cada conta
-marcada, faça login com ela de novo num computador conectado (a extensão envia o login novo ao servidor).
+marcada, use **Entrar de novo** no painel (Contas → conta N) ou faça login com ela de novo num computador do administrador
+(a extensão envia o login novo ao servidor). O servidor também manda um e-mail por conta que parou de valer.
 
 **Servidor novo** (recuperação completa): o código e a imagem vêm do próprio backup (`app.tar` e `imagem.tar`, acima); ou copie o código (passo 1). Antes do `instalar.sh --apply`, crie as pastas
 (`install -d -m 700 /etc/swap-plus` e `install -d -o 1000 -g 1000 -m 700 /opt/swap-plus/data`) e restaure os
@@ -319,3 +350,13 @@ abre com esta chave (chave errada?) — nada foi alterado`. O servidor não mexe
    libere de novo as contas Google (`allow`) e refaça as regras e os ajustes por conta.
 
 Não existe troca de chave: uma chave nova sempre significa um cofre novo.
+
+
+## Avisos por e-mail (desde 15/11/2026)
+
+O servidor grava avisos para o dono em `/opt/swap-plus/data/avisos/` (login que vence em menos de 3 dias, login
+que parou de valer, cofre sem gravar). No host, `/usr/local/sbin/swap-plus-avisos` (fonte:
+`server/deploy/swap-plus-avisos`; cópia em `/opt/server-contabo/scripts/swap-plus/`) roda a cada minuto pelo
+`/etc/cron.d/swap-plus-avisos`, confere cada arquivo e entrega ao `servidor-aviso`; o Painel do Servidor manda o
+e-mail ao dono. Nenhuma chave de e-mail fica com o Swap Plus. Desligar: `NOTICES_ENABLED=0` na stack, ou apagar o
+arquivo do cron. Teste feito em 15/11/2026: o aviso "Swap Plus: avisos por e-mail ligados" saiu na 1ª tentativa.

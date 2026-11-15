@@ -25,6 +25,8 @@
 // - Só os computadores do ADMINISTRADOR enviam logins (POST /v1/logins; canUploadLogins): conectados com Google
 //   com e-mail de ADMIN_EMAILS, ou pareados por código (o código só sai da linha de comando/painel do administrador).
 //   Os outros recebem 403 not_admin (sem chegar ao motor nem à Anthropic) e usam as contas do servidor.
+// - Avisos por e-mail ao dono (notify.js): o main() monta o createNotifier(DATA_DIR) e passa ao motor, que grava os
+//   avisos em DATA_DIR/avisos/ (login vencendo, conta morta, cofre sem gravar). NOTICES_ENABLED=0 desliga.
 
 const crypto = require("crypto");
 const fs = require("fs");
@@ -46,7 +48,7 @@ const {
 const { createWeb, webReplacer, uaSummary } = require("./web");
 const access = require("./access");
 
-const VERSION = "2.3.1";
+const VERSION = "2.4.0";
 const MAX_BODY = 256 * 1024; // corpo máximo aceito
 const HARD_BODY = MAX_BODY * 4; // acima disso nem lê o resto: responde 413 e fecha
 const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -1485,11 +1487,18 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
       rules = typeof engine.rulesEffective === "function" ? engine.rulesEffective() : null;
     } catch {}
     const p = st.pairing;
+    // Avisos por e-mail ao dono (notify.js): ligados? e a pasta que o host lê. null = motor sem essa informação.
+    let notices = null;
+    try {
+      const es = typeof engine.status === "function" ? engine.status() : null;
+      notices = es && es.notices ? es.notices : null;
+    } catch {}
     return {
       ok: true,
       version: VERSION,
       serverTime: t,
       uptimeSec: Math.round((t - startedAt) / 1000),
+      notices,
       tlsMode: config.tlsMode || null,
       publicUrl: config.publicUrl || null,
       fingerprint: fingerprint(),
@@ -1742,7 +1751,12 @@ async function main() {
   const engineMod = require("./engine");
   const Engine = engineMod.Engine || engineMod;
   const anthropic = createAnthropic({ tokenUrl: config.tokenUrl, apiBase: config.apiBase });
-  const engine = new Engine({ store, anthropic, log, env: process.env });
+  // Avisos por e-mail ao dono: o motor grava em DATA_DIR/avisos/ e um processo do host entrega ao Painel do Servidor.
+  const { createNotifier } = require("./notify");
+  const notify = createNotifier({ dir: config.dataDir, env: process.env, log });
+  if (notify.enabled) log.info(`[avisos] avisos por e-mail ao dono ligados: caixa de saída em ${notify.dir} (o host entrega ao Painel do Servidor)`);
+  else log.info("[avisos] avisos por e-mail ao dono desligados (NOTICES_ENABLED=0)");
+  const engine = new Engine({ store, anthropic, log, env: process.env, notify });
 
   const app = createApp({ store, engine, config, log });
 

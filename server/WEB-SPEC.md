@@ -216,3 +216,34 @@ PanelState: cada conta ganha `devices: null | [id]`; cada computador ganha `allo
 a pessoa abre o authUrl, entra na conta Claude, copia o código mostrado e cola no painel;
 `POST /web/api/claude-login/finish { loginId, code }` → troca o código por tokens, confere a identidade (perfil),
 cria/atualiza a conta (mesmas regras do addLogin: grava o cofre antes, gen, refreshTokenExpiresAt) → `{ number, created }`.
+
+## 2.4 — "Entrar de novo" (renovar o login de uma conta) e avisos por e-mail (15/11/2026)
+
+**No painel (Contas)** — o mesmo fluxo de **+ Adicionar conta** (start → abrir o `authUrl` → entrar → colar o código → finish),
+mas para uma conta que já existe, com o e-mail dela já pedido na página da Claude:
+- No cartão da conta, quando o login está **morto** ou **vence em menos de 3 dias** (ou já venceu): a caixa de aviso do cartão traz
+  o botão **Entrar de novo** ao lado do texto ("Login vence em 2 dias (sex 20/11 14:00). Entre de novo com <e-mail> para renovar.").
+- Sempre, dentro de **Ajustes desta conta**: um bloco discreto "Login desta conta: entre de novo com <e-mail> para renovar" com o
+  botão **Entrar de novo** (secundário, pequeno).
+- A caixa de adicionar vira "Entrar de novo na Conta N", o passo 2 diz "Entre com <e-mail> e autorize. Se a página abrir com
+  outra conta Claude, saia dela primeiro (ou use uma janela anônima)." e o botão de concluir vira "Concluir".
+- Situação "login morto" e os avisos do topo (`warnings`) apontam para o botão: "clique em “Entrar de novo” no cartão da conta N
+  (ou entre com ela no Claude Code de um computador do administrador)".
+
+**Rotas** (as mesmas do "Adicionar conta pela assinatura"):
+- `POST /web/api/claude-login/start { loginHint? }` → `{ loginId, authUrl, expiresAt }` (+ `loginHint`, quando usado).
+  `loginHint` = e-mail da conta; sendo um e-mail válido (`claudelogin.cleanLoginHint`: texto aparado, até 254 caracteres, sem
+  espaço/controle/`<>"'(),;:\`, com `@` e ponto no domínio), vai como **`login_hint`** na URL de autorização, logo depois do
+  `state` — o mesmo parâmetro (e a mesma posição) do Claude Code (comentários no topo de `claudelogin.js`). Inválido (ou que não é
+  texto) → **ignorado**: o login segue como um "Adicionar conta" normal (aviso no log).
+- `POST /web/api/claude-login/finish { loginId, code }` → como antes (`{ ok, number, created, email, message, state }`); com
+  `loginHint` no start, a resposta ganha `loginHint` (o e-mail pedido) e `otherEmail` (true = entrou com OUTRO e-mail).
+  - Mesmo e-mail: "Conta N (e-mail): entrou de novo. O login novo já vale e o servidor guarda e renova ele sozinho."
+  - **Outro e-mail**: a conta pedida NÃO muda, e a mensagem diz exatamente o que aconteceu: "Atenção: você entrou com X, não com Y.
+    Foi criada uma conta nova, a conta N (X)." ou "O login novo foi para a conta N (X), que já estava no servidor." + "A conta M (Y)
+    continua como estava, com o login antigo." (ou "Nenhuma conta com Y foi mudada") + como tentar de novo. O painel mostra essa
+    mensagem em destaque. Histórico: "Conta N adicionada/atualizada pelo painel (login da assinatura) — o pedido era entrar de novo
+    com Y, mas entrou com X".
+
+**Avisos por e-mail ao dono** (SPEC.md, "Avisos por e-mail ao dono"): login vencendo em menos de 3 dias (1 por conta por dia),
+conta que morreu (na hora) e cofre sem gravar (1 por incidente). Cada aviso explica como renovar pelo **Entrar de novo** deste painel.

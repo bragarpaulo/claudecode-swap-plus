@@ -19,6 +19,7 @@ const path = require("node:path");
 const {
   createClaudeLogin,
   parsePasted,
+  cleanLoginHint,
   AUTHORIZE_URL,
   MANUAL_REDIRECT_URL,
   SCOPES,
@@ -516,6 +517,81 @@ test("sem perfil: identidade da troca do código; sem e-mail em lugar nenhum: no
   assert.equal(e.status, 502);
 });
 
+test("Entrar de novo: start({ loginHint }) põe o login_hint na URL logo depois do state (como o Claude Code) e o finish devolve o e-mail pedido", async () => {
+  const { cl, fake, logs } = unit();
+  const r = cl.start({ owner: "sessao-1", loginHint: "  dono@exemplo.com " });
+  assert.deepEqual(Object.keys(r).sort(), ["authUrl", "expiresAt", "loginHint", "loginId"]);
+  assert.equal(r.loginHint, "dono@exemplo.com");
+  const u = new URL(r.authUrl);
+  assert.deepEqual([...u.searchParams.keys()], [
+    "code",
+    "client_id",
+    "response_type",
+    "redirect_uri",
+    "scope",
+    "code_challenge",
+    "code_challenge_method",
+    "state",
+    "login_hint",
+  ]);
+  assert.equal(u.searchParams.get("login_hint"), "dono@exemplo.com");
+  assert.equal(u.searchParams.get("redirect_uri"), MANUAL_REDIRECT_URL, "o resto da URL é o de sempre");
+
+  const out = await cl.finish(r.loginId, fake.authorize(r.authUrl), { owner: "sessao-1" });
+  assert.equal(out.email, "dono@exemplo.com");
+  assert.equal(out.loginHint, "dono@exemplo.com");
+  assert.ok(logs.some((l) => l.includes("entrar de novo com dono@exemplo.com")));
+
+  // Entrou com outra conta Claude: o finish devolve as duas coisas (quem entrou e o que foi pedido); o log diz.
+  fake.identity = { ...fake.identity, uuid: "acc-uuid-2", email: "outra@exemplo.com" };
+  const r2 = cl.start({ loginHint: "dono@exemplo.com" });
+  const out2 = await cl.finish(r2.loginId, fake.authorize(r2.authUrl));
+  assert.equal(out2.email, "outra@exemplo.com");
+  assert.equal(out2.loginHint, "dono@exemplo.com");
+  assert.ok(logs.some((l) => l.includes("outra@exemplo.com") && l.includes("o pedido era entrar de novo com dono@exemplo.com")));
+
+  // Sem loginHint: como sempre (sem login_hint na URL; loginHint null no finish).
+  const r3 = cl.start();
+  assert.equal(new URL(r3.authUrl).searchParams.has("login_hint"), false);
+  const out3 = await cl.finish(r3.loginId, fake.authorize(r3.authUrl));
+  assert.equal(out3.loginHint, null);
+});
+
+test("loginHint inválido é ignorado: sem login_hint na URL, sem loginHint na resposta, e o login segue normal", async () => {
+  const { cl, fake, logs } = unit();
+  const bad = [
+    "",
+    "   ",
+    "sem-arroba",
+    "dono@exemplo",
+    "a b@exemplo.com",
+    "dono@exemplo.com\r\nSet-Cookie: x=y",
+    "dono@exemplo.com\x00",
+    "<dono@exemplo.com>",
+    "dono@exemplo.com, outro@exemplo.com",
+    `${"a".repeat(65)}@exemplo.com`,
+    `dono@${"a".repeat(250)}.com`,
+    42,
+    {},
+    ["dono@exemplo.com"],
+    null,
+    undefined,
+  ];
+  for (const v of bad) {
+    assert.equal(cleanLoginHint(v), null, `${JSON.stringify(v)} não é um e-mail`);
+    const r = cl.start({ loginHint: v });
+    assert.deepEqual(Object.keys(r).sort(), ["authUrl", "expiresAt", "loginId"], JSON.stringify(v));
+    assert.equal(new URL(r.authUrl).searchParams.has("login_hint"), false, JSON.stringify(v));
+  }
+  assert.ok(logs.some((l) => l.includes("loginHint inválido")), "o log diz que ignorou");
+  assert.equal(cleanLoginHint(" Dono.Exemplo+x@Exemplo.com.br "), "Dono.Exemplo+x@Exemplo.com.br", "e-mail válido: só aparado");
+
+  const r = cl.start({ loginHint: "não é e-mail" });
+  const out = await cl.finish(r.loginId, fake.authorize(r.authUrl));
+  assert.equal(out.email, "dono@exemplo.com");
+  assert.equal(out.loginHint, null);
+});
+
 test(`no máximo ${MAX_LOGINS} logins em andamento: o ${MAX_LOGINS + 1}º tira o mais antigo`, async () => {
   const { cl, fake } = unit();
   const first = cl.start();
@@ -1006,5 +1082,103 @@ test("fim a fim com o motor de verdade: a conta é guardada com o login da troca
   assert.equal(ctx.store.state.accounts["1"].cred.refreshToken, ctx.fake.issued[1].refresh, "a conta continua com o login de antes");
   assert.equal(Object.keys(ctx.store.state.accounts).length, 1);
   assert.equal(ctx.fake.count("refresh_token"), 0);
+  assertLogsClean(ctx);
+});
+
+// ---------------------------------------------------------------------------
+// "Entrar de novo" (start com loginHint)
+// ---------------------------------------------------------------------------
+
+const startRelogin = (ctx, s, loginHint) => call(ctx, "POST", "/web/api/claude-login/start", { s, body: { loginHint }, allowState: true });
+
+test("rotas: Entrar de novo — start { loginHint } repassa o login_hint na URL da Claude; loginHint inválido é ignorado", async (t) => {
+  const ctx = await setupRoutes(t);
+  const s = await ctx.session();
+  const ok = await startRelogin(ctx, s, "dono@exemplo.com");
+  assert.equal(ok.status, 200, ok.text);
+  assert.deepEqual(Object.keys(ok.json).sort(), ["authUrl", "expiresAt", "loginHint", "loginId"]);
+  assert.equal(ok.json.loginHint, "dono@exemplo.com");
+  const u = new URL(ok.json.authUrl);
+  assert.equal(u.origin + u.pathname, AUTHORIZE_URL);
+  assert.equal(u.searchParams.get("login_hint"), "dono@exemplo.com");
+  assert.equal([...u.searchParams.keys()].pop(), "login_hint", "depois do state, como no Claude Code");
+  assert.ok(ctx.logs.some((l) => l.includes("começou a entrar de novo com dono@exemplo.com")));
+
+  for (const bad of ["não é e-mail", "a@b", "dono@exemplo.com\r\nSet-Cookie: x=y", "", 123, null, ["dono@exemplo.com"], { email: "dono@exemplo.com" }]) {
+    const r = await startRelogin(ctx, s, bad);
+    assert.equal(r.status, 200, `${JSON.stringify(bad)}: ${r.text}`);
+    assert.deepEqual(Object.keys(r.json).sort(), ["authUrl", "expiresAt", "loginId"], JSON.stringify(bad));
+    assert.equal(new URL(r.json.authUrl).searchParams.has("login_hint"), false, JSON.stringify(bad));
+  }
+  assert.ok(ctx.logs.some((l) => l.includes("loginHint inválido: ignorado")));
+  assert.equal(ctx.fake.calls.length, 0, "começar não fala com a Anthropic");
+
+  // O login com o hint ignorado termina normalmente.
+  const last = await startRelogin(ctx, s, "a@b");
+  const fin = await finishLogin(ctx, s, last.json.loginId, ctx.fake.authorize(last.json.authUrl));
+  assert.equal(fin.status, 200, fin.text);
+  assert.equal(fin.json.number, 1);
+  assert.equal("loginHint" in fin.json, false);
+  assert.equal("otherEmail" in fin.json, false);
+  assertLogsClean(ctx);
+});
+
+test("rotas: Entrar de novo com o mesmo e-mail atualiza a conta; com OUTRO e-mail a mensagem diz qual conta foi criada/atualizada e que a pedida não mudou", async (t) => {
+  const ctx = await setupRoutes(t);
+  const s = await ctx.session();
+  // Conta 1 = dono@exemplo.com.
+  const st1 = await startLogin(ctx, s);
+  assert.equal((await finishLogin(ctx, s, st1.json.loginId, ctx.fake.authorize(st1.json.authUrl))).status, 200);
+
+  // "Entrar de novo" na conta 1 com o e-mail dela: atualiza a conta 1.
+  const st2 = await startRelogin(ctx, s, "dono@exemplo.com");
+  const same = await finishLogin(ctx, s, st2.json.loginId, ctx.fake.authorize(st2.json.authUrl));
+  assert.equal(same.status, 200, same.text);
+  assert.equal(same.json.number, 1);
+  assert.equal(same.json.created, false);
+  assert.equal(same.json.loginHint, "dono@exemplo.com");
+  assert.equal(same.json.otherEmail, false);
+  assert.match(same.json.message, /^Conta 1 \(dono@exemplo\.com\): entrou de novo\./);
+  assert.equal(ctx.store.state.history[0].text, "Conta 1 atualizada pelo painel (login da assinatura)");
+  assert.equal(ctx.store.state.accounts["1"].gen, 2);
+
+  // "Entrar de novo" na conta 1, mas a pessoa entrou com OUTRA conta Claude (nova no servidor): cria a conta 2 e diz.
+  ctx.fake.identity = { ...ctx.fake.identity, uuid: "acc-uuid-2", email: "outra@exemplo.com" };
+  const st3 = await startRelogin(ctx, s, "dono@exemplo.com");
+  const other = await finishLogin(ctx, s, st3.json.loginId, ctx.fake.authorize(st3.json.authUrl));
+  assert.equal(other.status, 200, other.text);
+  assert.equal(other.json.number, 2);
+  assert.equal(other.json.created, true);
+  assert.equal(other.json.email, "outra@exemplo.com");
+  assert.equal(other.json.loginHint, "dono@exemplo.com");
+  assert.equal(other.json.otherEmail, true);
+  assert.match(other.json.message, /^Atenção: você entrou com outra@exemplo\.com, não com dono@exemplo\.com\./);
+  assert.match(other.json.message, /Foi criada uma conta nova, a conta 2 \(outra@exemplo\.com\)\./);
+  assert.match(other.json.message, /A conta 1 \(dono@exemplo\.com\) continua como estava, com o login antigo\./);
+  assert.match(other.json.message, /Para renovar dono@exemplo\.com, clique em “Entrar de novo” de novo/);
+  assert.equal(
+    ctx.store.state.history[0].text,
+    "Conta 2 adicionada pelo painel (login da assinatura) — o pedido era entrar de novo com dono@exemplo.com, mas entrou com outra@exemplo.com"
+  );
+  assert.equal(ctx.store.state.accounts["1"].gen, 2, "a conta pedida não mudou");
+  assert.ok(ctx.logs.some((l) => l.includes('"entrar de novo" com dono@exemplo.com terminou com outra conta')));
+
+  // De novo com a outra conta (que agora já existe): "o login novo foi para a conta 2".
+  const st4 = await startRelogin(ctx, s, "dono@exemplo.com");
+  const other2 = await finishLogin(ctx, s, st4.json.loginId, ctx.fake.authorize(st4.json.authUrl));
+  assert.equal(other2.status, 200, other2.text);
+  assert.equal(other2.json.number, 2);
+  assert.equal(other2.json.created, false);
+  assert.equal(other2.json.otherEmail, true);
+  assert.match(other2.json.message, /O login novo foi para a conta 2 \(outra@exemplo\.com\), que já estava no servidor\./);
+  assert.match(other2.json.message, /A conta 1 \(dono@exemplo\.com\) continua como estava/);
+  assert.equal(ctx.store.state.accounts["1"].gen, 2);
+  assert.equal(ctx.store.state.accounts["2"].gen, 2);
+
+  // E-mail pedido que nem existe no servidor: diz que nenhuma conta com ele mudou.
+  const st5 = await startRelogin(ctx, s, "sumida@exemplo.com");
+  const none = await finishLogin(ctx, s, st5.json.loginId, ctx.fake.authorize(st5.json.authUrl));
+  assert.equal(none.status, 200, none.text);
+  assert.match(none.json.message, /Nenhuma conta com sumida@exemplo\.com foi mudada\./);
   assertLogsClean(ctx);
 });

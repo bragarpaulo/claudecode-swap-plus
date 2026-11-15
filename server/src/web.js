@@ -21,6 +21,8 @@
 // - "Adicionar conta pela assinatura" (POST /web/api/claude-login/start e /finish): o login OAuth do
 //   Claude Code com código colado (claudelogin.js); a conta é guardada pelo engine.storeFreshLogin (sem
 //   renovar na hora: o login acabou de ser emitido) e renovada depois pelo ciclo do motor.
+//   "Entrar de novo" (cartão da conta) é o mesmo fluxo com start { loginHint: e-mail da conta } → login_hint na URL
+//   da Claude; no finish, se entrou com outro e-mail, a mensagem diz qual conta mudou (e que a pedida não mudou).
 // - Computadores permitidos por conta (WEB-SPEC 2.3, access.js): PUT /web/api/accounts/:n/devices →
 //   engine.setAccountDevices; o PanelState mostra `devices` em cada conta e `allowedAccounts` em cada computador.
 
@@ -29,7 +31,7 @@ const fs = require("fs");
 const path = require("path");
 const { RULE_DEFAULTS } = require("../../plus/rules");
 const { emailKey } = require("./google");
-const { createClaudeLogin } = require("./claudelogin");
+const { createClaudeLogin, cleanLoginHint } = require("./claudelogin");
 const access = require("./access");
 
 const SESSION_COOKIE = "sp_sess";
@@ -470,11 +472,13 @@ function createWeb(deps) {
     const out = [];
     for (const a of accounts) {
       const who = `conta ${a.number}${a.email ? ` (${a.email})` : ""}`;
+      // Como renovar: o botão "Entrar de novo" no cartão da conta (login pela assinatura com o e-mail dela).
+      const renew = `clique em “Entrar de novo” no cartão da conta ${a.number} (ou entre com ela no Claude Code de um computador do administrador).`;
       if (a.dead) {
         out.push({
           kind: "account_dead",
           account: a.number,
-          text: `O login da ${who} morreu: entre de novo com esta conta no Claude Code de qualquer computador conectado.`,
+          text: `O login da ${who} morreu: ${renew}`,
         });
         continue;
       }
@@ -485,8 +489,8 @@ function createWeb(deps) {
           account: a.number,
           text:
             left > 0
-              ? `O login da ${who} vence em ${fmtLeft(left)} (${fmtWhen(a.loginExpiresAt)}): entre de novo com esta conta no Claude Code de um computador conectado.`
-              : `O login da ${who} venceu em ${fmtWhen(a.loginExpiresAt)}: entre de novo com esta conta no Claude Code de um computador conectado.`,
+              ? `O login da ${who} vence em ${fmtLeft(left)} (${fmtWhen(a.loginExpiresAt)}): ${renew}`
+              : `O login da ${who} venceu em ${fmtWhen(a.loginExpiresAt)}: ${renew}`,
         });
       }
     }
@@ -865,11 +869,29 @@ function createWeb(deps) {
     }
   }
 
-  async function claudeLoginStart({ sess, me }) {
+  /** Contas do cofre com este e-mail (sem diferenciar maiúsculas), em ordem de número. */
+  function accountsWithEmail(email) {
+    const e = String(email || "").trim().toLowerCase();
+    const accs = isObj(store.state.accounts) ? store.state.accounts : {};
+    return Object.values(accs)
+      .filter((a) => isObj(a) && typeof a.email === "string" && a.email.trim().toLowerCase() === e)
+      .map((a) => Number(a.number))
+      .filter((n) => Number.isFinite(n))
+      .sort((x, y) => x - y);
+  }
+
+  // body.loginHint (opcional): "Entrar de novo" de uma conta — o e-mail dela vai como login_hint na URL de
+  // autorização (claudelogin.cleanLoginHint; não sendo um e-mail válido, é ignorado e o login segue sem ele).
+  async function claudeLoginStart({ body, sess, me }) {
     needClaudeLogin();
-    const r = claudeLogin.start({ owner: sess.id });
-    log.info(`[painel] ${me} começou a adicionar uma conta pela assinatura`);
-    return { loginId: r.loginId, authUrl: r.authUrl, expiresAt: r.expiresAt };
+    const wanted = isObj(body) ? body.loginHint : undefined;
+    const hint = cleanLoginHint(wanted);
+    const r = claudeLogin.start({ owner: sess.id, loginHint: hint });
+    if (hint) log.info(`[painel] ${me} começou a entrar de novo com ${hint} pela assinatura`);
+    else log.info(`[painel] ${me} começou a adicionar uma conta pela assinatura${wanted !== undefined && wanted !== null && wanted !== "" ? " (loginHint inválido: ignorado)" : ""}`);
+    const out = { loginId: r.loginId, authUrl: r.authUrl, expiresAt: r.expiresAt };
+    if (hint && r.loginHint) out.loginHint = r.loginHint;
+    return out;
   }
 
   async function claudeLoginFinish({ body, sess, me }) {
@@ -893,6 +915,10 @@ function createWeb(deps) {
       throw e;
     }
     const email = login.email;
+    const hint = typeof login.loginHint === "string" && login.loginHint ? login.loginHint : null;
+    // "Entrar de novo" que entrou com OUTRO e-mail: a conta pedida fica como estava; diz qual foi atualizada/criada.
+    const otherEmail = !!hint && hint.toLowerCase() !== String(email).toLowerCase();
+    const wantedNumbers = otherEmail ? accountsWithEmail(hint) : [];
     let r;
     try {
       r = await engine.storeFreshLogin({ claudeAiOauth: login.claudeAiOauth, oauthAccount: login.oauthAccount, plan: login.plan || undefined });
@@ -909,17 +935,41 @@ function createWeb(deps) {
     }
     const number = r && r.number;
     const created = !!(r && r.created);
+    const histBase = created ? `Conta ${number} adicionada pelo painel (login da assinatura)` : `Conta ${number} atualizada pelo painel (login da assinatura)`;
     pushHistory(
       "info",
-      created ? `Conta ${number} adicionada pelo painel (login da assinatura)` : `Conta ${number} atualizada pelo painel (login da assinatura)`,
+      otherEmail ? `${histBase} — o pedido era entrar de novo com ${hint}, mas entrou com ${email}` : histBase,
       null
     );
     await saveQuiet("histórico");
     log.info(`[painel] ${me} adicionou pela assinatura a conta ${number} (${created ? "nova" : "já existia: login atualizado"})`);
-    const message = created
-      ? `Conta ${number} adicionada (${email}). O servidor guarda e renova o login dela.`
-      : `A conta ${number} (${email}) já estava no servidor: o login dela foi atualizado com este.`;
-    return done(sess, { number, created, email, message });
+    let message;
+    if (otherEmail) {
+      // Entrou com outro e-mail: deixar claro o que mudou e o que NÃO mudou.
+      const wanted = wantedNumbers.filter((n) => n !== Number(number));
+      const wantedText = wanted.length
+        ? `${wanted.length === 1 ? `A conta ${wanted[0]}` : `As contas ${wanted.join(", ")}`} (${hint}) continua${wanted.length === 1 ? "" : "m"} como estava${wanted.length === 1 ? "" : "m"}, com o login antigo`
+        : `Nenhuma conta com ${hint} foi mudada`;
+      message =
+        `Atenção: você entrou com ${email}, não com ${hint}. ` +
+        (created
+          ? `Foi criada uma conta nova, a conta ${number} (${email}). `
+          : `O login novo foi para a conta ${number} (${email}), que já estava no servidor. `) +
+        `${wantedText}. Para renovar ${hint}, clique em “Entrar de novo” de novo e, na página da Claude, entre com ${hint} (se ela abrir com outra conta, saia dela primeiro).`;
+      log.warn(`[painel] "entrar de novo" com ${hint} terminou com outra conta: ${email} → conta ${number} (${created ? "nova" : "atualizada"})`);
+    } else if (hint && !created) {
+      message = `Conta ${number} (${email}): entrou de novo. O login novo já vale e o servidor guarda e renova ele sozinho.`;
+    } else {
+      message = created
+        ? `Conta ${number} adicionada (${email}). O servidor guarda e renova o login dela.`
+        : `A conta ${number} (${email}) já estava no servidor: o login dela foi atualizado com este.`;
+    }
+    const extra = { number, created, email, message };
+    if (hint) {
+      extra.loginHint = hint; // o e-mail pedido no "Entrar de novo"
+      extra.otherEmail = otherEmail; // true = entrou com outro e-mail (a conta pedida não mudou)
+    }
+    return done(sess, extra);
   }
 
   const change = { change: true };

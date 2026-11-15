@@ -718,6 +718,23 @@ details.outgroup > .accounts { margin-top: 12px; }
 .info dd { margin: 0; font-size: var(--fs-md); line-height: 1.4; overflow-wrap: anywhere; }
 .factsub { display: block; color: var(--soft); font-size: var(--fs-xs); line-height: 1.35; margin-top: 2px; }
 .acct > .warnbox { margin: 0; font-size: var(--fs-sm); }
+/* login morto/vencendo: o aviso leva o botão "Entrar de novo" ao lado (embaixo, no celular) */
+.warnbox.relogin { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.warnbox.relogin > p { margin: 0; flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.warnbox.relogin > button { flex: none; }
+/* o "Entrar de novo" discreto, dentro de "Ajustes desta conta" */
+.reloginsub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+}
+.reloginsub > .hint { margin: 0; flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.reloginsub > button { flex: none; }
 
 /* pé do cartão: sempre embaixo (cartões lado a lado alinhados) */
 .abottom {

@@ -22,12 +22,15 @@
 // - Só os computadores do ADMINISTRADOR enviam logins (canUploadLogins): conectados com Google com e-mail de
 //   ADMIN_EMAILS (o servidor passa quem é administrador em setAdminCheck) ou pareados por código (googleEmail nulo:
 //   o código só sai da linha de comando/painel do administrador). Os outros usam as contas do servidor.
+// - Avisos por e-mail ao dono (notify.js, opção `notify` do construtor): login que vence em menos de 3 dias (junto
+//   com o alerta diário do histórico: 1 por conta por dia), conta que morre (1 na hora) e cofre que para de gravar
+//   (1 por incidente). O motor só chama notify({ subject, text }); sem `notify`, nada é avisado. Nunca derruba nada.
 
 const crypto = require("crypto");
 const { RULE_DEFAULTS, STRATEGY_LABELS, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.3.1";
+const VERSION = "2.4.0";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
 const POLL_ACTIVE_MS = 3 * 60 * 1000; // conta de dispositivo ativo: uso a cada 3 min
@@ -60,6 +63,8 @@ const NOT_ADMIN_TEXT = "Só os computadores do administrador enviam logins ao se
 const NO_ADMIN = () => false; // sem setAdminCheck: ninguém com Google é administrador
 const SAVE_FAILED_TEXT = "O cofre não está gravando (disco cheio?). NÃO reinicie o servidor: há login renovado só na memória.";
 const NO_RESPONSE_TEXT = "a renovação anterior ficou sem resposta e o login foi gasto";
+const SAVE_NOTICE_RETRY_MS = 60 * 1000; // aviso de cofre sem gravar que não foi gravado (disco cheio): tenta de novo depois disso
+const SAVE_NOTICE_GAP_MS = 60 * 60 * 1000; // cofre que vai e volta: no máximo 1 aviso de "cofre sem gravar" por hora
 
 // Faixas iguais às das configurações da extensão (plus/package.json). Números fora da faixa são ajustados.
 const RULE_LIMITS = {
@@ -145,6 +150,31 @@ function fmtDayTime(ms) {
 function localDay(ms) {
   const d = new Date(ms);
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** Quanto falta, em português simples, para os avisos por e-mail ("cerca de 2 dias", "cerca de 5 horas"). */
+function leftText(ms) {
+  if (!(ms > 0)) return "já passou";
+  const h = ms / 3600000;
+  if (h < 1) return "menos de 1 hora";
+  if (h < 36) {
+    const n = Math.round(h);
+    return n === 1 ? "cerca de 1 hora" : `cerca de ${n} horas`;
+  }
+  const d = Math.round(h / 24);
+  return d === 1 ? "cerca de 1 dia" : `cerca de ${d} dias`;
+}
+
+/** Endereço do painel (PUBLIC_URL) sem a barra do fim, ou null se não for um endereço http(s). */
+function panelUrlOf(v) {
+  const s = typeof v === "string" ? v.trim().replace(/\/+$/, "") : "";
+  if (!s) return null;
+  try {
+    const u = new URL(s);
+    return u.protocol === "https:" || u.protocol === "http:" ? s : null;
+  } catch {
+    return null;
+  }
 }
 
 function makeLog(log) {
@@ -251,7 +281,11 @@ function checkRule(key, value) {
 }
 
 class Engine {
-  constructor({ store, anthropic, now = Date.now, log = console, env = process.env, version = VERSION, isAdminEmail = null } = {}) {
+  /**
+   * notify (opcional): fn({ subject, text }) → { ok, ... } — avisos por e-mail ao dono (notify.js: createNotifier,
+   * que grava em DATA_DIR/avisos/). Sem ele, nenhum aviso. O endereço do painel nos avisos vem de env.PUBLIC_URL.
+   */
+  constructor({ store, anthropic, now = Date.now, log = console, env = process.env, version = VERSION, isAdminEmail = null, notify = null } = {}) {
     if (!store) throw new Error("o motor precisa do cofre (store)");
     if (!anthropic) throw new Error("o motor precisa do cliente da Anthropic");
     const e = env || {};
@@ -261,6 +295,10 @@ class Engine {
     this.log = makeLog(log);
     this.version = version;
     this.setAdminCheck(isAdminEmail);
+    this.notifyFn = typeof notify === "function" ? notify : null;
+    this.panelUrl = panelUrlOf(e.PUBLIC_URL);
+    this.saveIncident = null; // cofre sem gravar: { since, error, notified, lastTry } (só na memória)
+    this.saveNoticeAt = 0; // quando saiu o último aviso de "cofre sem gravar" (anti vai-e-volta)
     const perHour = Number(e.USAGE_MAX_PER_HOUR);
     this.usageMaxPerHour = Number.isFinite(perHour) && perHour >= 1 ? perHour : 24;
     const ahead = Number(e.REFRESH_AHEAD_MIN);
@@ -438,7 +476,9 @@ class Engine {
     try {
       await this.store.save();
       this.dirty = false;
+      if (this.saveFailed) this.log.info("[motor] o cofre voltou a gravar");
       this.saveFailed = false;
+      this.saveIncident = null; // fim do incidente: um próximo avisa de novo
     } catch (e) {
       this.dirty = true;
       this.saveFailed = true;
@@ -446,7 +486,97 @@ class Engine {
       // rejeitada para sempre e nenhuma gravação seguinte aconteceria. Destrava aqui.
       if (this.store.writing && typeof this.store.writing.catch === "function") this.store.writing = this.store.writing.catch(() => {});
       this.log.error(`[motor] não consegui gravar o cofre: ${e && e.message}`);
+      if (!this.saveIncident) this.saveIncident = { since: this.now(), error: String((e && e.message) || e || "erro").slice(0, 200), notified: false, lastTry: 0 };
+      this.noticeSaveFailed();
       throw e;
+    }
+  }
+
+  // ------------------------------------------------------------------ avisos por e-mail ao dono (notify.js)
+
+  /** Manda um aviso ao dono (grava na caixa de saída). Sem `notify` → null. Nunca lança. */
+  notice(subject, text) {
+    if (!this.notifyFn) return null;
+    try {
+      const r = this.notifyFn({ subject, text });
+      return isObj(r) ? r : { ok: true };
+    } catch (e) {
+      this.log.error(`[avisos] o aviso ao dono falhou: ${e && e.message}`);
+      return { ok: false, error: "exception" };
+    }
+  }
+
+  /** "conta 3 (apelido “Trabalho”, e-mail ana@x.com)" — número, apelido e e-mail, para os avisos por e-mail. */
+  accountWho(a) {
+    const parts = [];
+    if (str(a.alias)) parts.push(`apelido “${str(a.alias)}”`);
+    if (str(a.email)) parts.push(`e-mail ${str(a.email)}`);
+    return `conta ${a.number}${parts.length ? ` (${parts.join(", ")})` : ""}`;
+  }
+
+  /** Como renovar o login de uma conta (pelo painel, "Entrar de novo", ou pelo /login do Claude Code). */
+  renewText(a) {
+    const email = str(a.email) || "o e-mail desta conta";
+    const where = this.panelUrl ? `abra ${this.panelUrl}` : "abra o painel do Swap Plus";
+    return (
+      `Para renovar: ${where} → Contas → conta ${a.number} → Entrar de novo, e entre com ${email} na página da Claude; ` +
+      "copie o código e cole no painel. (Ou faça /login no Claude Code de um computador do administrador.)"
+    );
+  }
+
+  /** Aviso "o login vence" (junto com o alerta diário do histórico). */
+  noticeLoginExpiring(a, exp, t = this.now()) {
+    const verb = exp > t ? "vence" : "venceu";
+    const head =
+      exp > t
+        ? `O login da ${this.accountWho(a)} no Swap Plus vence em ${fmtDayTime(exp)} (faltam ${leftText(exp - t)}). ` +
+          "Depois disso o servidor não consegue mais renovar o acesso dela, e os computadores deixam de usá-la."
+        : `O login da ${this.accountWho(a)} no Swap Plus venceu em ${fmtDayTime(exp)}. ` +
+          "O servidor pode não conseguir mais renovar o acesso dela, e os computadores deixam de usá-la quando isso acontecer.";
+    return this.notice(`Swap Plus: login da conta ${a.number} ${verb} ${fmtDayTime(exp)}`, `${head}\n\n${this.renewText(a)}`);
+  }
+
+  /** Aviso "o login parou de valer" (conta que acabou de morrer). */
+  noticeDead(a, t = this.now()) {
+    const cause = a.dead && a.dead.cause === "no_response";
+    const reason = cause
+      ? "a renovação anterior ficou sem resposta (a Anthropic gastou o login, mas a resposta não chegou ao servidor) e a seguinte foi recusada"
+      : "a Anthropic recusou a renovação (o login foi encerrado, venceu ou foi usado em outro lugar)";
+    const text =
+      `O login da ${this.accountWho(a)} parou de valer em ${fmtDayTime(t)}.\n` +
+      `Motivo: ${reason}.\n` +
+      "O servidor não renova mais esta conta, e os computadores que estavam nela passam para outra.\n\n" +
+      this.renewText(a);
+    return this.notice(`Swap Plus: o login da conta ${a.number} parou de valer`, text);
+  }
+
+  /**
+   * Aviso "cofre sem gravar": 1 por incidente (o incidente acaba quando o cofre volta a gravar), no máximo 1 por hora
+   * se o cofre ficar indo e voltando. Aviso que não deu para gravar (o disco cheio também pega a caixa de saída) é
+   * tentado de novo a cada minuto enquanto o incidente durar.
+   */
+  noticeSaveFailed() {
+    const inc = this.saveIncident;
+    if (!inc || inc.notified || !this.notifyFn) return;
+    const t = this.now();
+    if (inc.lastTry && t - inc.lastTry < SAVE_NOTICE_RETRY_MS) return;
+    inc.lastTry = t;
+    if (this.saveNoticeAt && t - this.saveNoticeAt < SAVE_NOTICE_GAP_MS) {
+      inc.notified = true; // avisado há menos de 1 h (cofre indo e voltando): não repete
+      return;
+    }
+    const text =
+      `O servidor do Swap Plus não está conseguindo gravar o cofre (o arquivo com os logins das contas) desde ${fmtDayTime(inc.since)}. ` +
+      `Erro: ${inc.error}.\n\n` +
+      "NÃO reinicie o servidor: há login renovado só na memória. Se o processo parar antes de gravar, esse login se perde e a conta " +
+      "precisa entrar de novo.\n\n" +
+      "Veja o disco do servidor (espaço livre: df -h; e a pasta de dados do Swap Plus). Enquanto o cofre não grava, o servidor não " +
+      "renova nenhuma conta; assim que ele voltar a gravar, o servidor grava sozinho e segue normal. Este aviso não se repete " +
+      "enquanto durar este problema.";
+    const r = this.notice("Swap Plus: o cofre não está gravando — NÃO reinicie o servidor", text);
+    if (!r || r.ok || r.skipped) {
+      inc.notified = true;
+      if (r && r.ok) this.saveNoticeAt = t;
     }
   }
 
@@ -667,6 +797,8 @@ class Engine {
       usageBudget: { perHour: this.usageMaxPerHour, available: Math.max(0, Math.floor(this.bucket.tokens)) },
       diag: { ...this.st.diag },
       saveFailed: !!this.saveFailed, // true = há mudança (talvez login renovado) só na memória: não reiniciar
+      // Avisos por e-mail ao dono (notify.js): ligados? e a pasta (DATA_DIR/avisos) que o host lê.
+      notices: { enabled: !!this.notifyFn && this.notifyFn.enabled !== false, dir: (this.notifyFn && this.notifyFn.dir) || null },
       stopping: !!this.stopping,
       warnings: this.warnings(t),
     };
@@ -892,11 +1024,13 @@ class Engine {
     const why = cause === "no_response" ? NO_RESPONSE_TEXT : "a Anthropic recusou a renovação";
     this.log.warn(`[renovação] conta ${acc.number}: a Anthropic recusou a renovação (invalid_grant)${cause === "no_response" ? " depois de uma renovação sem resposta" : ""}; precisa de login novo`);
     this.pushHistory("alert", `O login da conta ${acc.number} não vale mais (${why}). Entre de novo com ela no Claude Code para o servidor receber um login novo.`, null);
+    this.noticeDead(acc, t); // e-mail ao dono: 1 por morte (markDead não repete numa conta já morta)
   }
 
   /**
    * Aviso no histórico quando faltam menos de 3 dias para o login de uma conta viva vencer de vez:
    * no máximo 1x por dia (do fuso do servidor) por conta; o dia avisado fica em `acc.loginWarnedOn`.
+   * No MESMO momento vai o aviso por e-mail ao dono (notify): também 1 por conta por dia.
    * Conta sem `refreshTokenExpiresAt` (login antigo) não avisa.
    */
   loginExpiryStep(t = this.now()) {
@@ -907,6 +1041,7 @@ class Engine {
       if (!exp || exp - t >= LOGIN_WARN_MS) continue;
       acc.loginWarnedOn = today;
       this.pushHistory("alert", this.loginExpiringText(acc, exp, t), null); // marca dirty: grava no fim do ciclo
+      this.noticeLoginExpiring(acc, exp, t);
     }
   }
 

@@ -21,6 +21,7 @@ server/src/anthropic.js    chamadas à Anthropic (renovar, uso, perfil)
 server/src/engine.js       agendador: renova, lê uso, decide trocas por dispositivo, histórico
 server/src/server.js       API HTTPS + pareamento + login com Google + admin local; ponto de entrada (node server/src/server.js)
 server/src/google.js       login com Google: configuração, sessões em memória, PKCE, troca do code, id_token, páginas HTML
+server/src/notify.js       caixa de saída dos avisos por e-mail ao dono (DATA_DIR/avisos/; o host entrega)
 server/src/cli.js          CLI de admin (fala com o admin local em 127.0.0.1)
 server/test/*.test.js      testes com node:test e uma Anthropic de mentira (rodam no servidor)
 server/Dockerfile          contexto de build = raiz do repo
@@ -32,7 +33,7 @@ Na imagem: `/app/plus/rules.js` e `/app/server/src/*.js` → `require("../../plu
 
 | var | padrão | |
 |---|---|---|
-| `DATA_DIR` | `/data` | cofre `store.enc`, `tls/` |
+| `DATA_DIR` | `/data` | cofre `store.enc`, `tls/`, `avisos/` (caixa de saída dos avisos ao dono) |
 | `MASTER_KEY_FILE` | `/run/secrets/swap_plus_master_key` | 64 hex (32 bytes) |
 | `PORT` | `8443` | API |
 | `ADMIN_PORT` | `8444` | só `127.0.0.1` dentro do container |
@@ -52,6 +53,7 @@ Na imagem: `/app/plus/rules.js` e `/app/server/src/*.js` → `require("../../plu
 | `TZ` | `America/Sao_Paulo` | textos "hoje 18:00" do `rules.js` |
 | `ADMIN_EMAILS` | — | administrador(es) do painel web, separados por vírgula (produção: o e-mail do administrador, variável `SWAP_PLUS_ADMIN_EMAILS` da stack). Lido só na subida, sem rota para mudar. Vazio → painel desligado (aviso no log). Também decide quais computadores conectados com Google enviam logins (abaixo, "Quem envia logins"). Detalhes em WEB-SPEC.md |
 | `RESTIC_PASS_FILE` | `/run/secrets/restic_swap_plus_pass` | senha do backup, só para o kit de recuperação do painel (opcional: sem o arquivo, "não disponível") |
+| `NOTICES_ENABLED` | `1` | avisos por e-mail ao dono (abaixo, "Avisos por e-mail ao dono"); `0` desliga (nada é gravado em `DATA_DIR/avisos/`) |
 
 Login com Google ligado = client id + client secret + `PUBLIC_URL`. Retorno cadastrado no Google Cloud:
 `${PUBLIC_URL}/auth/google/callback` (produção: `https://swap.assistentes.si/auth/google/callback`, atrás do Caddy + Cloudflare
@@ -118,7 +120,9 @@ createAnthropic({ tokenUrl, apiBase, fetchImpl = fetch }) → {
 
 ```js
 class Engine {
-  constructor({ store, anthropic, now = Date.now, log = console, env = process.env, isAdminEmail = null })
+  constructor({ store, anthropic, now = Date.now, log = console, env = process.env, isAdminEmail = null, notify = null })
+                                        // notify: fn({ subject, text }) dos avisos ao dono (notify.js); null = sem avisos
+                                        // o endereço do painel nos avisos vem de env.PUBLIC_URL
   setAdminCheck(fn)                     // fn(email) → bool: quem é administrador (o server.js passa o de ADMIN_EMAILS no createApp)
   canUploadLogins(device)               // pode enviar logins? googleEmail nulo (código) ou fn(googleEmail) === true
   start(); stop()                       // tick a cada 15 s (setInterval com unref)
@@ -158,6 +162,7 @@ Fim do login (`refreshTokenExpiresAt`, epoch ms, gravado pelo Claude Code dentro
   de qualquer computador conectado." (`venceu` se a data já passou). O dia avisado fica em `loginWarnedOn` (zera com login novo ou data nova).
 - `stateFor().warnings` (calculado na hora): `{ kind: "dead", account: N, text }` para contas mortas e
   `{ kind: "login_expiring", account: N, text }` (mesmo texto do histórico) enquanto faltar menos de 3 dias.
+- No MESMO momento do alerta diário do histórico sai também o aviso por e-mail ao dono (abaixo): 1 por conta por dia.
 - `setLoginExpiresAt(number, ms)`: para contas enviadas antes de o servidor guardar a data. `ms` = epoch em ms (número ou número em texto)
   depois de "agora - 1 dia" e até 5 anos à frente, senão `invalid`; conta inexistente → `not_found`. Muda `cred.refreshTokenExpiresAt` no lugar,
   sob a trava da conta; grava o cofre; histórico "Validade do login da conta N preenchida".
@@ -226,6 +231,36 @@ Exige `claudeAiOauth.refreshToken` e `oauthAccount.emailAddress`. Só aceita log
   e o refresh token enviado entra em `spentRefresh`; senão cria com `nextNumber++` (gen 1). `plan.label` do corpo, ou de `subscriptionType`
   (team→Team, max→Max, pro→Pro, enterprise→Enterprise). Grava o cofre. Histórico "Login da conta N recebido".
 - o cliente nunca mais usa o refresh token que enviou (o servidor gastou): depois de `POST /v1/logins` grava a credencial do servidor por cima.
+
+## Avisos por e-mail ao dono (notify.js)
+
+O servidor só **escreve um arquivo por aviso** em `DATA_DIR/avisos/` (no host: `/opt/swap-plus/data/avisos/`). Um processo do
+host (fora do container) lê essa pasta a cada minuto e entrega ao Painel do Servidor, que manda o e-mail ao dono. Nada aqui usa
+rede nem senha. `NOTICES_ENABLED=0` desliga (nada é gravado, nem a pasta é criada).
+
+```js
+writeNotice(dir /* DATA_DIR */, { subject, text }, { env, now, log }?)  // → { ok: true, id, file } | { ok: false, skipped: "disabled" } | { ok: false, error }
+createNotifier({ dir, env, now, log }) → notify({ subject, text })    // + notify.enabled, notify.dir; o server.js passa ao motor
+```
+- Mesmo formato e limites do comando `servidor-aviso` do servidor: arquivo `aviso-<AAAAMMDD-HHMMSS>-<8 hex>.json` (hora local, `TZ`)
+  com `{"id","assunto","texto","criado_em"}` (`criado_em` = epoch em **segundos**, inteiro), JSON compacto em UTF-8; `id` casa com
+  `^aviso-[A-Za-z0-9_-]{14,74}$`. Assunto em 1 linha, até 120 caracteres; texto até 2.000; sem caracteres de controle (no texto só a
+  quebra de linha); passou do limite → corta com "…". Assunto vazio → nada gravado.
+- Atômico: temporário `.<id>.tmp` (O_EXCL, 0600) + rename na mesma pasta. Pasta criada com 0700. Limpeza a cada aviso: avisos com
+  mais de 48 h e o que passar de 500 arquivos (só `aviso-*.json`), e temporários esquecidos há mais de 1 h.
+- **Nunca lança**: erro (disco cheio, pasta sem permissão…) só vai para o log `[avisos]`.
+
+Gatilhos no motor (sem `notify`, nenhum; o texto diz a conta — número, apelido, e-mail — e como renovar):
+- **Login que vence em menos de 3 dias**: no mesmo momento do alerta diário do histórico (`loginWarnedOn`), 1 por conta por dia.
+  Assunto `Swap Plus: login da conta N vence DD/MM HH:MM` (`venceu`, se já passou).
+- **Conta que morre** (passa a `dead`, `markDead`): 1 na hora. Assunto `Swap Plus: o login da conta N parou de valer`; o texto traz o
+  motivo e, com `dead.cause === "no_response"`, que "a renovação anterior ficou sem resposta".
+- **Cofre sem gravar** (`saveFailed` passa a true): 1 por incidente (acaba quando o cofre volta a gravar), no máximo 1 por hora se o
+  cofre ficar indo e voltando. "NÃO reinicie o servidor: há login renovado só na memória" + veja o disco. Se o próprio aviso não
+  grava (o disco cheio pega a caixa de saída também), tenta de novo a cada minuto enquanto o incidente durar.
+- "Como renovar": `Para renovar: abra <PUBLIC_URL> → Contas → conta N → Entrar de novo, e entre com <e-mail da conta> na página da
+  Claude; copie o código e cole no painel. (Ou faça /login no Claude Code de um computador do administrador.)`
+- `engine.status().notices = { enabled, dir }` (o `GET /admin/status` do admin local mostra o mesmo em `notices`).
 
 ## API (server.js)
 
@@ -309,7 +344,7 @@ StateResponse:
 Erros: `{ error, message }` com status adequado. Nada de stack trace na resposta.
 
 Admin local (HTTP em `127.0.0.1:ADMIN_PORT`, só dentro do container, sem auth):
-`POST /admin/pair-code` → `{ code, expiresAt, connect }`; `GET /admin/status` (inclui `google`); `GET /admin/devices`; `DELETE /admin/devices/:id`;
+`POST /admin/pair-code` → `{ code, expiresAt, connect }`; `GET /admin/status` (inclui `google` e `notices: { enabled, dir }`); `GET /admin/devices`; `DELETE /admin/devices/:id`;
 `GET /admin/allowed` → `{ enabled, offReason, callbackUrl, adminEmails, allowedEmails, pendingLogins }`;
 `POST /admin/allow { email }` → `{ ok, email, added, admin, google }` (o administrador não entra na lista: `added: false, admin: true`);
 `POST /admin/deny { email }` → `{ ok, email, removed, devices: [{id, name}], panelSessions, google }`; e-mail do administrador → 409 `{ error: "admin" }`.

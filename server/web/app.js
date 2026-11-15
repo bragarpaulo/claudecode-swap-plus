@@ -79,7 +79,7 @@
   let rulesBase = null; // valores que preencheram o formulário de regras
   let rulesBaseSig = null;
 
-  let addLogin = null; // pedido de "Adicionar conta" em andamento { loginId, authUrl, expiresAt }
+  let addLogin = null; // pedido de "Adicionar conta" / "Entrar de novo" em andamento { loginId, authUrl, expiresAt, loginHint, number }
   let addTimer = null;
   let outOpen = false; // grupo "Fora da troca" aberto
 
@@ -920,6 +920,22 @@
       .join(", ");
   }
 
+  /**
+   * Botão "Entrar de novo" da conta: o fluxo de "Adicionar conta" (start → página da Claude → colar o código →
+   * finish) com o e-mail dela no loginHint (vai como login_hint para a Claude). subtle = o discreto de "Ajustes".
+   */
+  function reloginButton(a, subtle) {
+    const n = Number(a.number);
+    return h("button", {
+      type: "button",
+      class: subtle ? "secondary small" : "small",
+      "data-k": `acc-${n}-relogin${subtle ? "-adj" : ""}`,
+      text: "Entrar de novo",
+      "aria-label": `Entrar de novo na Conta ${n}${a.email ? ` com ${a.email}` : ""}`,
+      onclick: (e) => startAddAccount(e.currentTarget, { loginHint: a.email || null, number: n }),
+    });
+  }
+
   function accountCard(a, pos) {
     const n = Number(a.number);
     const dead = isDead(a);
@@ -952,7 +968,7 @@
 
     // --- situação (ok: linha discreta; login morto: caixa vermelha; fora da troca: texto apagado)
     const sitParts = [];
-    if (dead) sitParts.push(h("span", { class: "badtext", text: "login morto — entre de novo com esta conta (botão “Adicionar conta” ou no Claude Code de um computador conectado)" }));
+    if (dead) sitParts.push(h("span", { class: "badtext", text: "login morto — clique em “Entrar de novo” (abaixo) e entre com esta conta" }));
     if (a.disabled) sitParts.push(h("span", { class: "muted", text: `${dead ? " · " : ""}fora da troca (a troca automática não usa esta conta)` }));
     if (!dead && !a.disabled) sitParts.push(h("span", { class: "oktext", text: "ok" }));
     const sit = h(
@@ -986,13 +1002,20 @@
       fact("Login vale até", loginDate ? fmtWhen(loginDate) : "sem data conhecida", loginDate ? null : "muted")
     );
 
+    // Login morto, vencido ou vencendo em menos de 3 dias: aviso com o botão "Entrar de novo" (o mesmo fluxo de
+    // "Adicionar conta", com o e-mail desta conta já pedido na página da Claude).
+    const who = a.email || "esta conta";
+    const reloginBox = (cls, text) =>
+      h("div", { class: `warnbox relogin${cls ? ` ${cls}` : ""}` }, h("p", { text }), reloginButton(a, false));
     let loginWarn = null;
-    if (loginDate && !dead) {
+    if (dead) {
+      loginWarn = reloginBox("bad", `O login parou de valer e o servidor não consegue mais renovar. Entre de novo com ${who}.`);
+    } else if (loginDate) {
       const left = loginDate.getTime() - t;
       if (left <= 0) {
-        loginWarn = h("p", { class: "warnbox bad", text: "O login venceu — entre de novo com esta conta (botão “Adicionar conta” ou no Claude Code de um computador conectado)." });
+        loginWarn = reloginBox("bad", `O login venceu ${fmtWhen(loginDate)}. Entre de novo com ${who}.`);
       } else if (left < LOGIN_WARN_MS) {
-        loginWarn = h("p", { class: "warnbox", text: `Login vence em ${fmtSpan(left)} — entre de novo com esta conta (botão “Adicionar conta” ou no Claude Code de um computador conectado).` });
+        loginWarn = reloginBox("", `Login vence em ${fmtSpan(left)} (${fmtWhen(loginDate)}). Entre de novo com ${who} para renovar.`);
       }
     }
 
@@ -1323,11 +1346,19 @@
       );
     });
 
+    // Discreto, sempre à mão: renovar o login desta conta antes de vencer (o mesmo "Entrar de novo" do aviso).
+    const relogin = h(
+      "div",
+      { class: "reloginsub" },
+      h("p", { class: "hint", text: `Login desta conta: entre de novo${a.email ? ` com ${a.email}` : ""} para renovar (ex.: perto de vencer).` }),
+      reloginButton(a, true)
+    );
     const det = h(
       "details",
       { class: "adj", open: acctOpen.has(n) || acctDraft.has(n) },
       h("summary", { "data-k": id("adj"), text: "Ajustes desta conta" }),
-      form
+      form,
+      relogin
     );
     det.addEventListener("toggle", () => (det.open ? acctOpen.add(n) : acctOpen.delete(n)));
     dirtyNote.textContent = acctDraft.has(n) ? "Alterações não salvas" : "";
@@ -1402,6 +1433,21 @@
     }
   }
 
+  /** Nome do botão que gera outro link: "Entrar de novo" (login de uma conta que já existe) ou "Adicionar conta". */
+  function againLabel(l = addLogin) {
+    return l && l.loginHint ? "Entrar de novo" : "Adicionar conta";
+  }
+
+  /** Textos da caixa: "Adicionar conta Claude" ou "Entrar de novo na Conta N" (com o e-mail que a Claude vai pedir). */
+  function paintAddMode() {
+    const re = addLogin && addLogin.loginHint ? addLogin : null;
+    $("addTitle").textContent = re ? `Entrar de novo na Conta ${re.number}` : "Adicionar conta Claude";
+    $("addWho").textContent = re
+      ? `Entre com ${re.loginHint} e autorize. Se a página abrir com outra conta Claude, saia dela primeiro (ou use uma janela anônima).`
+      : "Entre com a conta Claude que quer adicionar e autorize.";
+    $("addFinish").textContent = re ? "Concluir" : "Adicionar";
+  }
+
   function hideAddBox() {
     clearTimeout(addTimer);
     addTimer = null;
@@ -1415,6 +1461,7 @@
     $("addOpened").textContent = "";
     $("addLink").setAttribute("href", "/");
     $("addFinish").disabled = false;
+    paintAddMode();
   }
 
   function showAddUnavailable() {
@@ -1425,7 +1472,14 @@
     $("addCancel").focus();
   }
 
-  async function startAddAccount(btn) {
+  /**
+   * "+ Adicionar conta" (sem opts) ou "Entrar de novo" de uma conta (opts = { loginHint: e-mail dela, number }):
+   * o mesmo fluxo — start → abrir o authUrl → colar o código → finish. O loginHint vai para o servidor, que o põe
+   * como login_hint na URL da Claude (e-mail inválido o servidor ignora).
+   */
+  async function startAddAccount(btn, opts = {}) {
+    const hint = typeof opts.loginHint === "string" && opts.loginHint.trim() ? opts.loginHint.trim() : null;
+    const number = opts.number !== undefined && opts.number !== null ? Number(opts.number) : null;
     // Abre a aba já no clique (depois de esperar o servidor o navegador bloquearia a janela nova).
     let w = null;
     try {
@@ -1437,12 +1491,19 @@
     btn.disabled = true;
     btn.setAttribute("aria-busy", "true");
     try {
-      const r = await api("POST", "/web/api/claude-login/start");
+      const r = await api("POST", "/web/api/claude-login/start", hint ? { loginHint: hint } : undefined);
       const url = safeHttps(r && r.authUrl);
       if (!isObj(r) || !r.loginId || !url) throw apiError(0, "bad_response", "O servidor não devolveu o link de login da Claude.");
       hideAddBox();
       const exp = toDate(r.expiresAt);
-      addLogin = { loginId: String(r.loginId), authUrl: url, expiresAt: exp ? exp.getTime() : nowMs() + ADD_LOGIN_MS };
+      addLogin = {
+        loginId: String(r.loginId),
+        authUrl: url,
+        expiresAt: exp ? exp.getTime() : nowMs() + ADD_LOGIN_MS,
+        loginHint: hint, // "Entrar de novo": o e-mail pedido (null = Adicionar conta)
+        number: hint ? number : null,
+      };
+      paintAddMode();
       $("addSteps").classList.remove("hidden");
       $("addOff").classList.add("hidden");
       $("addLink").setAttribute("href", url);
@@ -1458,7 +1519,7 @@
         }
       }
       $("addOpened").textContent = opened ? "Abriu numa aba nova. Se não apareceu, clique no botão." : "Clique no botão: abre numa aba nova.";
-      $("addInfo").textContent = `Vale até ${fmtWhen(addLogin.expiresAt)} (10 minutos). Se der errado, clique em “Adicionar conta” de novo para gerar outro link.`;
+      $("addInfo").textContent = `Vale até ${fmtWhen(addLogin.expiresAt)} (10 minutos). Se der errado, clique em “${againLabel()}” de novo para gerar outro link.`;
       $("addBox").classList.remove("hidden");
       clearTimeout(addTimer);
       addTimer = setTimeout(expireAddLogin, Math.max(1000, Math.min(addLogin.expiresAt - nowMs(), 60 * 60000)));
@@ -1485,17 +1546,18 @@
 
   function expireAddLogin() {
     if (!addLogin) return;
+    const label = againLabel();
     addLogin = null;
     $("addFinish").disabled = true;
-    $("addInfo").textContent = "Este link venceu. Clique em “Adicionar conta” para gerar outro.";
-    toast("O link para adicionar conta venceu. Clique em “Adicionar conta” para gerar outro.");
+    $("addInfo").textContent = `Este link venceu. Clique em “${label}” para gerar outro.`;
+    toast(`O link de login da Claude venceu. Clique em “${label}” para gerar outro.`);
   }
 
   async function finishAddAccount(e) {
     e.preventDefault();
     const input = $("addCode");
     if (!addLogin) {
-      toast("Clique em “Adicionar conta” para gerar um link novo.", "error");
+      toast("Clique em “Adicionar conta” (ou em “Entrar de novo”, no cartão da conta) para gerar um link novo.", "error");
       return;
     }
     const code = input.value.trim();
@@ -1515,13 +1577,16 @@
       before: () => hideAddBox(),
       after: (r) => {
         if (r && r.number !== undefined && r.number !== null) goToAccount(Number(r.number));
+        // "Entrar de novo" que entrou com OUTRO e-mail: a mensagem do servidor diz qual conta mudou (e que a pedida
+        // não mudou). Fica em destaque (aviso de erro, mais tempo na tela).
+        if (r && r.otherEmail && typeof r.message === "string" && r.message) toast(r.message, "error");
       },
-      ok: (r) =>
-        r && r.number !== undefined && r.number !== null
-          ? r.created === false
-            ? `Conta ${r.number} atualizada com o login novo.`
-            : `Conta ${r.number} adicionada.`
-          : "Conta adicionada.",
+      ok: (r) => {
+        if (r && r.otherEmail) return null; // já avisado em destaque (after)
+        if (!r || r.number === undefined || r.number === null) return "Conta adicionada.";
+        if (r.loginHint && r.created === false) return `Conta ${r.number}: entrou de novo. O login novo já vale.`;
+        return r.created === false ? `Conta ${r.number} atualizada com o login novo.` : `Conta ${r.number} adicionada.`;
+      },
     });
   }
 

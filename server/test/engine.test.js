@@ -13,6 +13,7 @@ const path = require("node:path");
 const { Store, decrypt } = require("../src/store");
 const { createAnthropic, CLIENT_ID } = require("../src/anthropic");
 const { Engine, ERROR_STATUS } = require("../src/engine");
+const { createNotifier } = require("../src/notify");
 const access = require("../src/access");
 const { linesFor, RULE_DEFAULTS } = require("../../plus/rules");
 
@@ -202,8 +203,11 @@ class FakeAnthropic {
   }
 }
 
-/** wrap(anthropic) → anthropic: para mexer no resultado das chamadas (ex.: data inválida). */
-function setup(t, { env = {}, wrap = null } = {}) {
+/**
+ * wrap(anthropic) → anthropic: para mexer no resultado das chamadas (ex.: data inválida).
+ * notify: avisos por e-mail ao dono (notify.js); sem ele, o motor não avisa (como antes).
+ */
+function setup(t, { env = {}, wrap = null, notify = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-motor-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const keyFile = path.join(dir, "master.key");
@@ -219,7 +223,7 @@ function setup(t, { env = {}, wrap = null } = {}) {
   const logs = [];
   const put = (...a) => logs.push(a.map(String).join(" "));
   const log = { info: put, warn: put, error: put, log: put };
-  const engine = new Engine({ store, anthropic, now, log, env: { USAGE_MAX_PER_HOUR: "24", REFRESH_AHEAD_MIN: "120", ...env } });
+  const engine = new Engine({ store, anthropic, now, log, env: { USAGE_MAX_PER_HOUR: "24", REFRESH_AHEAD_MIN: "120", ...env }, notify });
   const disk = () => decrypt(store.key, fs.readFileSync(store.file));
   return { store, clock, fake, engine, logs, disk, st: () => store.state };
 }
@@ -2301,4 +2305,264 @@ test("computadores juntos: quem volta a ficar ativo entra na conta do grupo; Sep
   assert.ok(store.state.history.some((h) => h.text === "Computadores separados: cada um na sua conta"));
   await engine.tick();
   assert.deepEqual([d1.assigned, d2.assigned], [2, 1], "estável, cada um na sua");
+});
+
+// ------------------------------------------------------------------ avisos por e-mail ao dono (notify)
+
+/** Avisos de mentira: guarda o que o motor mandou (o notify.js de verdade tem os testes dele em notify.test.js). */
+function noticeSpy() {
+  const sent = [];
+  const fn = (n) => {
+    sent.push(n);
+    return fn.fail ? { ok: false, error: "ENOSPC" } : { ok: true, id: `aviso-${sent.length}` };
+  };
+  fn.sent = sent;
+  fn.fail = false; // true = a gravação do aviso falha (ex.: disco cheio)
+  return fn;
+}
+
+const RENEW = (n, email) =>
+  `Para renovar: abra https://swap.exemplo.com → Contas → conta ${n} → Entrar de novo, e entre com ${email} na página da Claude; ` +
+  "copie o código e cole no painel. (Ou faça /login no Claude Code de um computador do administrador.)";
+
+test("avisos por e-mail: login que vence em < 3 dias → 1 aviso por conta por dia, no mesmo momento do alerta do histórico", async (t) => {
+  const notify = noticeSpy();
+  const { engine, fake, clock, store } = setup(t, { notify, env: { PUBLIC_URL: "https://swap.exemplo.com/" } });
+  const END = START + 4 * DAY;
+  const END2 = END + 2 * MIN;
+  const l1 = fake.login("ana@x.com");
+  l1.claudeAiOauth.refreshTokenExpiresAt = END;
+  await engine.addLogin(l1);
+  const l2 = fake.login("bia@x.com");
+  l2.claudeAiOauth.refreshTokenExpiresAt = END2;
+  await engine.addLogin(l2);
+  await engine.addLogin(fake.login("caio@x.com")); // sem a data: nunca avisa
+  await engine.updateAccount(1, { alias: "Trabalho" });
+  const expiring = () => notify.sent.filter((n) => /^Swap Plus: login da conta \d+ vence/.test(n.subject));
+  const historyAlerts = () => store.state.history.filter((h) => h.kind === "alert" && h.text.includes(") vence"));
+
+  await engine.tick();
+  assert.equal(notify.sent.length, 0, "faltam 4 dias: nada");
+
+  clock.t = END - 3 * DAY + MIN; // conta 1: faltam menos de 3 dias; conta 2 ainda não
+  await engine.tick();
+  assert.equal(expiring().length, 1);
+  assert.equal(historyAlerts().length, 1, "o aviso sai junto com o alerta do histórico");
+  const [n1] = expiring();
+  assert.equal(n1.subject, `Swap Plus: login da conta 1 vence ${dayTime(END)}`);
+  assert.ok(n1.text.startsWith(`O login da conta 1 (apelido “Trabalho”, e-mail ana@x.com) no Swap Plus vence em ${dayTime(END)} (faltam cerca de 3 dias).`), n1.text);
+  assert.ok(n1.text.includes(RENEW(1, "ana@x.com")), n1.text);
+  assert.deepEqual(Object.keys(n1).sort(), ["subject", "text"]);
+
+  // Mesmo dia: não repete (nem o histórico).
+  clock.t += 30 * SEC;
+  await engine.tick();
+  await engine.tick();
+  assert.equal(expiring().length, 1);
+  assert.equal(historyAlerts().length, 1);
+
+  // A conta 2 entra na janela: o aviso dela (1 por conta).
+  clock.t += 2 * MIN;
+  await engine.tick();
+  assert.equal(expiring().length, 2);
+  assert.equal(expiring()[1].subject, `Swap Plus: login da conta 2 vence ${dayTime(END2)}`);
+  assert.ok(expiring()[1].text.startsWith("O login da conta 2 (e-mail bia@x.com) no Swap Plus vence em"), expiring()[1].text);
+  assert.ok(expiring()[1].text.includes(RENEW(2, "bia@x.com")));
+  await engine.tick();
+  assert.equal(expiring().length, 2);
+
+  // Dia seguinte: de novo, um por conta.
+  clock.t += DAY;
+  await engine.tick();
+  await engine.tick();
+  assert.equal(expiring().length, 4);
+  assert.equal(expiring().filter((n) => n.subject.includes("conta 1 ")).length, 2);
+  assert.equal(expiring().filter((n) => n.subject.includes("conta 2 ")).length, 2);
+  assert.equal(historyAlerts().length, 4);
+
+  // Conta morta: para de avisar que vence (o aviso dela agora é o de "parou de valer").
+  fake.refreshFail.set("ana@x.com", "invalid_grant");
+  assert.equal((await engine.refreshAccount(1, { minValidMs: Infinity })).error, "invalid_grant");
+  clock.t += DAY;
+  await engine.tick();
+  assert.equal(expiring().filter((n) => n.subject.includes("conta 1 ")).length, 2);
+  assert.equal(expiring().filter((n) => n.subject.includes("conta 2 ")).length, 3);
+  assert.equal(notify.sent.filter((n) => n.subject === "Swap Plus: o login da conta 1 parou de valer").length, 1);
+  assert.ok(!notify.sent.some((n) => n.subject.includes("conta 3")), "conta sem data conhecida nunca avisa");
+});
+
+test("avisos por e-mail: conta que morre → 1 aviso na hora, com o motivo; morte depois de renovação sem resposta diz isso", async (t) => {
+  const notify = noticeSpy();
+  const { engine, fake, clock, store } = setup(t, { notify, env: { PUBLIC_URL: "https://swap.exemplo.com" } });
+  await engine.addLogin(fake.login("ana@x.com"));
+  await engine.addLogin(fake.login("bia@x.com"));
+  store.state.diag.oldTokenValidAfterRefresh = true;
+  const dead = () => notify.sent.filter((n) => / parou de valer$/.test(n.subject));
+
+  fake.refreshFail.set("ana@x.com", "invalid_grant");
+  assert.equal((await engine.refreshAccount(1, { minValidMs: Infinity })).error, "invalid_grant");
+  assert.equal(dead().length, 1);
+  const [d1] = dead();
+  assert.equal(d1.subject, "Swap Plus: o login da conta 1 parou de valer");
+  assert.ok(d1.text.startsWith(`O login da conta 1 (e-mail ana@x.com) parou de valer em ${dayTime(clock.t)}.`), d1.text);
+  assert.match(d1.text, /Motivo: a Anthropic recusou a renovação/);
+  assert.ok(!d1.text.includes("ficou sem resposta"));
+  assert.ok(d1.text.includes(RENEW(1, "ana@x.com")), d1.text);
+
+  // Já morta: nada de novo (nem renovando, nem no ciclo, nem marcando de novo).
+  assert.equal((await engine.refreshAccount(1, { minValidMs: Infinity })).error, "dead");
+  engine.markDead(store.state.accounts["1"]);
+  clock.t += 7 * HOUR;
+  await engine.tick(); // a conta 2 renova normalmente
+  assert.equal(dead().length, 1);
+
+  // Conta 2: renovação sem resposta que gastou o login → invalid_grant confirmado → morta com cause "no_response".
+  clock.t += 7 * HOUR;
+  fake.refreshFail.set("bia@x.com", "lost");
+  await engine.tick();
+  fake.refreshFail.delete("bia@x.com");
+  clock.t += 15 * SEC;
+  await engine.tick(); // invalid_grant logo depois: ainda confirma
+  assert.equal(store.state.accounts["2"].dead, null);
+  assert.equal(dead().length, 1);
+  clock.t += 2 * MIN;
+  await engine.tick();
+  assert.equal(store.state.accounts["2"].dead.cause, "no_response");
+  assert.equal(dead().length, 2);
+  const d2 = dead()[1];
+  assert.equal(d2.subject, "Swap Plus: o login da conta 2 parou de valer");
+  assert.match(d2.text, /Motivo: a renovação anterior ficou sem resposta/);
+  assert.ok(d2.text.includes(RENEW(2, "bia@x.com")));
+  await engine.tick();
+  assert.equal(dead().length, 2);
+});
+
+test("avisos por e-mail: cofre que para de gravar → 1 aviso por incidente; volta a gravar e para de novo → avisa de novo (no máximo 1 por hora)", async (t) => {
+  const notify = noticeSpy();
+  const { engine, fake, clock, store } = setup(t, { notify });
+  await engine.addLogin(fake.login("ana@x.com"));
+  const realSave = store.save.bind(store);
+  let failSave = true;
+  store.save = () => (failSave ? Promise.reject(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" })) : realSave());
+  const saveNotices = () => notify.sent.filter((n) => n.subject.startsWith("Swap Plus: o cofre não está gravando"));
+
+  clock.t += 7 * HOUR;
+  assert.deepEqual(await engine.refreshAccount(1), { ok: false, error: "save_failed" });
+  assert.equal(engine.saveFailed, true);
+  assert.equal(saveNotices().length, 1, "aviso na hora");
+  const [n] = saveNotices();
+  assert.equal(n.subject, "Swap Plus: o cofre não está gravando — NÃO reinicie o servidor");
+  assert.match(n.text, /NÃO reinicie o servidor: há login renovado só na memória/);
+  assert.match(n.text, /ENOSPC: no space left on device/);
+  assert.match(n.text, /Veja o disco do servidor/);
+  assert.match(n.text, new RegExp(`desde ${dayTime(clock.t)}`));
+
+  // O mesmo incidente (ciclos que não gravam, renovação recusada): nada de novo.
+  for (let i = 0; i < 5; i++) {
+    clock.t += 2 * MIN;
+    await engine.tick();
+  }
+  assert.deepEqual(await engine.refreshAccount(1, { minValidMs: Infinity }), { ok: false, error: "save_failed" });
+  assert.equal(saveNotices().length, 1);
+
+  // Voltou a gravar: fim do incidente.
+  failSave = false;
+  await engine.tick();
+  assert.equal(engine.saveFailed, false);
+  assert.equal(saveNotices().length, 1);
+
+  // Parou de novo 20 min depois do aviso (vai e volta): não repete dentro de 1 h.
+  failSave = true;
+  engine.dirty = true;
+  clock.t += 10 * MIN;
+  await engine.tick();
+  assert.equal(engine.saveFailed, true);
+  assert.equal(saveNotices().length, 1);
+  failSave = false;
+  await engine.tick();
+  assert.equal(engine.saveFailed, false);
+
+  // Incidente novo, mais de 1 h depois: avisa de novo, uma vez.
+  clock.t += 2 * HOUR;
+  failSave = true;
+  engine.dirty = true;
+  await engine.tick();
+  await engine.tick();
+  assert.equal(engine.saveFailed, true);
+  assert.equal(saveNotices().length, 2);
+  failSave = false;
+  await engine.tick();
+  assert.equal(engine.saveFailed, false);
+  assert.equal(notify.sent.length, 2, "nenhum outro aviso");
+});
+
+test("avisos por e-mail: aviso de cofre sem gravar que não deu para gravar (disco cheio) é tentado de novo a cada minuto até sair", async (t) => {
+  const notify = noticeSpy();
+  notify.fail = true;
+  const { engine, clock, store } = setup(t, { notify });
+  const realSave = store.save.bind(store);
+  let failSave = true;
+  store.save = () => (failSave ? Promise.reject(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" })) : realSave());
+
+  engine.dirty = true;
+  await engine.tick();
+  assert.equal(engine.saveFailed, true);
+  assert.equal(notify.sent.length, 1, "tentou");
+  clock.t += 30 * SEC;
+  await engine.tick();
+  assert.equal(notify.sent.length, 1, "espera 1 min antes de tentar de novo");
+  clock.t += 31 * SEC;
+  await engine.tick();
+  assert.equal(notify.sent.length, 2);
+  notify.fail = false;
+  clock.t += 61 * SEC;
+  await engine.tick();
+  assert.equal(notify.sent.length, 3, "saiu");
+  clock.t += 5 * MIN;
+  await engine.tick();
+  await engine.tick();
+  assert.equal(notify.sent.length, 3, "saiu uma vez: não repete");
+  failSave = false;
+  await engine.tick();
+  assert.equal(engine.saveFailed, false);
+});
+
+test("avisos por e-mail com o notify.js de verdade: o aviso vira arquivo em DATA_DIR/avisos; NOTICES_ENABLED=0 não grava nada", async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-avisos-motor-"));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const folder = path.join(dataDir, "avisos");
+  const quiet = { info() {}, warn() {}, error() {}, log() {} };
+  let real = null;
+  const { engine, fake, clock, store } = setup(t, { notify: (n) => real(n), env: { PUBLIC_URL: "https://swap.exemplo.com" } });
+  real = createNotifier({ dir: dataDir, env: {}, now: () => clock.t, log: quiet });
+  await engine.addLogin(fake.login("ana@x.com"));
+  fake.refreshFail.set("ana@x.com", "invalid_grant");
+  await engine.refreshAccount(1, { minValidMs: Infinity });
+
+  const files = fs.readdirSync(folder);
+  assert.equal(files.length, 1);
+  assert.match(files[0], /^aviso-\d{8}-\d{6}-[0-9a-f]{8}\.json$/);
+  const obj = JSON.parse(fs.readFileSync(path.join(folder, files[0]), "utf8"));
+  assert.deepEqual(Object.keys(obj), ["id", "assunto", "texto", "criado_em"]);
+  assert.equal(`${obj.id}.json`, files[0]);
+  assert.equal(obj.assunto, "Swap Plus: o login da conta 1 parou de valer");
+  assert.equal(obj.criado_em, Math.floor(clock.t / 1000));
+  assert.ok(obj.texto.includes(RENEW(1, "ana@x.com")), obj.texto);
+  assert.ok(Array.from(obj.texto).length <= 2000);
+  assert.equal(engine.status().notices.enabled, true);
+
+  // Desligado (NOTICES_ENABLED=0): o motor segue igual e nada vai para a pasta.
+  real = createNotifier({ dir: dataDir, env: { NOTICES_ENABLED: "0" }, now: () => clock.t, log: quiet });
+  await engine.addLogin(fake.login("bia@x.com"));
+  fake.refreshFail.set("bia@x.com", "invalid_grant");
+  await engine.refreshAccount(2, { minValidMs: Infinity });
+  assert.ok(store.state.accounts["2"].dead);
+  assert.deepEqual(fs.readdirSync(folder), files);
+
+  // status() diz se os avisos estão ligados e onde ficam.
+  const off = setup(t, { notify: createNotifier({ dir: dataDir, env: { NOTICES_ENABLED: "0" } }) }).engine;
+  assert.deepEqual(off.status().notices, { enabled: false, dir: folder });
+  const on = setup(t, { notify: createNotifier({ dir: dataDir, env: {} }) }).engine;
+  assert.deepEqual(on.status().notices, { enabled: true, dir: folder });
+  assert.deepEqual(setup(t).engine.status().notices, { enabled: false, dir: null }, "sem notify: desligado");
 });

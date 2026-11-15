@@ -20,7 +20,11 @@
 //     U.searchParams.append("redirect_uri",s?dn().MANUAL_REDIRECT_URL:`http://localhost:${r}/callback`)
 //     ...U.searchParams.append("scope",j.join(" ")),U.searchParams.append("code_challenge",e),
 //     U.searchParams.append("code_challenge_method","S256"),U.searchParams.append("state",n)
-//   (orgUUID, login_hint e login_method só vão quando pedidos; o /login normal não manda.)
+//   (orgUUID, login_hint e login_method só vão quando pedidos; o /login normal não manda.) Logo depois do state:
+//     U.searchParams.append("state",n),E)U.searchParams.append("orgUUID",E);if(v)U.searchParams.append("login_hint",v);
+//     if(x)U.searchParams.append("login_method",x);return U.toString()
+//   Aqui só o login_hint, e só no "Entrar de novo" do painel (start({ loginHint }) com um e-mail válido; senão
+//   é ignorado): a página da Claude já abre pedindo aquele e-mail.
 //   Modo "colar o código" = isManual → redirect_uri = MANUAL_REDIRECT_URL.
 //
 // - Escopos do /login (Pqo()): L([...S,...Q5t()]) + fYr, com
@@ -174,6 +178,17 @@ function sameSecret(a, b) {
   return crypto.timingSafeEqual(x, y) && a.length === b.length;
 }
 
+/**
+ * E-mail para o login_hint ("Entrar de novo" de uma conta), aparado; ou null se não parecer um e-mail
+ * (vazio, não texto, longo demais, com espaço, caractere de controle ou símbolo que não vai num e-mail).
+ */
+function cleanLoginHint(v) {
+  if (typeof v !== "string") return null;
+  const e = v.trim();
+  if (!e || e.length > 254 || /[\x00-\x1f\x7f]/.test(e)) return null;
+  return /^[^\s@<>"'(),;:\\]{1,64}@[^\s@<>"'(),;:\\]+\.[^\s@<>"'(),;:\\]+$/.test(e) ? e : null;
+}
+
 /** Só https; http só para 127.0.0.1/localhost (testes com servidor local). Lança se não servir. */
 function checkUrl(name, value) {
   let u;
@@ -236,12 +251,15 @@ function makeLog(log) {
 
 /**
  * createClaudeLogin({ anthropicTokenUrl, fetchImpl, now, anthropicApiBase?, authorizeUrl?, log? }) → {
- *   start({ owner }?)                  → { loginId, authUrl, expiresAt }
- *   finish(loginId, pastedCode, { owner }?) → { claudeAiOauth, oauthAccount, plan: null, email }
+ *   start({ owner, loginHint }?)       → { loginId, authUrl, expiresAt } (+ loginHint, só quando foi para a URL)
+ *   finish(loginId, pastedCode, { owner }?) → { claudeAiOauth, oauthAccount, plan: null, email, loginHint }
  *                                         ou lança Error com .code/.status/.restart (ERRORS acima)
  *   size()                             → logins em andamento (vivos)
  * }
  * owner (opcional): id da sessão do painel; o login só termina na mesma sessão que começou.
+ * loginHint (opcional): e-mail da conta no "Entrar de novo"; válido (cleanLoginHint) → vai como login_hint na URL de
+ * autorização e volta no finish (loginHint: o e-mail pedido, ou null), para o painel dizer se entrou com outro e-mail.
+ * Inválido → ignorado (o login segue sem o login_hint).
  */
 function createClaudeLogin({
   anthropicTokenUrl = DEFAULT_TOKEN_URL,
@@ -265,7 +283,7 @@ function createClaudeLogin({
     for (const [id, s] of logins) if (!(s.expiresAt > t)) logins.delete(id);
   }
 
-  function start({ owner = null } = {}) {
+  function start({ owner = null, loginHint = null } = {}) {
     sweep();
     while (logins.size >= MAX_LOGINS) logins.delete(logins.keys().next().value); // sai o mais antigo
     let loginId;
@@ -273,9 +291,10 @@ function createClaudeLogin({
     while (logins.has(loginId));
     const verifier = b64url(crypto.randomBytes(32));
     const state = b64url(crypto.randomBytes(32));
+    const hint = cleanLoginHint(loginHint); // inválido → null (ignorado)
     const t = now();
     const expiresAt = t + LOGIN_TTL_MS;
-    logins.set(loginId, { state, verifier, owner: owner || null, createdAt: t, expiresAt, stateErrors: 0 });
+    logins.set(loginId, { state, verifier, owner: owner || null, loginHint: hint, createdAt: t, expiresAt, stateErrors: 0 });
     const u = new URL(authUrlBase);
     u.searchParams.append("code", "true");
     u.searchParams.append("client_id", CLIENT_ID);
@@ -285,8 +304,16 @@ function createClaudeLogin({
     u.searchParams.append("code_challenge", sha256b64url(verifier));
     u.searchParams.append("code_challenge_method", "S256");
     u.searchParams.append("state", state);
-    L.info(`[conta claude] login pela assinatura começado (vale ${LOGIN_TTL_MS / 60000} min; ${logins.size} em andamento)`);
-    return { loginId, authUrl: u.toString(), expiresAt };
+    if (hint) u.searchParams.append("login_hint", hint); // como o Claude Code: depois do state
+    if (loginHint !== null && loginHint !== undefined && loginHint !== "" && !hint) {
+      L.warn("[conta claude] loginHint inválido (não parece um e-mail): ignorado, o login segue sem ele");
+    }
+    L.info(
+      `[conta claude] login pela assinatura começado${hint ? ` (entrar de novo com ${hint})` : ""} (vale ${LOGIN_TTL_MS / 60000} min; ${logins.size} em andamento)`
+    );
+    const out = { loginId, authUrl: u.toString(), expiresAt };
+    if (hint) out.loginHint = hint;
+    return out;
   }
 
   /** POST no endpoint de token: código → resposta crua (objeto). Lança os erros de ERRORS. */
@@ -414,8 +441,13 @@ function createClaudeLogin({
     if (organizationUuid) oauthAccount.organizationUuid = organizationUuid;
     if (organizationName) oauthAccount.organizationName = organizationName;
 
-    L.info(`[conta claude] login pela assinatura concluído: ${email}${subscriptionType ? ` (${subscriptionType})` : ""}`);
-    return { claudeAiOauth, oauthAccount, plan: null, email };
+    const loginHint = s.loginHint || null;
+    const other = loginHint && loginHint.toLowerCase() !== email.toLowerCase();
+    L.info(
+      `[conta claude] login pela assinatura concluído: ${email}${subscriptionType ? ` (${subscriptionType})` : ""}` +
+        (other ? ` — o pedido era entrar de novo com ${loginHint}` : "")
+    );
+    return { claudeAiOauth, oauthAccount, plan: null, email, loginHint };
   }
 
   function size() {
@@ -429,6 +461,7 @@ function createClaudeLogin({
 module.exports = {
   createClaudeLogin,
   parsePasted,
+  cleanLoginHint,
   AUTHORIZE_URL,
   MANUAL_REDIRECT_URL,
   SCOPES,

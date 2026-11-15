@@ -50,7 +50,7 @@ Na imagem: `/app/plus/rules.js` e `/app/server/src/*.js` → `require("../../plu
 | `GOOGLE_AUTH_URL` | `https://accounts.google.com/o/oauth2/v2/auth` | trocável nos testes |
 | `GOOGLE_TOKEN_URL` | `https://oauth2.googleapis.com/token` | trocável nos testes |
 | `TZ` | `America/Sao_Paulo` | textos "hoje 18:00" do `rules.js` |
-| `ADMIN_EMAILS` | — | administrador(es) do painel web, separados por vírgula (produção: o e-mail do administrador, variável `SWAP_PLUS_ADMIN_EMAILS` da stack). Lido só na subida, sem rota para mudar. Vazio → painel desligado (aviso no log). Detalhes em WEB-SPEC.md |
+| `ADMIN_EMAILS` | — | administrador(es) do painel web, separados por vírgula (produção: o e-mail do administrador, variável `SWAP_PLUS_ADMIN_EMAILS` da stack). Lido só na subida, sem rota para mudar. Vazio → painel desligado (aviso no log). Também decide quais computadores conectados com Google enviam logins (abaixo, "Quem envia logins"). Detalhes em WEB-SPEC.md |
 | `RESTIC_PASS_FILE` | `/run/secrets/restic_swap_plus_pass` | senha do backup, só para o kit de recuperação do painel (opcional: sem o arquivo, "não disponível") |
 
 Login com Google ligado = client id + client secret + `PUBLIC_URL`. Retorno cadastrado no Google Cloud:
@@ -118,7 +118,9 @@ createAnthropic({ tokenUrl, apiBase, fetchImpl = fetch }) → {
 
 ```js
 class Engine {
-  constructor({ store, anthropic, now = Date.now, log = console, env = process.env })
+  constructor({ store, anthropic, now = Date.now, log = console, env = process.env, isAdminEmail = null })
+  setAdminCheck(fn)                     // fn(email) → bool: quem é administrador (o server.js passa o de ADMIN_EMAILS no createApp)
+  canUploadLogins(device)               // pode enviar logins? googleEmail nulo (código) ou fn(googleEmail) === true
   start(); stop()                       // tick a cada 15 s (setInterval com unref)
   async tick()                          // 1) renovações  2) uma leitura de uso (se o orçamento deixar)  3) decisões por dispositivo
   rulesEffective()                      // { ...RULE_DEFAULTS, ...state.rules }
@@ -129,7 +131,7 @@ class Engine {
   async credentialFor(deviceId)         // { number, gen, claudeAiOauth: {accessToken, expiresAt, scopes, subscriptionType, rateLimitTier, refreshTokenExpiresAt?}, oauthAccount } | null
   async switchDevice(deviceId, number|null, by = "manual")  // null = melhor conta; "together": troca o grupo inteiro
   async limitHit(deviceId, label)       // decide com limitHit; { switched, text }; "together": troca o grupo inteiro na hora
-  async addLogin({ claudeAiOauth, oauthAccount, plan })   // { number, created } ou lança Error com .code
+  async addLogin({ claudeAiOauth, oauthAccount, plan, deviceId?, number? })   // { number, created } ou lança Error com .code
   async updateAccount(number, patch)    // disabled/threshold/weeklyThreshold/modelThreshold (50–100 ou null)/priority/alias
   async setLoginExpiresAt(number, ms)   // preenche cred.refreshTokenExpiresAt à mão → { number, loginExpiresAt (ISO) }; erros not_found / invalid
   async removeAccount(number)
@@ -211,7 +213,9 @@ em todo `decideDevice`):
 - `assignBest` (sem conta, morta, removida, não liberada, desativada): a conta do grupo dos outros ativos, se puder usá-la; senão a melhor
   liberada para ele.
 
-addLogin: exige `claudeAiOauth.refreshToken` e `oauthAccount.emailAddress`. Só aceita login **comprovadamente vivo**:
+addLogin: com `deviceId` de um computador que não pode enviar logins (`canUploadLogins` false) → `not_admin` (403) antes de tudo:
+não confere, não renova, não fala com a Anthropic (o server.js já recusa antes; esta é a segunda trava).
+Exige `claudeAiOauth.refreshToken` e `oauthAccount.emailAddress`. Só aceita login **comprovadamente vivo**:
 - refresh token já gasto pelo servidor (`spentRefresh`) → `stale_login`; o mesmo refresh token que a conta já guarda → nada a fazer.
 - se o access token enviado ainda vale, confere a identidade com `profile()` ANTES de gastar o login (errada → `identity_mismatch`, nada gasto).
 - **sempre** renova o login recebido na hora (com o refresh token dele): `invalid_grant`/`no_refresh_token` → `dead_login`;
@@ -236,7 +240,7 @@ Autenticação: `Authorization: Bearer <token do dispositivo>`; guardado como sh
 | `POST /v1/heartbeat` | `{ models: [id], live: { email, orgUuid, expiresAt } \| null }` | StateResponse |
 | `GET /v1/state` | — | StateResponse |
 | `GET /v1/credential` | — | `{ number, gen, claudeAiOauth: { accessToken, expiresAt, scopes, subscriptionType, rateLimitTier, refreshTokenExpiresAt? }, oauthAccount }` (nunca `refreshToken`) ou 409 `{error:"no_account"}` |
-| `POST /v1/logins` | `{ claudeAiOauth, oauthAccount, plan? }` | `{ number, created }` ou 422 `{error: code, message}` |
+| `POST /v1/logins` | `{ claudeAiOauth, oauthAccount, plan? }` | `{ number, created }` ou 422 `{error: code, message}`; computador que não é do administrador → 403 `not_admin` (abaixo) |
 | `POST /v1/switch` | `{ number \| null }` | StateResponse |
 | `POST /v1/events` | `{ kind: "limit_hit", label }` | `{ switched, text, state }` |
 | `PATCH /v1/accounts/:n` | `{ disabled?, threshold?, weeklyThreshold?, modelThreshold?, priority?, alias? }` (linhas: 50–100 ou null = regra geral) | StateResponse |
@@ -275,10 +279,25 @@ O VS Code não recebe o retorno do navegador; por isso ele inicia, abre `authUrl
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. Nunca vão para log: code, tokens, id_token, client_secret
   (o log das requisições só tem o caminho, sem a query).
 
+### Quem envia logins (só os computadores do administrador)
+
+Um computador **pode enviar logins** (`canUploadLogins`) se: conectou com Google e o `googleEmail` é de administrador (`ADMIN_EMAILS`,
+comparação pela `emailKey`, a mesma do painel), **ou** foi pareado por código (`googleEmail` nulo — o código só sai pela linha de comando
+ou pelo painel, que são do administrador). Os outros (contas Google liberadas com `allow`) usam as contas do servidor.
+- `StateResponse.device.canUploadLogins: true|false` (GET `/v1/state`, heartbeat, troca, etc.). Quem decide é o server.js com o
+  `ADMIN_EMAILS` desta subida (e passa o mesmo `isAdmin` ao motor em `engine.setAdminCheck`).
+- `POST /v1/logins` de quem não pode → 403 `{ error: "not_admin", message: "Só os computadores do administrador enviam logins ao servidor.
+  Este computador usa as contas do servidor." }`, conferido antes do corpo e **sem chamar** `engine.addLogin` (nada vai para a Anthropic;
+  o login enviado não é gasto). Não conta como tentativa sem autorização (não bloqueia o IP). Log `[logins] login recusado de "X" (conta
+  Google Y)...` a cada recusa (sem token) e histórico `kind:"alert"` "Login recusado de "X": só o administrador envia logins" no máximo
+  uma vez por computador por dia (fuso do servidor; lembrado só na memória).
+- O administrador saiu de `ADMIN_EMAILS` (mudança + reinício): os computadores dele conectados com Google passam a `canUploadLogins: false`
+  (continuam conectados, usando as contas do servidor). Sem `ADMIN_EMAILS`, só os pareados por código enviam.
+
 StateResponse:
 ```js
 { serverTime, version,
-  device: { id, name, assigned, lastSwitchAt },
+  device: { id, name, assigned, lastSwitchAt, canUploadLogins },
   list: { schemaVersion: 1, activeAccountNumber, accounts: PublicAccount[] },
   records, rules, autoSwitch,
   credential: { number, gen, expiresAt } | null,
@@ -360,6 +379,7 @@ Modo servidor na extensão:
   O `applied` é salvo logo depois do `writeLive`; erro no `writeOauthAccount` é avisado uma vez e não faz regravar a cada minuto.
   Falha de gravação: espera 1 min (a troca manual não espera). Troca manual e limite só dizem "agora na conta N"/"Trocou" se gravaram.
 - `readLive` que falhou (`live_unreadable`): nada é enviado nem gravado e o estado "login recusado" fica como estava.
+- Computador com `state.device.canUploadLogins: false` não envia logins (o servidor responderia 403 `not_admin`): usa as contas do servidor.
 - Se o login atual tem `refreshToken` (login novo no navegador) → `POST /v1/logins` (timeout 45 s) com ele e o `oauthAccount`, sob uma trava
   entre janelas por login (`mkdir`; existe = outra janela enviando), e em seguida grava a credencial do servidor por cima. Respostas 422:
   `dead_login`/`stale_login` → login gasto, grava a do servidor; `refresh_failed`/`profile_unavailable` → tenta de novo em ~1 min, sem aviso;

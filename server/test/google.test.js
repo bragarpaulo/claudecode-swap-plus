@@ -32,13 +32,14 @@ const pathOf = (url) => {
 };
 
 // ---------------------------------------------------------------------------
-// Engine mínimo: as rotas do login só usam stateFor (no /v1/state) e pushHistory.
+// Engine mínimo: as rotas do login só usam stateFor (no /v1/state) e pushHistory (+ addLogin, só registra).
 // ---------------------------------------------------------------------------
 
 class MiniEngine {
   constructor(store) {
     this.store = store;
     this.history = [];
+    this.logins = []; // addLogin recebidos
   }
   start() {}
   stop() {}
@@ -51,6 +52,10 @@ class MiniEngine {
   }
   pushHistory(kind, text, deviceId) {
     this.history.unshift({ kind, text, device: deviceId || null });
+  }
+  async addLogin(args) {
+    this.logins.push(args);
+    return { number: 1, created: true };
   }
 }
 
@@ -820,4 +825,53 @@ test("admin: allow / deny / allowed (minúsculas, gravado no cofre); deny não d
   // o admin não aceita navegador
   r = await request(ctx.admin, "POST", "/admin/allow", { body: { email: "x@y.com" }, headers: { origin: "https://site.exemplo" } });
   assert.equal(r.status, 403);
+});
+
+test("logins: com Google só o computador do administrador envia; conta liberada que não é administradora → 403 not_admin sem chamar o engine", async (t) => {
+  const ctx = await setup(t, { env: { ADMIN_EMAILS: "dono.exemplo@gmail.com" } });
+  await allow(ctx, "bia@exemplo.com"); // pode conectar computadores, mas não é administradora
+  const conecta = async (name, email) => {
+    const s = await loginStart(ctx, { name });
+    const b = await browserLogin(ctx, s, email);
+    assertPage(b.page, 200);
+    const r = await poll(ctx, s);
+    assert.equal(r.json && r.json.status, "ok", r.text);
+    return r.json; // { deviceId, token }
+  };
+  const dono = await conecta("Notebook do dono", "DonoExemplo@gmail.com"); // o administrador conecta sem estar na lista
+  const bia = await conecta("PC da Bia", "bia@exemplo.com");
+  const SEGREDO = "sk-ant-ort01-SEGREDO-DO-LOGIN-ENVIADO";
+  const login = {
+    claudeAiOauth: { accessToken: "a", refreshToken: SEGREDO, expiresAt: 1 },
+    oauthAccount: { emailAddress: "c@exemplo.com", organizationUuid: "org-1" },
+  };
+
+  let r = await request(ctx.api, "GET", "/v1/state", { headers: bearer(dono.token) });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.device.canUploadLogins, true);
+  r = await request(ctx.api, "GET", "/v1/state", { headers: bearer(bia.token) });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.device.canUploadLogins, false);
+
+  r = await request(ctx.api, "POST", "/v1/logins", { headers: bearer(dono.token), body: login });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(ctx.engine.logins.length, 1);
+  assert.equal(ctx.engine.logins[0].deviceId, dono.deviceId);
+
+  r = await request(ctx.api, "POST", "/v1/logins", { headers: bearer(bia.token), body: login });
+  assert.equal(r.status, 403, r.text);
+  assert.deepEqual(r.json, {
+    error: "not_admin",
+    message: "Só os computadores do administrador enviam logins ao servidor. Este computador usa as contas do servidor.",
+  });
+  assert.equal(ctx.engine.logins.length, 1, "o engine não foi chamado");
+  r = await request(ctx.api, "POST", "/v1/logins", { headers: bearer(bia.token), body: login });
+  assert.equal(r.status, 403, r.text);
+
+  // histórico uma vez (no mesmo dia) e log, sem token
+  const recusas = ctx.engine.history.filter((h) => /^Login recusado/.test(h.text));
+  assert.deepEqual(recusas, [{ kind: "alert", text: 'Login recusado de "PC da Bia": só o administrador envia logins', device: bia.deviceId }]);
+  const logText = ctx.logs.join("\n");
+  assert.ok(logText.includes('login recusado de "PC da Bia"'), "registrado no log");
+  for (const seg of [SEGREDO, bia.token, dono.token]) assert.ok(!logText.includes(seg), "nada de token no log");
 });

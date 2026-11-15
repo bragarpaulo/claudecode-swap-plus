@@ -19,6 +19,8 @@
 //   no servidor sem chamar o swap-plus.
 // - createServerClient é observado (sem o token): todo cliente com token tem de
 //   levar tokenOrigin, e o POST /v1/logins vai com timeout de 45 s.
+// - fake.canUpload controla device.canUploadLogins no estado (undefined = campo
+//   ausente, como num servidor antigo); com false, POST /v1/logins → 403 not_admin.
 // - Os cenários rodam em ordem; cada um prepara o próprio estado.
 
 const { test, before, after } = require("node:test");
@@ -223,6 +225,7 @@ function criarServidorFalso() {
     f.assigned = 1;
     f.gen = 1;
     f.autoSwitch = true;
+    f.canUpload = undefined; // device.canUploadLogins: undefined = campo ausente (servidor antigo); true/false = computador do administrador ou não
     f.fail = {}; // "MÉTODO /caminho" → { status, body }: resposta forçada
     f.authStatus = null; // ex.: 401 → toda rota autenticada responde isso
     f.handlers = {}; // "MÉTODO /caminho" → (call) => { status, body }
@@ -256,7 +259,13 @@ function criarServidorFalso() {
   f.stateFor = (devId) => ({
     serverTime: new Date().toISOString(),
     version: "teste",
-    device: { id: devId, name: (f.devices.get(devId) || {}).name || devId, assigned: f.assigned, lastSwitchAt: 0 },
+    device: {
+      id: devId,
+      name: (f.devices.get(devId) || {}).name || devId,
+      assigned: f.assigned,
+      lastSwitchAt: 0,
+      ...(f.canUpload === undefined ? {} : { canUploadLogins: f.canUpload }),
+    },
     list: { schemaVersion: 1, activeAccountNumber: f.assigned, accounts: f.accounts.map(publicAccount) },
     records: {},
     rules: {},
@@ -349,6 +358,8 @@ function criarServidorFalso() {
           if (!f.assigned) return send(409, { error: "no_account", message: "Nenhuma conta atribuída a este computador." });
           return send(200, { number: f.assigned, gen: f.gen, claudeAiOauth: credOf(f.assigned, f.gen), oauthAccount: oauthAccountOf(f.assigned) });
         case "POST /v1/logins":
+          // Como o servidor de verdade: computador que não é do administrador não envia logins.
+          if (f.canUpload === false) return send(403, { error: "not_admin", message: "Só os computadores do administrador enviam logins." });
           return send(200, { number: 3, created: true });
         case "POST /v1/switch":
           f.assigned = body && body.number != null ? Number(body.number) : 1;
@@ -440,11 +451,15 @@ function resetUi() {
 }
 resetUi();
 
+// Botões: textos ou MessageItem ({ title }). Como no VS Code, a resposta volta como o item escolhido
+// (a resposta automática é o texto do botão; se ele for de um MessageItem, volta o próprio objeto).
+const buttonText = (x) => (typeof x === "string" ? x : x.title);
 function message(kind) {
   return (msg, ...rest) => {
     let opts = null;
-    if (rest.length && rest[0] && typeof rest[0] === "object") opts = rest.shift();
-    const buttons = rest.filter((x) => typeof x === "string");
+    if (rest.length && rest[0] && typeof rest[0] === "object" && typeof rest[0].title !== "string") opts = rest.shift();
+    const itens = rest.filter((x) => typeof x === "string" || (x && typeof x.title === "string"));
+    const buttons = itens.map(buttonText);
     const note = { kind, message: String(msg), detail: opts && opts.detail ? String(opts.detail) : "", modal: !!(opts && opts.modal), buttons };
     notes.push(note);
     let answer;
@@ -453,7 +468,8 @@ function message(kind) {
     } catch {
       answer = undefined;
     }
-    return Promise.resolve(answer);
+    const item = answer === undefined ? undefined : itens.find((x) => buttonText(x) === answer);
+    return Promise.resolve(item !== undefined ? item : answer);
   };
 }
 
@@ -781,7 +797,7 @@ async function prepararServidor() {
   await globalState.update(APPLIED_KEY, undefined);
   await globalState.update(SENT_KEY, undefined);
   fs.rmSync(T.ownerFile(), { force: true }); // esta janela volta a ser a dona no 1º ciclo
-  Object.assign(T.srv, { rejected: null, loginRetry: null, applyFail: null, discard: null, expectNumber: null });
+  Object.assign(T.srv, { rejected: null, loginRetry: null, applyFail: null, discard: null, expectNumber: null, uploadDenied: false, deniedKey: null, deniedWarned: null });
   fs.rmSync(path.join(CLAUDE_DIR, "projects"), { recursive: true, force: true });
   await limparLimite();
   escreverLogin({ accessToken: segredo("oat01-antigo"), expiresAt: Date.now() + 3600e3, scopes: ["user:inference"] });
@@ -967,7 +983,8 @@ test("1. conectar com código: token no cofre, modo servidor; oferta de envio s�
   const code2 = codigoConexao("PAREAR0002");
   ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC de teste" : code2);
   ui.warn = (_m, b) => (b.includes("Conectar de novo") ? "Conectar de novo" : undefined);
-  ui.info = (_m, b) => (b.includes("Enviar os logins") ? "Enviar os logins" : undefined);
+  // (o servidor falso não manda device.canUploadLogins: servidor antigo → pergunta como antes)
+  ui.info = (m) => (/Enviar os logins deste computador para o servidor\?/.test(m) ? "Sim" : undefined);
   mark = fake.calls.length;
   n0 = notes.length;
   swapPlusFalso.limpar();
@@ -976,7 +993,9 @@ test("1. conectar com código: token no cofre, modo servidor; oferta de envio s�
   const token2 = fake.devices.get("dev-2").token;
   assert.equal(await secrets.get(TOKEN_KEY), token2);
   novas = notes.slice(n0);
-  assert.ok(novas.some((n) => /Enviar os logins deste computador para o servidor\?/.test(n.message)), "com contas locais: oferece o envio");
+  const pergunta = novas.find((n) => /Enviar os logins deste computador para o servidor\?/.test(n.message));
+  assert.ok(pergunta, "com contas locais: oferece o envio");
+  assert.equal(pergunta.buttons[0], "Sim", "“Sim” é a opção principal (primeiro botão)");
   calls = fake.since(mark);
   const del = calls.find(is("DELETE", "/v1/devices/dev-1"));
   assert.ok(del, "a conexão anterior foi revogada no servidor");
@@ -1850,56 +1869,236 @@ test("18. várias janelas: só a dona faz o batimento e grava; trava de envio en
   assert.deepEqual(lerLogin().claudeAiOauth, credOf(2, 4));
 });
 
-test("19. 1ª conexão a um servidor: oferece levar as regras deste computador (uma vez por servidor)", { timeout: T_MAX }, async () => {
+const AVISO_NAO_ENVIADO = /Este computador usa as contas do servidor\. O login local não foi enviado: só os computadores do administrador enviam logins\./;
+const PERGUNTA_ENVIO = /Enviar os logins deste computador para o servidor\?/;
+
+/** Contas guardadas no motor local (sem elas a pergunta do envio nem aparece) e nenhum envio anotado. */
+async function contasLocais() {
+  fs.mkdirSync(path.join(HOME, ".claude-swap-backup"), { recursive: true });
+  fs.writeFileSync(path.join(HOME, ".claude-swap-backup", "sequence.json"), JSON.stringify({ accounts: { 1: { alias: null } } }));
+  await globalState.update(MIGRATED_KEY, undefined);
+}
+
+test("19. 1ª conexão: nenhuma pergunta sobre as regras e nenhum PUT /v1/rules; as regras só mudam pela tela", { timeout: T_MAX }, async () => {
   resetUi();
   await desconectar();
-  const outro = criarServidorFalso();
-  await outro.iniciar();
-  const BTN = "Usar as regras deste computador no servidor";
+  fake.reset();
+  fs.rmSync(path.join(HOME, ".claude-swap-backup"), { recursive: true, force: true }); // sem a pergunta do envio no meio
   try {
+    // Regras deste computador diferentes das do servidor (antes, isso fazia a extensão oferecer levá-las).
     await cfgApi.update("rules.sessionSwitchPct", 85);
     await cfgApi.update("rules.strategy", "headroom");
-    // swapPlus.autoSwitch.enabled: aqui false (padrão); no servidor falso: true
-    outro.pairCodes.set("REGRAS0001", { id: "dev-regras" });
-    ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC regras" : codigoConexao("REGRAS0001", outro.url));
-    ui.info = (_m, b) => (b.includes(BTN) ? BTN : undefined);
-    let n0 = notes.length;
+    escreverLogin({ accessToken: segredo("oat01-antigo"), expiresAt: Date.now() + 3600e3, scopes: ["user:inference"] });
+    escreverConta(oauthAccountOf(1));
+    fake.pairCodes.set("REGRAS0001", { id: "dev-regras" });
+    ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC regras" : codigoConexao("REGRAS0001"));
+    const mark = fake.calls.length;
+    const n0 = notes.length;
     await commands["swapPlus.connectServer"]("code");
     assert.equal(T.serverStatus(), "online");
-    const oferta = notes.slice(n0).find((n) => n.buttons.includes(BTN));
-    assert.ok(oferta, "ofereceu levar as regras");
-    assert.match(oferta.detail, /Troca na sessão de 5h: aqui 85% · no servidor 90%/);
-    assert.match(oferta.detail, /Troca automática: aqui desligada · no servidor ligada/);
-    const puts = outro.calls.filter(isRules);
-    assert.equal(puts.length, 1, "PUT /v1/rules");
-    assert.equal(puts[0].body.autoSwitch, false);
-    assert.equal(puts[0].body.rules.sessionPct, 85);
-    assert.equal(puts[0].body.rules.strategy, "headroom");
-    assert.deepEqual(
-      Object.keys(puts[0].body.rules).sort(),
-      ["cooldownMin", "expiringHours", "marginPct", "modelPct", "onModelLimit", "preferModel", "sessionPct", "strategy", "weeklyPct"]
+    const novas = notes.slice(n0);
+    assert.ok(
+      !novas.some((n) => /regras/i.test(n.message) || n.buttons.some((b) => /regras/i.test(b))),
+      `nenhuma pergunta sobre as regras: ${novas.map((n) => n.message).join(" | ")}`
     );
-    assert.equal(fake.calls.filter(isRules).length, 0, "nada no outro servidor");
+    assert.equal(fake.since(mark).filter(isRules).length, 0, "nenhum PUT /v1/rules na conexão");
+    assert.equal(T.buildPayload().rules.sessionPct, 90, "no modo servidor valem as regras do servidor");
 
-    // conectar de novo ao mesmo servidor: não pergunta outra vez
-    outro.pairCodes.set("REGRAS0002", { id: "dev-regras-2" });
-    ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC regras" : codigoConexao("REGRAS0002", outro.url));
-    ui.warn = (_m, b) => (b.includes("Conectar de novo") ? "Conectar de novo" : undefined);
-    n0 = notes.length;
-    await commands["swapPlus.connectServer"]("code");
-    assert.ok(!notes.slice(n0).some((n) => n.buttons.includes(BTN)), "uma vez por servidor");
-    assert.equal(outro.calls.filter(isRules).length, 1);
+    // Pela tela, sim: Salvar regras → PUT /v1/rules
+    const m2 = fake.calls.length;
+    await tela({ type: "saveRules", rules: { sessionPct: 85 } });
+    const puts = fake.since(m2).filter(isRules);
+    assert.equal(puts.length, 1, "pela tela: PUT /v1/rules");
+    assert.deepEqual(puts[0].body, { rules: { sessionPct: 85 } });
   } finally {
     resetUi();
-    await desconectar();
-    await cfgApi.update("server.url", fake.url);
     await cfgApi.update("rules.sessionSwitchPct", undefined);
     await cfgApi.update("rules.strategy", undefined);
-    await outro.parar();
   }
 });
 
-test("20. de novo, depois dos cenários novos: nenhum token em lugar nenhum; todo cliente com token leva tokenOrigin", { timeout: T_MAX }, async () => {
+test("20. canUploadLogins false: sem pergunta de envio nem botão, nenhum POST /v1/logins; login daqui → conta do servidor por cima, com aviso uma vez", { timeout: T_MAX }, async () => {
+  resetUi();
+  await desconectar();
+  fake.reset();
+  fake.canUpload = false; // este computador não é do administrador
+  await contasLocais();
+  const local = loginNovo("naoadmin", "naoadmin@exemplo.com", "org-na"); // login do Claude Code daqui, com refresh token
+  fake.pairCodes.set("NAOADMIN01", { id: "dev-nao-admin" });
+  ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC não admin" : codigoConexao("NAOADMIN01"));
+  ui.info = (m) => (PERGUNTA_ENVIO.test(m) ? "Sim" : undefined); // se perguntasse, a resposta seria Sim
+  let mark = fake.calls.length;
+  let n0 = notes.length;
+  swapPlusFalso.limpar();
+  await commands["swapPlus.connectServer"]("code");
+
+  // a) conexão: sem a pergunta, sem envio, sem chamar o motor; o login daqui é substituído pela conta do servidor
+  assert.equal(T.serverStatus(), "online");
+  assert.ok(!notes.slice(n0).some((n) => PERGUNTA_ENVIO.test(n.message)), "não pergunta se envia os logins");
+  assert.equal(fake.since(mark).filter(isLogins).length, 0, "nenhum POST /v1/logins");
+  assert.ok(!swapPlusFalso.calls().some((l) => l.startsWith("export")), `o motor não exporta nada: ${swapPlusFalso.calls().join(" | ")}`);
+  let disk = lerLogin();
+  assert.deepEqual(disk.claudeAiOauth, credOf(1, 1), "a conta do servidor foi gravada por cima");
+  assert.notEqual(disk.claudeAiOauth.accessToken, local.oauth.accessToken);
+  assert.equal("refreshToken" in disk.claudeAiOauth, false);
+  assert.deepEqual(disk.mcpOAuth, MCP);
+  assert.deepEqual(lerConta().oauthAccount, oauthAccountOf(1));
+  assert.equal(notes.slice(n0).filter((n) => AVISO_NAO_ENVIADO.test(n.message)).length, 1, "avisa que o login local não foi enviado");
+  assert.ok(!notes.slice(n0).some((n) => n.kind === "error"), "sem aviso de erro");
+  assert.equal(T.buildPayload().server.canMigrate, false, "o botão “Enviar os logins deste computador” some da tela");
+  assert.doesNotMatch(bar().text, /recusado/);
+
+  // b) login novo com o servidor ainda sem conta para este computador: fica, nada é enviado e o aviso sai uma vez só
+  fake.assigned = 0;
+  await ciclo();
+  mark = fake.calls.length;
+  n0 = notes.length;
+  const outro = loginNovo("naoadmin2", "naoadmin2@exemplo.com", "org-na2");
+  await ciclo();
+  await ciclo();
+  await ciclo();
+  assert.equal(fake.since(mark).filter(isLogins).length, 0, "login novo: nenhum POST /v1/logins");
+  assert.equal(lerLogin().claudeAiOauth.refreshToken, outro.oauth.refreshToken, "sem conta do servidor para pôr por cima: o login fica");
+  assert.equal(notes.slice(n0).filter((n) => AVISO_NAO_ENVIADO.test(n.message)).length, 1, "um aviso só, em vários ciclos");
+
+  // c) o servidor escolhe uma conta: ela vai por cima do login daqui (sem repetir o aviso)
+  fake.assigned = 1;
+  await ciclo();
+  disk = lerLogin();
+  assert.deepEqual(disk.claudeAiOauth, credOf(1, 1));
+  assert.equal("refreshToken" in disk.claudeAiOauth, false);
+  assert.equal(notes.slice(n0).filter((n) => AVISO_NAO_ENVIADO.test(n.message)).length, 1, "o aviso não se repete");
+
+  // d) “Enviar os logins” pela tela (mensagem atrasada) e troca manual com login novo: nada vai ao servidor
+  n0 = notes.length;
+  swapPlusFalso.limpar();
+  await tela({ type: "migrate" });
+  loginNovo("naoadmin3", "naoadmin3@exemplo.com", "org-na3");
+  await T.serverSwitch(2);
+  assert.equal(fake.since(mark).filter(isLogins).length, 0, "nenhum POST /v1/logins, nem pela tela nem na troca manual");
+  assert.ok(!swapPlusFalso.calls().some((l) => l.startsWith("export")), `o motor não exporta nada: ${swapPlusFalso.calls().join(" | ")}`);
+  assert.ok(
+    notes.slice(n0).some((n) => n.kind === "warn" && /Os logins dele não foram enviados: só os computadores do administrador enviam logins/.test(n.message)),
+    "a tela explica por que não enviou"
+  );
+  disk = lerLogin();
+  assert.deepEqual(disk.claudeAiOauth, credOf(2, 1), "a troca manual grava a conta do servidor por cima do login daqui");
+  assert.equal("refreshToken" in disk.claudeAiOauth, false);
+});
+
+test("21. canUploadLogins true: pergunta com “Sim” primeiro e envia; login novo continua indo sozinho", { timeout: T_MAX }, async () => {
+  resetUi();
+  await desconectar();
+  fake.reset();
+  fake.canUpload = true; // computador do administrador
+  await contasLocais();
+  escreverLogin({ accessToken: segredo("oat01-antigo"), expiresAt: Date.now() + 3600e3, scopes: ["user:inference"] });
+  escreverConta(oauthAccountOf(1));
+  fake.pairCodes.set("ADMIN00001", { id: "dev-admin" });
+  ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC do administrador" : codigoConexao("ADMIN00001"));
+  ui.info = (m, b) => (PERGUNTA_ENVIO.test(m) ? b[0] : undefined); // clica no primeiro botão
+  let mark = fake.calls.length;
+  let n0 = notes.length;
+  swapPlusFalso.limpar();
+  await commands["swapPlus.connectServer"]("code");
+
+  assert.equal(T.serverStatus(), "online");
+  const pergunta = notes.slice(n0).find((n) => PERGUNTA_ENVIO.test(n.message));
+  assert.ok(pergunta, "pergunta se envia os logins");
+  assert.equal(pergunta.modal, true);
+  assert.deepEqual(pergunta.buttons, ["Sim", "Não"], "“Sim” é a opção principal (primeiro botão)");
+  const ups = fake.since(mark).filter(isLogins);
+  assert.equal(ups.length, 1, `o primeiro botão (Sim) envia; motor: ${swapPlusFalso.calls().join(" | ") || "não chamado"}`);
+  assert.equal(ups[0].body.oauthAccount.emailAddress, "local1@exemplo.com");
+  assert.ok(notes.slice(n0).some((n) => /1 login aceito pelo servidor/.test(n.message)));
+  assert.ok(!notes.slice(n0).some((n) => AVISO_NAO_ENVIADO.test(n.message)));
+  assert.equal(T.buildPayload().server.canMigrate, true, "o botão “Enviar os logins deste computador” fica na tela");
+
+  // Login novo no Claude Code: vai ao servidor sozinho, como antes, e a conta do servidor vai por cima.
+  mark = fake.calls.length;
+  n0 = notes.length;
+  const novo = loginNovo("admin-novo", "admin-novo@exemplo.com", "org-an");
+  await ciclo();
+  const ups2 = fake.since(mark).filter(isLogins);
+  assert.equal(ups2.length, 1);
+  assert.deepEqual(ups2[0].body.claudeAiOauth, novo.oauth);
+  assert.deepEqual(lerLogin().claudeAiOauth, credOf(1, 1));
+  assert.ok(notes.slice(n0).some((n) => /login da conta 3 enviado ao servidor/.test(n.message)));
+  assert.ok(!notes.slice(n0).some((n) => AVISO_NAO_ENVIADO.test(n.message)));
+});
+
+test("22. 403 not_admin: para de enviar (como canUploadLogins false), com o mesmo aviso uma vez; também no envio pela tela", { timeout: T_MAX }, async () => {
+  const notAdmin = () => ({ status: 403, body: { error: "not_admin", message: "Só os computadores do administrador enviam logins." } });
+
+  // a) ciclo: o servidor (sem o campo canUploadLogins) recusa o login novo com 403 not_admin
+  await prepararServidor();
+  await contasLocais();
+  fake.handlers["POST /v1/logins"] = notAdmin;
+  let mark = fake.calls.length;
+  let n0 = notes.length;
+  const a = loginNovo("recusado403", "r403@exemplo.com", "org-403");
+  await ciclo();
+  assert.equal(fake.since(mark).filter(isLogins).length, 1, "tentou uma vez");
+  assert.equal(T.serverStatus(), "online", "403 not_admin não é “servidor fora do ar”");
+  let disk = lerLogin();
+  assert.deepEqual(disk.claudeAiOauth, credOf(1, 1), "a conta do servidor vai por cima");
+  assert.notEqual(disk.claudeAiOauth.accessToken, a.oauth.accessToken);
+  assert.equal("refreshToken" in disk.claudeAiOauth, false);
+  assert.equal(notes.slice(n0).filter((n) => AVISO_NAO_ENVIADO.test(n.message)).length, 1, "o mesmo aviso, uma vez");
+  assert.ok(!notes.slice(n0).some((n) => n.kind === "error"), "sem aviso de erro");
+  assert.doesNotMatch(bar().text, /recusado|fora do ar/);
+  assert.equal(T.buildPayload().server.canMigrate, false, "o botão de enviar some");
+
+  // daqui em diante não tenta mais: nem o login novo do ciclo, nem a tela
+  const b = loginNovo("recusado403b", "r403b@exemplo.com", "org-403b");
+  swapPlusFalso.limpar();
+  await ciclo();
+  await ciclo();
+  await tela({ type: "migrate" });
+  assert.equal(fake.since(mark).filter(isLogins).length, 1, "nenhum POST /v1/logins depois do 403 not_admin");
+  assert.ok(!swapPlusFalso.calls().some((l) => l.startsWith("export")), `o motor não exporta nada: ${swapPlusFalso.calls().join(" | ")}`);
+  disk = lerLogin();
+  assert.deepEqual(disk.claudeAiOauth, credOf(1, 1));
+  assert.notEqual(disk.claudeAiOauth.accessToken, b.oauth.accessToken);
+
+  // b) envio pela tela (duas contas no motor): o 1º POST volta 403 not_admin → para ali, e o ciclo também não envia mais
+  await prepararServidor();
+  await contasLocais();
+  fake.handlers["POST /v1/logins"] = notAdmin;
+  const exportFile = path.join(ROOT, "export-local.json");
+  const conta2 = {
+    ...EXPORT_LOCAL.accounts[0],
+    number: 2,
+    email: "local2@exemplo.com",
+    organizationUuid: "org-l2",
+    config: { oauthAccount: { emailAddress: "local2@exemplo.com", organizationUuid: "org-l2", organizationName: "Org L2" } },
+  };
+  fs.writeFileSync(exportFile, JSON.stringify({ ...EXPORT_LOCAL, accounts: [...EXPORT_LOCAL.accounts, conta2] }));
+  try {
+    mark = fake.calls.length;
+    n0 = notes.length;
+    await tela({ type: "migrate" });
+    assert.equal(fake.since(mark).filter(isLogins).length, 1, "parou no primeiro 403 not_admin");
+    assert.ok(
+      notes.slice(n0).some((n) => n.kind === "warn" && /só os computadores do administrador enviam logins/.test(n.message)),
+      "explica por que não enviou"
+    );
+    assert.ok(!notes.slice(n0).some((n) => /logins? aceitos? pelo servidor/.test(n.message)), "sem o resumo de envio");
+    assert.equal((globalState.get(MIGRATED_KEY) || {})[fake.url], undefined, "nada anotado como enviado");
+    assert.equal(T.buildPayload().server.canMigrate, false);
+  } finally {
+    fs.writeFileSync(exportFile, JSON.stringify(EXPORT_LOCAL));
+  }
+  n0 = notes.length;
+  loginNovo("recusado403c", "r403c@exemplo.com", "org-403c");
+  await ciclo();
+  assert.equal(fake.since(mark).filter(isLogins).length, 1, "o ciclo também não envia mais");
+  assert.deepEqual(lerLogin().claudeAiOauth, credOf(1, 1), "a conta do servidor vai por cima do login novo");
+  assert.equal(notes.slice(n0).filter((n) => AVISO_NAO_ENVIADO.test(n.message)).length, 1);
+  delete fake.handlers["POST /v1/logins"];
+});
+
+test("23. de novo, depois dos cenários novos: nenhum token em lugar nenhum; todo cliente com token leva tokenOrigin", { timeout: T_MAX }, async () => {
   const comToken = clientes.filter((c) => c.comToken);
   assert.ok(comToken.length > 0);
   for (const c of comToken) assert.ok(typeof c.tokenOrigin === "string" && c.tokenOrigin, `cliente com token sem tokenOrigin (${c.url})`);

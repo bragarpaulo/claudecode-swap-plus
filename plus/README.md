@@ -22,10 +22,10 @@ Passo a passo completo, para quem usa: **[MANUAL](../MANUAL.md)**. O que mudou n
   no painel). No topo: **Histórico**, **Atualizar** e **Minha conta** (kit de recuperação e sessões abertas).
 - **Conectar um computador:** `Ctrl/Cmd + Shift + P` → **Swap Plus: Conectar ao servidor** → **Entrar com Google**.
   O código de conexão é a alternativa.
-- **Na 1ª conexão** a extensão oferece:
-  - **Enviar os logins deste computador** — manda ao servidor as contas vivas que ele ainda não tem, com o mesmo número
-    quando o número está livre, e pula as que ele já tem;
-  - **Usar as regras deste computador no servidor**.
+- **Na 1ª conexão**, só nos computadores do administrador, a extensão pergunta **Enviar os logins deste computador para
+  o servidor?** (**Sim** é o primeiro botão) — manda ao servidor as contas vivas que ele ainda não tem, com o mesmo número
+  quando o número está livre, e pula as que ele já tem. Os outros computadores não veem a pergunta nem o botão e não
+  enviam logins: usam as contas do servidor. As regras de troca não entram na conexão: só mudam pelo painel ou pela tela.
 - **Tela de login do Claude Code:** no modo servidor a extensão a desliga (`claudeCode.disableLoginPrompt`) e volta ao
   normal ao desconectar.
 - **Windows:** se o Claude Code do Windows usar o Gerenciador de Credenciais do Windows, a extensão avisa e não grava
@@ -176,12 +176,18 @@ mudou* até conectar de novo. A extensão não roda em pastas não confiáveis (
   explica na barra e no cartão Servidor. `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` definidas também geram aviso;
 - **várias janelas**: só uma (a "dona", por trava em arquivo) faz o batimento e grava; as outras só leem o estado. Troca, limite
   e gravação rodam numa fila única; desligar ou voltar ao modo local espera o que estiver em andamento;
-- **Enviar os logins deste computador** (oferecido na 1ª conexão, se o motor daqui tem contas, e no cartão Servidor; só no modo
-  servidor): `swap-plus list` (planos) e `swap-plus export` para um arquivo temporário numa pasta só do seu usuário, que é apagado
-  logo depois de lido. Vão para o servidor as contas vivas que ele ainda não tem, com o mesmo número quando o número está livre lá;
-  as que ele já tem são puladas. No fim, um resumo das aceitas e recusadas, com o motivo;
-- na 1ª conexão a um servidor, se as regras de troca daqui forem diferentes das de lá: **Usar as regras deste computador no
-  servidor** (`PUT /v1/rules`, uma vez por servidor);
+- **Enviar os logins deste computador** (perguntado na 1ª conexão, com **Sim** como primeiro botão, se o motor daqui tem contas,
+  e no cartão Servidor; só no modo servidor): `swap-plus list` (planos) e `swap-plus export` para um arquivo temporário numa
+  pasta só do seu usuário, que é apagado logo depois de lido. Vão para o servidor as contas vivas que ele ainda não tem, com o
+  mesmo número quando o número está livre lá; as que ele já tem são puladas. No fim, um resumo das aceitas e recusadas, com o
+  motivo;
+- **só os computadores do administrador enviam logins**: o servidor diz no estado (`device.canUploadLogins`). Com `false` — ou
+  depois de um `POST /v1/logins` recusado com `403 not_admin` — a pergunta e o botão somem e nenhum login vai ao servidor, nem
+  o login novo do Claude Code: a extensão grava por cima a conta do servidor e avisa uma vez (*Este computador usa as contas do
+  servidor. O login local não foi enviado: só os computadores do administrador enviam logins.*). Sem o campo (servidor
+  antigo), tudo como antes;
+- as regras de troca daqui não são levadas ao servidor na conexão (não há pergunta): no modo servidor valem as do servidor, e
+  elas só mudam pelo painel ou pela tela;
 - erro de limite na transcrição (“You've hit your limit”) → avisa o servidor, que decide a troca na hora;
 - troca pela lista, **Trocar para a conta com mais folga**, ajustes por conta (rotação, linha própria, prioridade, apelido),
   regras e troca automática ligada/desligada vão para o servidor e **valem para todos os computadores**. Os avisos

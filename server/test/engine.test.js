@@ -483,7 +483,7 @@ test("credentialFor: renova para valer ≥ 30 min, grava antes e nunca devolve r
   assertNoTokens(fake.allTokens(), state, "o StateResponse");
   assert.deepEqual(Object.keys(state).sort(), ["autoSwitch", "credential", "device", "devices", "diag", "history", "list", "records", "rules", "serverTime", "version", "warnings"].sort());
   assert.deepEqual(state.warnings, []);
-  assert.deepEqual(state.device, { id: "d1", name: "PC d1", assigned: 1, lastSwitchAt: store.state.devices.d1.lastSwitchAt });
+  assert.deepEqual(state.device, { id: "d1", name: "PC d1", assigned: 1, lastSwitchAt: store.state.devices.d1.lastSwitchAt, canUploadLogins: true });
   assert.deepEqual(state.credential, { number: 1, gen: 2, expiresAt: cred.claudeAiOauth.expiresAt });
   assert.equal(state.list.schemaVersion, 1);
   assert.equal(state.list.activeAccountNumber, 1);
@@ -703,6 +703,45 @@ test("addLogin cria, atualiza e recusa identidade errada e login morto", async (
 
   assert.deepEqual(Object.keys(store.state.accounts).sort(), ["1", "2", "3", "4"]);
   assert.equal(store.state.nextNumber, 5);
+});
+
+test("canUploadLogins: pareado por código sim; com Google só o administrador (setAdminCheck); addLogin de quem não pode → not_admin sem falar com a Anthropic", async (t) => {
+  const { engine, fake, store } = setup(t);
+  addDevice(engine, "cod"); // sem googleEmail: pareado por código
+  addDevice(engine, "adm", { googleEmail: "dono@x.com" });
+  addDevice(engine, "bia", { googleEmail: "bia@x.com" });
+  const pode = (id) => engine.stateFor(id).device.canUploadLogins;
+
+  // sem setAdminCheck: ninguém com Google é administrador
+  assert.deepEqual([pode("cod"), pode("adm"), pode("bia")], [true, false, false]);
+  engine.setAdminCheck((email) => email === "dono@x.com");
+  assert.deepEqual([pode("cod"), pode("adm"), pode("bia")], [true, true, false]);
+  assert.equal(engine.stateFor("nao-existe").device, null);
+
+  // quem não pode: not_admin (403) antes de tudo — o login enviado não é conferido nem gasto
+  const lb = fake.login("bia@x.com");
+  const calls = fake.calls.length;
+  await assert.rejects(
+    engine.addLogin({ ...lb, deviceId: "bia" }),
+    (e) => e.code === "not_admin" && ERROR_STATUS[e.code] === 403 && /administrador/.test(e.message)
+  );
+  assert.equal(fake.calls.length, calls, "nada foi para a Anthropic");
+  assert.equal(fake.refreshTokens.get(lb.claudeAiOauth.refreshToken).spent, false);
+  assert.deepEqual(store.state.accounts, {});
+
+  // administrador com Google e pareado por código enviam
+  assert.deepEqual(await engine.addLogin({ ...fake.login("ana@x.com"), deviceId: "adm" }), { number: 1, created: true });
+  assert.deepEqual(await engine.addLogin({ ...fake.login("caio@x.com"), deviceId: "cod" }), { number: 2, created: true });
+
+  // a lista mudou (ADMIN_EMAILS sem o dono + reinício): o computador dele com Google deixa de poder
+  engine.setAdminCheck(null);
+  assert.equal(pode("adm"), false);
+  await assert.rejects(engine.addLogin({ ...fake.login("ana@x.com"), deviceId: "adm" }), (e) => e.code === "not_admin");
+  // uma verificação que falha não libera ninguém com Google
+  engine.setAdminCheck(() => {
+    throw new Error("falhou");
+  });
+  assert.deepEqual([pode("cod"), pode("adm")], [true, false]);
 });
 
 test("addLogin renova o login recebido na hora (mesmo com o acesso valendo) e guarda o renovado", async (t) => {

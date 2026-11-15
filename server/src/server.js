@@ -22,6 +22,9 @@
 //   As contas Google liberadas (allow) só conectam computadores; o administrador também conecta,
 //   sem precisar estar na lista. E-mails são comparados por emailKey() (google.js): minúsculas e,
 //   no Gmail, sem pontos e sem "+algo".
+// - Só os computadores do ADMINISTRADOR enviam logins (POST /v1/logins; canUploadLogins): conectados com Google
+//   com e-mail de ADMIN_EMAILS, ou pareados por código (o código só sai da linha de comando/painel do administrador).
+//   Os outros recebem 403 not_admin (sem chegar ao motor nem à Anthropic) e usam as contas do servidor.
 
 const crypto = require("crypto");
 const fs = require("fs");
@@ -43,7 +46,7 @@ const {
 const { createWeb, webReplacer, uaSummary } = require("./web");
 const access = require("./access");
 
-const VERSION = "2.3.0";
+const VERSION = "2.3.1";
 const MAX_BODY = 256 * 1024; // corpo máximo aceito
 const HARD_BODY = MAX_BODY * 4; // acima disso nem lê o resto: responde 413 e fecha
 const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -71,6 +74,7 @@ const DEFAULT_RESTIC_PASS_FILE = "/run/secrets/restic_swap_plus_pass"; // senha 
 const STOP_ENGINE_WAIT_MS = 52 * 1000; // cobre uma renovação lenta (até 45 s) que já estava em voo
 const STOP_SAVE_RETRY_MS = 5 * 1000;
 const STOP_HARD_MS = 62 * 1000; // saída forçada (o compose dá 75 s: stop_grace_period)
+const NOT_ADMIN_TEXT = "Só os computadores do administrador enviam logins ao servidor. Este computador usa as contas do servidor.";
 
 const DEFAULT_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const DEFAULT_API_BASE = "https://api.anthropic.com";
@@ -151,6 +155,13 @@ function cleanText(v, max) {
     .replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g, "")
     .trim()
     .slice(0, max);
+}
+
+/** "AAAA-MM-DD" no fuso do servidor. */
+function localDay(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /** E-mail (conta Google) em minúsculas, ou null se não parecer um e-mail. */
@@ -423,7 +434,9 @@ function toHttpError(e) {
   const code = e && typeof e.code === "string" && /^[a-z][a-z0-9_]{1,40}$/.test(e.code) ? e.code : null;
   if (code) {
     // not_allowed: a conta não está liberada para este computador (engine.switchDevice) → 409, como no ERROR_STATUS do motor.
-    const status = code === "not_found" ? 404 : code === "no_account" || code === "conflict" || code === "not_allowed" ? 409 : 422;
+    // not_admin: login de um computador que não é do administrador (engine.addLogin) → 403.
+    const status =
+      code === "not_found" ? 404 : code === "not_admin" ? 403 : code === "no_account" || code === "conflict" || code === "not_allowed" ? 409 : 422;
     const message = redact(typeof e.message === "string" ? e.message : "").slice(0, 300) || "operação recusada";
     return new HttpError(status, code, message);
   }
@@ -579,6 +592,7 @@ function cleanAccountPatch(body) {
  *   fetchImpl: usado só na troca do code com o Google.
  *   config.webDir: pasta dos arquivos do painel (padrão server/web, ao lado de src/).
  *   config.adminEmails: administrador(es) do painel (de ADMIN_EMAILS; lido uma vez, aqui). Vazio = painel desligado.
+ *     Também decide quem envia logins (canUploadLogins) e é passado ao motor (engine.setAdminCheck).
  *   config.masterKeyFile / config.resticPassFile: lidos só no kit de recuperação do painel.
  */
 function createApp({ store, engine, config, now = Date.now, log = createLogger(), fetchImpl = fetch }) {
@@ -606,6 +620,14 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     const k = emailKey(email);
     return !!k && adminKeys.has(k);
   };
+  /**
+   * O computador pode enviar logins (POST /v1/logins)? Só os do administrador: conectado com Google com e-mail de
+   * ADMIN_EMAILS (desta subida: quem sai da lista deixa de poder depois do reinício) ou pareado por código
+   * (googleEmail nulo: o código só sai da linha de comando/painel do administrador). Mesma regra do engine.canUploadLogins.
+   */
+  const canUploadLogins = (d) => isObj(d) && (!d.googleEmail || isAdmin(d.googleEmail));
+  // O motor usa a mesma lista (stateFor → device.canUploadLogins e a segunda trava do addLogin).
+  if (typeof engine.setAdminCheck === "function") engine.setAdminCheck(isAdmin);
 
   const state = () => {
     const st = store.state;
@@ -659,7 +681,12 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     return found;
   }
 
-  const stateOf = async (device) => engine.stateFor(device.id);
+  const stateOf = async (device) => {
+    const s = await engine.stateFor(device.id);
+    // Quem decide é o servidor (ADMIN_EMAILS desta subida); o motor recebe a mesma lista, aqui só garante o campo.
+    if (isObj(s) && isObj(s.device)) s.device.canUploadLogins = canUploadLogins(device);
+    return s;
+  };
 
   // ----- pareamento -----
 
@@ -1273,7 +1300,25 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     };
   }
 
+  // "Login recusado" no histórico: no máximo uma vez por computador por dia (fuso do servidor). Só na memória.
+  const loginRefusedOn = new Map(); // deviceId → "AAAA-MM-DD"
+
+  /** POST /v1/logins de um computador que não é do administrador: log (sem token), histórico 1x/dia e o 403. */
+  function refuseLogin(device) {
+    const conta = device.googleEmail ? ` (conta Google ${cleanText(String(device.googleEmail), 254)})` : "";
+    log.warn(`[logins] login recusado de "${device.name}"${conta}: só os computadores do administrador (ADMIN_EMAILS) enviam logins`);
+    const day = localDay(now());
+    if (loginRefusedOn.get(device.id) !== day) {
+      for (const [id, d] of loginRefusedOn) if (d !== day) loginRefusedOn.delete(id);
+      loginRefusedOn.set(device.id, day);
+      pushHistory("alert", `Login recusado de "${device.name}": só o administrador envia logins`, device.id);
+    }
+    return new HttpError(403, "not_admin", NOT_ADMIN_TEXT);
+  }
+
   async function addLogin({ device, body }) {
+    // Antes de tudo: quem não é do administrador nem chega ao motor (nada vai para a Anthropic).
+    if (!canUploadLogins(device)) throw refuseLogin(device);
     const { claudeAiOauth, oauthAccount, plan } = body;
     const number = body.number === undefined || body.number === null ? null : Number(body.number);
     if (number !== null && !(Number.isInteger(number) && number > 0 && number <= 999)) throw bad("number precisa ser um inteiro entre 1 e 999");
@@ -1286,7 +1331,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
       const he = toHttpError(e);
       if (he.internal) throw e;
       log.warn(`[logins] login recusado de "${device.name}": ${he.error}`);
-      throw new HttpError(422, he.error, he.message);
+      throw new HttpError(he.error === "not_admin" ? 403 : 422, he.error, he.message);
     }
     log.info(`[logins] "${device.name}" enviou login: conta ${r && r.number} (${r && r.created ? "nova" : "atualizada"})`);
     return { number: r && r.number, created: !!(r && r.created) };

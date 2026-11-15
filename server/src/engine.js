@@ -19,12 +19,15 @@
 //   outros ficam ocupadas, para não dividirem a sessão de 5 h; spreadOut separa); "together" = todos os ativos na
 //   MESMA conta (a do grupo) e trocam juntos (togetherStep). Quem não pode usar a conta do grupo fica com a melhor
 //   conta liberada para ele — a permissão sempre vale mais que o "juntos".
+// - Só os computadores do ADMINISTRADOR enviam logins (canUploadLogins): conectados com Google com e-mail de
+//   ADMIN_EMAILS (o servidor passa quem é administrador em setAdminCheck) ou pareados por código (googleEmail nulo:
+//   o código só sai da linha de comando/painel do administrador). Os outros usam as contas do servidor.
 
 const crypto = require("crypto");
 const { RULE_DEFAULTS, STRATEGY_LABELS, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.3.0";
+const VERSION = "2.3.1";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
 const POLL_ACTIVE_MS = 3 * 60 * 1000; // conta de dispositivo ativo: uso a cada 3 min
@@ -53,6 +56,8 @@ const MAX_DATE_MS = 8.64e15; // maior data que o Date aceita (além disso toISOS
 
 const PLAN_LABELS = { team: "Team", max: "Max", pro: "Pro", enterprise: "Enterprise" };
 const STOPPING_TEXT = "o servidor está reiniciando; tente de novo daqui a pouco";
+const NOT_ADMIN_TEXT = "Só os computadores do administrador enviam logins ao servidor. Este computador usa as contas do servidor.";
+const NO_ADMIN = () => false; // sem setAdminCheck: ninguém com Google é administrador
 const SAVE_FAILED_TEXT = "O cofre não está gravando (disco cheio?). NÃO reinicie o servidor: há login renovado só na memória.";
 const NO_RESPONSE_TEXT = "a renovação anterior ficou sem resposta e o login foi gasto";
 
@@ -82,6 +87,7 @@ const ERROR_STATUS = {
   not_found: 404,
   dead_account: 409,
   not_allowed: 409, // a conta não está liberada para este computador (Contas → Computadores permitidos)
+  not_admin: 403, // addLogin de um computador que não é do administrador (canUploadLogins)
   invalid_login: 422,
   dead_login: 422,
   stale_login: 422,
@@ -245,7 +251,7 @@ function checkRule(key, value) {
 }
 
 class Engine {
-  constructor({ store, anthropic, now = Date.now, log = console, env = process.env, version = VERSION } = {}) {
+  constructor({ store, anthropic, now = Date.now, log = console, env = process.env, version = VERSION, isAdminEmail = null } = {}) {
     if (!store) throw new Error("o motor precisa do cofre (store)");
     if (!anthropic) throw new Error("o motor precisa do cliente da Anthropic");
     const e = env || {};
@@ -254,6 +260,7 @@ class Engine {
     this.now = now;
     this.log = makeLog(log);
     this.version = version;
+    this.setAdminCheck(isAdminEmail);
     const perHour = Number(e.USAGE_MAX_PER_HOUR);
     this.usageMaxPerHour = Number.isFinite(perHour) && perHour >= 1 ? perHour : 24;
     const ahead = Number(e.REFRESH_AHEAD_MIN);
@@ -313,6 +320,28 @@ class Engine {
     const d = this.device(id);
     if (!d) throw fail("unknown_device", "dispositivo desconhecido");
     return d;
+  }
+
+  /**
+   * Quem é administrador: fn(email) → true/false (o servidor passa o isAdmin de ADMIN_EMAILS, lido na subida).
+   * Sem fn: ninguém com Google é administrador (só os computadores pareados por código enviam logins).
+   */
+  setAdminCheck(fn) {
+    this.isAdminEmail = typeof fn === "function" ? fn : NO_ADMIN;
+  }
+
+  /**
+   * O computador pode enviar logins ao servidor (POST /v1/logins)? Só os do administrador: conectado com Google com
+   * e-mail de administrador, ou pareado por código (googleEmail nulo). Mesma regra do canUploadLogins do server.js.
+   */
+  canUploadLogins(dev) {
+    if (!isObj(dev)) return false;
+    if (!dev.googleEmail) return true;
+    try {
+      return this.isAdminEmail(dev.googleEmail) === true;
+    } catch {
+      return false;
+    }
   }
 
   accountList() {
@@ -598,7 +627,15 @@ class Engine {
     return {
       serverTime: this.now(),
       version: this.version,
-      device: dev ? { id: dev.id, name: dev.name || null, assigned: dev.assigned === undefined ? null : dev.assigned, lastSwitchAt: Number(dev.lastSwitchAt) || 0 } : null,
+      device: dev
+        ? {
+            id: dev.id,
+            name: dev.name || null,
+            assigned: dev.assigned === undefined ? null : dev.assigned,
+            lastSwitchAt: Number(dev.lastSwitchAt) || 0,
+            canUploadLogins: this.canUploadLogins(dev), // false = este computador usa as contas do servidor, não envia logins
+          }
+        : null,
       list: this.publicList(deviceId),
       records: this.records(), // global (sem o filtro por computador)
       rules: this.rulesEffective(),
@@ -1623,7 +1660,8 @@ class Engine {
    * Só aceita login comprovadamente vivo: o refresh token recebido é SEMPRE renovado na hora,
    * antes de qualquer mudança. Um refresh token já morto (renovado em outro lugar) com o access
    * token ainda valendo não substitui mais um login bom.
-   * Erros (.code), sem mudar nada: invalid_login, stale_login, dead_login (a Anthropic recusou a renovação),
+   * Erros (.code), sem mudar nada: not_admin (deviceId de um computador que não pode enviar logins — canUploadLogins;
+   * nem fala com a Anthropic), invalid_login, stale_login, dead_login (a Anthropic recusou a renovação),
    * refresh_failed (falha temporária, cofre sem gravar ou servidor reiniciando — nada gasto),
    * identity_mismatch (identidade errada conferida ANTES de renovar — nada gasto).
    * identity_mismatch_spent: a identidade errada só apareceu DEPOIS de renovar — o login enviado foi gasto
@@ -1634,6 +1672,9 @@ class Engine {
    * tempo renovam uma vez só; o outro recebe "nada a fazer" ou stale_login. stop() espera o envio em andamento.
    */
   async addLogin(args = {}) {
+    // Segunda trava (o server.js já recusa antes): login de computador que não é do administrador não entra.
+    const from = isObj(args) ? this.device(args.deviceId) : null;
+    if (from && !this.canUploadLogins(from)) throw fail("not_admin", NOT_ADMIN_TEXT);
     if (this.stopping) throw fail("refresh_failed", STOPPING_TEXT);
     return this.track(this.receiveLogin(args));
   }

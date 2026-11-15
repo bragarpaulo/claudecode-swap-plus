@@ -674,3 +674,94 @@ test("admin: status e dispositivos sem segredos; recusa navegador; exige PUBLIC_
   assert.equal(r.json.error, "no_public_url");
   assert.equal(semUrl.store.state.pairing, null);
 });
+
+test("logins: só os computadores do administrador enviam (Google com e-mail de ADMIN_EMAILS ou pareado por código); os outros → 403 not_admin sem chamar o engine", async (t) => {
+  const NAO_ADMIN = "Só os computadores do administrador enviam logins ao servidor. Este computador usa as contas do servidor.";
+  const ctx = await setup(t, { ADMIN_EMAILS: "dono.exemplo@gmail.com" });
+  const E = ctx.engine;
+  const login = {
+    claudeAiOauth: { accessToken: "a", refreshToken: "sk-ant-ort01-DO-COMPUTADOR", expiresAt: 1 },
+    oauthAccount: { emailAddress: "c@exemplo.com", organizationUuid: "org-2" },
+  };
+  // Conectado com Google = dispositivo com googleEmail (o fluxo do Google em si está em google.test.js).
+  const comGoogle = async (name, email) => {
+    const d = await pairDevice(ctx, name);
+    ctx.store.state.devices[d.deviceId].googleEmail = email;
+    return d;
+  };
+  const codigo = await pairDevice(ctx, "Mac do dono"); // pareado por código: googleEmail null
+  const admin = await comGoogle("Notebook do dono", "donoexemplo+vscode@gmail.com"); // mesma conta pela emailKey
+  const bia = await comGoogle("PC da Bia", "bia@exemplo.com"); // liberada para conectar, mas não é administradora
+  const estado = (d) => request(ctx.api, "GET", "/v1/state", { token: d.token });
+  const envia = (d, body = login) => request(ctx.api, "POST", "/v1/logins", { token: d.token, body });
+
+  // StateResponse: device.canUploadLogins (GET /v1/state e heartbeat)
+  assert.equal((await estado(codigo)).json.device.canUploadLogins, true);
+  assert.equal((await estado(admin)).json.device.canUploadLogins, true);
+  assert.equal((await estado(bia)).json.device.canUploadLogins, false);
+  let r = await request(ctx.api, "POST", "/v1/heartbeat", { token: bia.token, body: { models: [] } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.device.canUploadLogins, false);
+
+  // administrador com Google envia
+  r = await envia(admin);
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json, { number: 3, created: true });
+  assert.deepEqual(E.last("addLogin").args, [{ ...login, plan: undefined, deviceId: admin.deviceId, number: null }]);
+  // pareado por código envia
+  r = await envia(codigo);
+  assert.equal(r.status, 200, r.text);
+  assert.equal(E.last("addLogin").args[0].deviceId, codigo.deviceId);
+
+  // Google sem ser administrador: 403 not_admin e o engine nem é chamado (nada vai para a Anthropic)
+  const chamadas = E.count("addLogin");
+  r = await envia(bia);
+  assert.equal(r.status, 403, r.text);
+  assert.deepEqual(r.json, { error: "not_admin", message: NAO_ADMIN });
+  assert.ok(!r.text.includes("sk-ant-ort01-DO-COMPUTADOR"));
+  r = await envia(bia, {}); // a permissão vem antes da conferência do corpo
+  assert.equal(r.status, 403);
+  assert.equal(r.json.error, "not_admin");
+  assert.equal(E.count("addLogin"), chamadas);
+  // o computador continua conectado, usando as contas do servidor
+  assert.equal((await estado(bia)).status, 200);
+
+  // histórico: uma vez por computador por dia
+  const recusas = () => E.calls.filter((c) => c.name === "pushHistory" && /^Login recusado/.test(c.args[1]));
+  assert.equal(recusas().length, 1);
+  assert.deepEqual(recusas()[0].args, ["alert", 'Login recusado de "PC da Bia": só o administrador envia logins', bia.deviceId]);
+  await envia(bia);
+  assert.equal(recusas().length, 1, "no mesmo dia não repete");
+  ctx.clock.t += 24 * 3600 * 1000;
+  r = await envia(bia);
+  assert.equal(r.status, 403);
+  assert.equal(recusas().length, 2, "no dia seguinte registra de novo");
+  assert.equal(E.count("addLogin"), chamadas);
+
+  // ADMIN_EMAILS mudou (sem o dono) e o servidor reiniciou: os computadores dele com Google deixam de enviar;
+  // o pareado por código continua (o código só sai da linha de comando/painel do administrador)
+  const config2 = loadConfig({ TLS_MODE: "off", DATA_DIR: ctx.dir, PUBLIC_URL, ADMIN_EMAILS: "outra@exemplo.com" });
+  const app2 = createApp({ store: ctx.store, engine: E, config: config2, now: () => ctx.clock.t, log: testLog });
+  const api2 = await listen(app2.api);
+  t.after(() => close(api2.server));
+  r = await request(api2.port, "GET", "/v1/state", { token: admin.token });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.device.canUploadLogins, false);
+  r = await request(api2.port, "POST", "/v1/logins", { token: admin.token, body: login });
+  assert.equal(r.status, 403, r.text);
+  assert.equal(r.json.error, "not_admin");
+  assert.equal(E.count("addLogin"), chamadas);
+  r = await request(api2.port, "POST", "/v1/logins", { token: codigo.token, body: login });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(E.count("addLogin"), chamadas + 1);
+
+  // sem ADMIN_EMAILS nenhum computador com Google envia; os pareados por código seguem enviando
+  const config3 = loadConfig({ TLS_MODE: "off", DATA_DIR: ctx.dir, PUBLIC_URL, ADMIN_EMAILS: "" });
+  const app3 = createApp({ store: ctx.store, engine: E, config: config3, now: () => ctx.clock.t, log: testLog });
+  const api3 = await listen(app3.api);
+  t.after(() => close(api3.server));
+  r = await request(api3.port, "GET", "/v1/state", { token: admin.token });
+  assert.equal(r.json.device.canUploadLogins, false);
+  r = await request(api3.port, "GET", "/v1/state", { token: codigo.token });
+  assert.equal(r.json.device.canUploadLogins, true);
+});

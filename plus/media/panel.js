@@ -686,7 +686,9 @@
             ? h("span", {
                 class: "badge dead",
                 title: isServer()
-                  ? "O login desta conta não vale mais no servidor. A troca automática pula esta conta. Para usar de novo: entre com ela no Claude Code em qualquer computador conectado e o Swap Plus envia o login novo ao servidor."
+                  ? S.server && S.server.canUploadLogins === false
+                    ? "O login desta conta não vale mais no servidor. A troca automática pula esta conta. Para usar de novo, o administrador entra outra vez com ela (pelo painel do servidor ou num computador dele): este computador não envia logins."
+                    : "O login desta conta não vale mais no servidor. A troca automática pula esta conta. Para usar de novo: entre com ela no Claude Code em qualquer computador conectado e o Swap Plus envia o login novo ao servidor."
                   : "O login guardado desta conta não vale mais. A troca automática pula esta conta. Para usar de novo: entre com ela no Claude Code e o Swap Plus salva o login sozinho.",
                 text: "Login morto — entrar de novo",
               })

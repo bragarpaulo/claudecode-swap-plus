@@ -55,7 +55,7 @@ de um comando e aperta Enter.
 7. Confirme o nome do computador e aperte Enter. É com esse nome que ele aparece no painel.
 8. O navegador abre. Entre com a sua conta Google liberada.
 9. Volte ao VS Code. Em poucos segundos aparece **conectado ao servidor**.
-10. Responda às duas perguntas da primeira conexão (logo abaixo).
+10. No computador do administrador, responda à pergunta da primeira conexão (logo abaixo).
 
 ### No Windows
 
@@ -74,27 +74,29 @@ de um comando e aperta Enter.
 7. Confirme o nome do computador e aperte Enter. É com esse nome que ele aparece no painel.
 8. O navegador abre. Entre com a sua conta Google liberada.
 9. Volte ao VS Code. Em poucos segundos aparece **conectado ao servidor**.
-10. Responda às duas perguntas da primeira conexão (logo abaixo).
+10. No computador do administrador, responda à pergunta da primeira conexão (logo abaixo).
 
 > O passo 2 deu erro de "execução de scripts"? Veja [Se algo der errado](#se-algo-der-errado).
 
-### Na primeira conexão: duas perguntas
+### Na primeira conexão: enviar os logins (só no computador do administrador)
 
-O Swap Plus faz estas perguntas uma vez só para cada servidor.
+**Enviar os logins deste computador para o servidor?**
 
-1. **Enviar os logins deste computador para o servidor?**
-   Aparece se este computador já tem contas guardadas no Swap Plus. Escolha **Enviar os logins**.
-   - O servidor recebe as contas vivas que ele ainda não tem.
-   - Cada conta fica com o mesmo número de antes, quando esse número está livre no servidor.
-   - As contas que o servidor já tem são puladas.
-   - No fim aparece um resumo: quantas entraram e quais não entraram, com o motivo.
-   - Dá para fazer de novo depois: barra do Swap Plus → **Configurações…** → **Servidor** →
-     **Enviar os logins deste computador**.
-2. **Usar as regras deste computador no servidor?**
-   Aparece se as regras de troca deste computador forem diferentes das do servidor. A tela mostra as diferenças.
-   - Clique em **Usar as regras deste computador no servidor** para levar as regras daqui.
-   - Ou feche a pergunta para seguir as regras que já estão no servidor.
-   - As regras do servidor valem para **todos** os computadores conectados.
+Esta pergunta só aparece **nos computadores do administrador**, uma vez só para cada servidor, e só se o computador já
+tem contas guardadas no Swap Plus. Escolha **Sim** (é o primeiro botão).
+
+- O servidor recebe as contas vivas que ele ainda não tem.
+- Cada conta fica com o mesmo número de antes, quando esse número está livre no servidor.
+- As contas que o servidor já tem são puladas.
+- No fim aparece um resumo: quantas entraram e quais não entraram, com o motivo.
+- Dá para fazer de novo depois: barra do Swap Plus → **Configurações…** → **Servidor** →
+  **Enviar os logins deste computador**.
+
+Nos outros computadores a pergunta não aparece, nem o botão **Enviar os logins deste computador**: eles usam as
+contas do servidor e não enviam logins.
+
+As regras de troca não entram na conexão: no modo servidor valem as regras do servidor, para **todos** os
+computadores, e elas só mudam pelo painel ou pela tela de configurações.
 
 ### Como saber se deu certo
 
@@ -566,7 +568,9 @@ Pronto. Se a troca automática estava ligada no computador principal, ela já ve
 ### Passar do modo local para o servidor
 
 1. Siga [Começando com o servidor](#começando-com-o-servidor-20) neste computador.
-2. Na primeira conexão, escolha **Enviar os logins** e **Usar as regras deste computador no servidor**.
+2. Na primeira conexão, responda **Sim** a **Enviar os logins deste computador para o servidor?** (a pergunta só
+   aparece nos computadores do administrador). As regras de troca daqui não vão junto: se quiser, ajuste as do
+   servidor pelo painel ou pela tela de configurações.
 3. Faça o mesmo em cada computador que usava o modo local.
 4. Daí em diante, não use mais o modo local nem exportar/importar com essas contas.
 

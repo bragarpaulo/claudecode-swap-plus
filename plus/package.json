@@ -2,7 +2,7 @@
   "name": "swap-plus",
   "displayName": "Swap Plus",
   "description": "Uso do Claude Code na barra de status (ícone de e-mail, 5h, semanal e Fable) e tela de regras para avisos e troca automática de conta. Usa o CLI swap-plus (modo local) ou um servidor Swap Plus que guarda os logins e decide as trocas (modo servidor). Fork pessoal de smith89k/claude-swap-status (MIT).",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "publisher": "paulo-local",
   "license": "MIT",
   "icon": "icon.png",

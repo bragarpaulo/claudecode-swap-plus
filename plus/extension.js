@@ -85,6 +85,9 @@ const srv = {
   loginRetry: null, // { key, at }: o servidor não conseguiu conferir o login agora (refresh_failed...): tenta de novo em ~1 min
   applyFail: null, // { key, at }: falha ao gravar a credencial (espera 1 min)
   discard: null, // login recusado que a pessoa decidiu trocar pela conta do servidor
+  uploadDenied: false, // o servidor recusou um envio de login (403 not_admin): este computador não envia logins até conectar de novo
+  deniedKey: null, // login (hash) não enviado porque este computador não envia logins: a conta do servidor pode ir por cima
+  deniedWarned: null, // login (hash) cujo aviso "não foi enviado" já apareceu
   expectNumber: null, // troca pedida daqui: não avisar como "troca do servidor"
   originMismatch: false, // o token não vale no endereço atual (createServerClient recusou): nada é enviado
   owner: null, // esta janela é a "dona" (faz o batimento e grava)? null = ainda não sabe
@@ -679,7 +682,9 @@ function render() {
     );
     mainItem.tooltip = list.accounts.length
       ? "O servidor ainda não escolheu uma conta para este computador. Clique para escolher uma."
-      : "O servidor ainda não tem nenhuma conta. Entre com uma conta no Claude Code: o Swap Plus envia o login ao servidor sozinho. Ou, em Configurações → Servidor, use “Enviar os logins deste computador”.";
+      : loginUploadAllowed() === false
+        ? "O servidor ainda não tem nenhuma conta. Quem adiciona as contas é o administrador (pelo painel do servidor ou por um computador dele)."
+        : "O servidor ainda não tem nenhuma conta. Entre com uma conta no Claude Code: o Swap Plus envia o login ao servidor sozinho. Ou, em Configurações → Servidor, use “Enviar os logins deste computador”.";
     mainItem.show();
     return;
   }
@@ -1747,6 +1752,12 @@ async function cliVersion() {
 async function addAccount() {
   if (serverMode()) {
     // Não há "cadastrar" no modo servidor: o login novo do Claude Code vai para o servidor sozinho.
+    if (loginUploadAllowed() === false) {
+      vscode.window.showInformationMessage(
+        "Swap Plus (modo servidor): só os computadores do administrador enviam logins ao servidor. Para adicionar uma conta, use o painel do servidor (Contas → + Adicionar conta) ou entre com ela no Claude Code de um computador do administrador."
+      );
+      return { ok: false, server: true };
+    }
     vscode.window.showInformationMessage(
       "Swap Plus (modo servidor): para adicionar uma conta, entre com ela no Claude Code (comando /login), sem sair da anterior. Em até 30 s o Swap Plus envia o login ao servidor, que passa a cuidar dela. Para levar todas as contas guardadas neste computador de uma vez: Configurações → Servidor → Enviar os logins deste computador."
     );
@@ -1849,6 +1860,11 @@ async function toggleAuto() {
 //     refresh token), envia esse login ao servidor e grava por cima o acesso que
 //     o servidor devolve. Se não der para gravar, tira só o refresh token do
 //     login enviado (o Claude Code não o renova e não mata a cópia do servidor);
+//   - só os computadores do administrador enviam logins: o servidor diz no
+//     estado (device.canUploadLogins) e recusa o POST /v1/logins dos outros
+//     (403 not_admin). Nos outros, nenhum login vai ao servidor; um login novo do
+//     Claude Code é substituído pela conta do servidor, com um aviso. Sem o campo
+//     (servidor antigo), envia como antes;
 //   - o token deste computador só vai para o endereço em que foi emitido (o
 //     guardado na conexão). Endereço novo nas configurações = conectar de novo;
 //   - enquanto o modo servidor está ligado, a tela de login do Claude Code fica
@@ -1863,7 +1879,6 @@ const SERVER_META_KEY = "swapPlus.server"; // globalState: { url, fp, deviceId, 
 const SERVER_APPLIED_KEY = "swapPlus.server.applied"; // globalState: { number, gen, expiresAt, at, noIdentity } — última credencial gravada
 const SERVER_MIGRATED_KEY = "swapPlus.server.migrated"; // globalState: { "<url>": ms } — logins deste computador já enviados
 const SERVER_SENT_KEY = "swapPlus.server.sentLogin"; // globalState: [hash] — logins com refresh token já resolvidos (enviados, mortos ou gastos); nunca o token
-const SERVER_RULES_OFFERED_KEY = "swapPlus.server.rulesOffered"; // globalState: { "<origem>": ms } — oferta de levar as regras daqui já feita
 const LOGIN_PROMPT_KEY = "swapPlus.server.loginPrompt"; // globalState: { applied, had, value, noticed } — claudeCode.disableLoginPrompt de antes do modo servidor
 const HEARTBEAT_MS = 30 * 1000;
 const DEVICE_ACTIVE_MS = 5 * 60 * 1000;
@@ -1879,6 +1894,7 @@ const WINDOW_ID = `${process.pid}-${crypto.randomBytes(6).toString("hex")}`;
 // Credenciais: o que o Swap Plus grava no .credentials.json seria ignorado. Nesse caso não grava.
 const CREDMAN_RE = /Gerenciador de Credenciais do Windows/;
 const NO_ACCOUNT_TEXT = "o servidor ainda não tem conta para este computador";
+const UPLOAD_DENIED_TEXT = "Este computador usa as contas do servidor. O login local não foi enviado: só os computadores do administrador enviam logins.";
 const LOGIN_PROMPT_NOTE = "Enquanto estiver no modo servidor, o login do Claude Code é feito pelo Swap Plus";
 
 function serverMode() {
@@ -2060,6 +2076,9 @@ function resetServerConnection() {
   srv.status = null;
   srv.originMismatch = false;
   srv.revokedWarned = false;
+  srv.uploadDenied = false;
+  srv.deniedKey = null;
+  srv.deniedWarned = null;
 }
 
 /** createServerClient com o token; origin_mismatch (o token não vale neste endereço) → null, sem nenhum envio. */
@@ -2280,12 +2299,59 @@ function finishSync() {
 function applyStateResponse(resp) {
   if (!serverMode()) return false;
   if (!resp || !resp.list || !Array.isArray(resp.list.accounts)) return false;
+  // O servidor passou de "não pode" para "pode enviar logins" (ex.: voltou a ser computador do administrador
+  // depois de um reinício do servidor): a recusa anterior (403 not_admin) deixa de valer.
+  const canBefore = srv.state && srv.state.device ? srv.state.device.canUploadLogins : undefined;
+  if (srv.uploadDenied && canBefore === false && resp.device && resp.device.canUploadLogins === true) srv.uploadDenied = false;
   srv.state = resp;
   srv.status = "online";
   srv.lastOkAt = Date.now();
   srv.lastError = null;
   state = { ...state, list: resp.list, records: resp.records || {}, error: null, fetchedAt: Date.now(), unmanaged: null };
   return true;
+}
+
+/**
+ * Este computador pode enviar logins ao servidor? Só os do administrador podem.
+ * false = não (o estado diz device.canUploadLogins false, ou o servidor já recusou
+ * um envio com 403 not_admin); true = pode (o campo veio true, ou não veio: servidor
+ * antigo, que aceita de todos); null = ainda sem o estado do servidor.
+ */
+function loginUploadAllowed() {
+  if (srv.uploadDenied) return false;
+  const st = srv.state;
+  if (!st) return null;
+  return !(st.device && st.device.canUploadLogins === false);
+}
+
+/** O servidor recusou o envio porque este computador não é do administrador? (403 { error: "not_admin" }) */
+function isNotAdmin(e) {
+  return Number(e && e.status) === 403 && !!e && e.code === "not_admin";
+}
+
+/** Avisa (uma vez por login) que o login local não foi enviado: este computador não envia logins. */
+async function notifyUploadDenied(key) {
+  if (srv.deniedWarned === key) return;
+  srv.deniedWarned = key;
+  console.warn("[swap-plus] login do Claude Code não enviado: só os computadores do administrador enviam logins");
+  try {
+    await pushHistory([
+      { ts: new Date().toISOString(), kind: "info", text: "Login do Claude Code não enviado ao servidor: só os computadores do administrador enviam logins" },
+    ]);
+  } catch {}
+  vscode.window.showWarningMessage(`Swap Plus: ${UPLOAD_DENIED_TEXT}`);
+}
+
+/** Busca e guarda o estado do servidor (GET /v1/state), sem aviso de erro. true = veio. */
+async function fetchServerState() {
+  try {
+    const client = await serverClient();
+    if (!client || serverStatus() === "revoked") return false;
+    return applyStateResponse(await client.request("GET", "/v1/state"));
+  } catch (e) {
+    console.warn("[swap-plus] estado do servidor", srvErrText(e));
+    return false;
+  }
 }
 
 async function serverFailed(e, where) {
@@ -2522,13 +2588,15 @@ async function markLoginSent(key, st = "sent") {
 
 /**
  * Compare-and-swap do writeLive: grava por cima de um login com refresh token só se
- * ele já foi resolvido (enviado ao servidor, recusado como morto/gasto ou
- * descartado pela pessoa). Um login novo que apareceu no meio do caminho fica.
+ * ele já foi resolvido (enviado ao servidor, recusado como morto/gasto,
+ * descartado pela pessoa, ou não enviado porque este computador não envia logins).
+ * Um login novo que apareceu no meio do caminho fica.
  */
 function canReplaceLive(cur) {
   const o = cur && cur.claudeAiOauth;
   if (!o || !o.refreshToken) return true;
-  return isSpent(loginKey({ oauth: o }));
+  const key = loginKey({ oauth: o });
+  return isSpent(key) || srv.deniedKey === key;
 }
 
 /** Trava entre janelas para enviar UM login (mkdir é atômico). → função que libera | null (outra janela está enviando). */
@@ -2582,10 +2650,19 @@ function loginRejectReason(e) {
   return LOGIN_REJECT_REASONS[e && e.code] || safeErr(e);
 }
 
+/** Login novo que não vai ao servidor (este computador não envia logins): a conta do servidor pode ir por cima; avisa uma vez. */
+async function denyLiveLogin(key) {
+  srv.deniedKey = key;
+  if (srv.rejected && srv.rejected.key === key) srv.rejected = null;
+  await notifyUploadDenied(key);
+  return { kind: "denied", key };
+}
+
 /**
  * Envia ao servidor o login novo do Claude Code (o que tem refresh token).
  * kind: "sent" | "dup" (já resolvido: enviado aqui ou por outra janela)
  *     | "dead" (morto/gasto no servidor, ou descartado pela pessoa — discarded: pode gravar por cima)
+ *     | "denied" (este computador não envia logins — só os do administrador: não foi enviado e a conta do servidor vai por cima)
  *     | "rejected" (recusado: não grava por cima) | "wait" (ainda não dá: não grava por cima) | "offline"
  */
 async function uploadLiveLogin(auth, live) {
@@ -2594,6 +2671,9 @@ async function uploadLiveLogin(auth, live) {
   if (srv.discard && srv.discard === key) return { kind: "dead", key, discarded: true }; // a pessoa escolheu usar a conta do servidor
   // Já resolvido: nunca reenviar o mesmo login (o servidor já o renovou; o daqui está gasto).
   if (isSpent(key)) return { kind: "dup", key };
+  const allowed = loginUploadAllowed();
+  if (allowed === false) return denyLiveLogin(key); // só os computadores do administrador enviam logins: nenhum POST
+  if (allowed === null) return { kind: "wait", key }; // sem o estado do servidor ainda: não se sabe se este computador pode enviar
   if (srv.rejected && srv.rejected.key === key && now - srv.rejected.at < SAVE_RETRY_MS) return { kind: "rejected", key };
   if (srv.loginRetry && srv.loginRetry.key === key && now - srv.loginRetry.at < LOGIN_RETRY_MS) return { kind: "wait", key };
   const oauthAccount = await liveOauthAccount(auth);
@@ -2618,6 +2698,13 @@ async function uploadLiveLogin(auth, live) {
       await pushHistory([{ ts, kind: "info", text: `Login da conta ${res.number} enviado ao servidor${res.created ? " (conta nova)" : ""}` }]);
       return { kind: "sent", number: res.number, created: !!res.created, key };
     } catch (e) {
+      if (isNotAdmin(e)) {
+        // Este computador não é do administrador: para de tentar enviar (até conectar de novo).
+        srv.uploadDenied = true;
+        srv.rejected = null;
+        srv.loginRetry = null;
+        return await denyLiveLogin(key);
+      }
       if (srvErrKind(e) !== "rejected") return { kind: "offline", error: e, key };
       const code = e && e.code;
       if (code === "refresh_failed" || code === "profile_unavailable") {
@@ -2745,8 +2832,10 @@ async function syncCredential(client, resp, { live = null, up = null, force = fa
     return { blocked: "rejected", reason: `o servidor recusou o login atual do Claude Code${srv.rejected ? ` (${srv.rejected.reason})` : ""}, que fica como está` };
   }
   if (up && up.kind === "wait") return { blocked: "wait", reason: "o login novo do Claude Code ainda está indo para o servidor", quiet: true };
+  // Enviado, gasto ou não enviado ("denied": este computador não envia logins): a conta do servidor vai por cima.
   if (up) force = true;
   // Login já entregue ao servidor (ou gasto lá): se não der para pôr o acesso do servidor por cima, tira o refresh token dele.
+  // ("denied" não: o servidor não tem esse login, então ele fica inteiro aqui.)
   const spentUp = !!up && (up.kind === "sent" || up.kind === "dup" || (up.kind === "dead" && !up.discarded));
   try {
     return await applyServerCredential(client, resp, auth, live, { force, retryNow, spentUp });
@@ -2900,6 +2989,18 @@ async function serverSync() {
   //    Leitura que falhou: nada é enviado nem gravado, e o "recusado" fica como estava.
   let up = null;
   if (!live.unreadable && !blocked && live.oauth && live.oauth.refreshToken) {
+    // Sem o estado do servidor ainda (1º ciclo): busca antes, para saber se este computador pode enviar logins
+    // (só os do administrador podem). Sem saber, nada é enviado.
+    if (loginUploadAllowed() === null && !isSpent(loginKey(live))) {
+      let st0;
+      try {
+        st0 = await client.request("GET", "/v1/state");
+      } catch (e) {
+        return serverFailed(e, "estado");
+      }
+      if (!serverMode() || !swapOn()) return finishSync(); // mudou de modo (ou desligou) no meio
+      applyStateResponse(st0);
+    }
     up = await uploadLiveLogin(auth, live);
     if (up.kind === "offline") return serverFailed(up.error, "envio do login");
   } else if (!live.unreadable && !(live.oauth && live.oauth.refreshToken)) {
@@ -3162,74 +3263,6 @@ async function useServerAccount() {
     srv.rejected = null;
   });
   await refreshFresh(); // fora da fila: o ciclo entra nela
-}
-
-// ---- regras deste computador → servidor (primeira conexão)
-
-const OFFER_RULE_KEYS = ["sessionPct", "weeklyPct", "modelPct", "preferModel", "strategy", "expiringHours", "cooldownMin", "marginPct", "onModelLimit"];
-const OFFER_RULE_LABELS = {
-  sessionPct: "Troca na sessão de 5h",
-  weeklyPct: "Troca no semanal",
-  modelPct: "Troca no semanal do modelo",
-  preferModel: "Modelo preferido",
-  strategy: "Estratégia",
-  expiringHours: "Cota que zera em até (horas)",
-  cooldownMin: "Intervalo mínimo entre trocas (min)",
-  marginPct: "Margem abaixo da linha",
-  onModelLimit: "Quando o limite do modelo acaba",
-};
-
-function ruleText(k, v) {
-  if (k === "strategy") return STRATEGY_LABELS[v] || String(v);
-  if (k === "onModelLimit") return v === "switchAccount" ? "trocar de conta" : "seguir na mesma conta";
-  if (k === "preferModel") return v ? String(v) : "nenhum";
-  if (/Pct$/.test(k)) return `${v}%`;
-  return String(v);
-}
-
-function sameRule(a, b) {
-  if (typeof a === "number" || typeof b === "number") return Number(a) === Number(b);
-  return String(a == null ? "" : a).trim() === String(b == null ? "" : b).trim();
-}
-
-/**
- * Primeira conexão a um servidor: se as regras de troca deste computador (e a troca
- * automática) são diferentes das do servidor, oferece levá-las para lá (PUT /v1/rules;
- * valem para todos os computadores). Uma vez por servidor.
- */
-async function offerLocalRules(url) {
-  const origin = urlOrigin(url);
-  if (!origin || !serverMode() || !swapOn()) return null;
-  const offered = extContext.globalState.get(SERVER_RULES_OFFERED_KEY) || {};
-  if (offered[origin]) return null;
-  const st = srv.state;
-  if (!st || serverStatus() !== "online") return null; // sem as regras do servidor ainda: fica para a próxima conexão
-  await extContext.globalState.update(SERVER_RULES_OFFERED_KEY, { ...offered, [origin]: Date.now() });
-  const mine = localRules();
-  const theirs = { ...RULE_DEFAULTS, ...(st.rules || {}) };
-  const diffs = OFFER_RULE_KEYS.filter((k) => !sameRule(mine[k], theirs[k]));
-  const myAuto = !!cfg().get("autoSwitch.enabled");
-  const autoDiff = myAuto !== !!st.autoSwitch;
-  if (!diffs.length && !autoDiff) return null;
-  const lines = diffs.map((k) => `• ${OFFER_RULE_LABELS[k]}: aqui ${ruleText(k, mine[k])} · no servidor ${ruleText(k, theirs[k])}`);
-  if (autoDiff) lines.push(`• Troca automática: aqui ${myAuto ? "ligada" : "desligada"} · no servidor ${st.autoSwitch ? "ligada" : "desligada"}`);
-  const BTN = "Usar as regras deste computador no servidor";
-  const c = await vscode.window.showInformationMessage(
-    "As regras de troca deste computador são diferentes das do servidor.",
-    {
-      modal: true,
-      detail: `${lines.join("\n")}\n\nNo modo servidor valem as regras do servidor, para todos os computadores conectados a ele. Sem levar as daqui, este computador passa a seguir as do servidor (as daqui ficam guardadas para o modo local).`,
-    },
-    BTN
-  );
-  if (c !== BTN) return false;
-  const rulesBody = Object.fromEntries(OFFER_RULE_KEYS.map((k) => [k, mine[k]]));
-  const resp = await serverCall("PUT", "/v1/rules", { rules: rulesBody, autoSwitch: myAuto }, "levar as regras deste computador ao servidor");
-  if (!resp) return false;
-  await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `Regras de troca deste computador levadas ao servidor ${serverHost(url)}` }]);
-  postState();
-  vscode.window.showInformationMessage("Swap Plus: regras deste computador salvas no servidor (valem para todos os computadores conectados).");
-  return true;
 }
 
 // ---- tela de login do Claude Code (claudeCode.disableLoginPrompt)
@@ -3740,9 +3773,10 @@ async function finishConnect(got, had) {
     await pushHistory([
       { ts: new Date().toISOString(), kind: "info", text: `Conectado ao servidor ${serverHost(url)} como “${name}”${via === "google" ? " (entrou com Google)" : ""}` },
     ]);
-    // 1ª conexão a este servidor: oferecer o envio dos logins guardados neste computador.
+    // 1ª conexão a este servidor: oferecer o envio dos logins guardados neste computador — só
+    // nos computadores do administrador (o estado do servidor diz se este pode enviar).
     const migrated = extContext.globalState.get(SERVER_MIGRATED_KEY) || {};
-    if (localEngineHasAccounts() && !migrated[url]) await offerMigration();
+    if (localEngineHasAccounts() && !migrated[url] && (await fetchServerState()) && loginUploadAllowed() === true) await offerMigration();
   } finally {
     srv.hold = false;
   }
@@ -3753,13 +3787,16 @@ async function finishConnect(got, had) {
       ? `Ainda sem resposta do servidor: ${srv.lastError || "tento de novo em 30 s"}.`
       : n
         ? `Este computador está na conta ${n}.`
-        : "O servidor ainda não tem conta para este computador: entre com uma conta no Claude Code e o login vai para o servidor.";
+        : loginUploadAllowed() === false
+          ? "O servidor ainda não tem conta para este computador: quem adiciona as contas é o administrador."
+          : "O servidor ainda não tem conta para este computador: entre com uma conta no Claude Code e o login vai para o servidor.";
   vscode.window.showInformationMessage(`Swap Plus: conectado ao servidor ${serverHost()}. ${tail}`);
-  // 1ª conexão a este servidor: regras de troca daqui diferentes das de lá? Oferece levá-las.
-  await offerLocalRules(url);
 }
 
 async function offerMigration() {
+  // "Sim" é a opção principal (o primeiro botão); "Não" fecha a pergunta.
+  const yes = { title: "Sim" };
+  const no = { title: "Não", isCloseAffordance: true };
   const c = await vscode.window.showInformationMessage(
     "Enviar os logins deste computador para o servidor?",
     {
@@ -3767,9 +3804,10 @@ async function offerMigration() {
       detail:
         "O Swap Plus lê as contas guardadas neste computador (motor swap-plus) e envia o login de cada uma ao servidor, que passa a ser o único a renovar. Contas que o servidor já tem funcionando ficam como estão. Nada é apagado deste computador.\n\nO login em uso agora no Claude Code vai para o servidor de qualquer jeito.",
     },
-    "Enviar os logins"
+    yes,
+    no
   );
-  if (c === "Enviar os logins") await migrateLocalLogins();
+  if (c === yes) await migrateLocalLogins();
 }
 
 function removeDir(dir) {
@@ -3796,6 +3834,15 @@ async function migrateLocalLogins() {
     );
     return null;
   }
+  // Só os computadores do administrador enviam logins: nos outros, nada vai ao servidor (nem o motor é chamado).
+  const denied = () => {
+    postState();
+    vscode.window.showWarningMessage(
+      "Swap Plus: este computador usa as contas do servidor. Os logins dele não foram enviados: só os computadores do administrador enviam logins."
+    );
+    return null;
+  };
+  if (loginUploadAllowed() === false) return denied();
   let client = null;
   try {
     client = await serverClient({ timeoutMs: LOGIN_POST_TIMEOUT_MS }); // o servidor renova cada login na hora
@@ -3827,6 +3874,7 @@ async function migrateLocalLogins() {
             return { error: srvErrText(e) };
           }
         }
+        if (loginUploadAllowed() === false) return { denied: true }; // o estado novo diz que este computador não envia logins
         // 2) Planos (list) e logins (export) do motor local.
         progress.report({ message: "lendo as contas deste computador" });
         const list = parseJson((await runCswap(["list", "--json"])).stdout);
@@ -3891,6 +3939,11 @@ async function migrateLocalLogins() {
             results.push({ label, ok: true, number: res.number, created: !!res.created });
             if (isLive) await markLoginSent(loginKey(live), "sent"); // o ciclo não reenvia (e pode gravar por cima)
           } catch (e) {
+            if (isNotAdmin(e)) {
+              // Este computador não é do administrador: para de enviar (nem este lote, nem o login novo do ciclo).
+              srv.uploadDenied = true;
+              return { denied: true };
+            }
             if (srvErrKind(e) === "rejected") {
               if (isLive && (e.code === "dead_login" || e.code === "stale_login" || e.code === "identity_mismatch_spent")) await markLoginSent(loginKey(live), "dead");
               results.push({ label, ok: false, reason: loginRejectReason(e) });
@@ -3912,6 +3965,7 @@ async function migrateLocalLogins() {
     vscode.window.showErrorMessage(`Swap Plus: ${out.error}`);
     return null;
   }
+  if (out.denied) return denied();
   const results = out.results;
   const ok = results.filter((x) => x.ok);
   const skipped = results.filter((x) => x.skip);
@@ -4117,8 +4171,10 @@ function serverPayload() {
       ? { value: typeof dg.oldTokenValidAfterRefresh === "boolean" ? dg.oldTokenValidAfterRefresh : null, when: dg.checkedAt ? fmtWhen(dg.checkedAt) : null }
       : null,
     rejected: srv.rejected ? { reason: srv.rejected.reason } : null,
-    // Só no modo servidor: no modo local o motor daqui é quem renova esses logins.
-    canMigrate: serverMode() && !!srv.token && localEngineHasAccounts(),
+    // Só no modo servidor (no modo local o motor daqui é quem renova esses logins) e só nos
+    // computadores do administrador (os outros não enviam logins: o botão some).
+    canMigrate: serverMode() && !!srv.token && localEngineHasAccounts() && loginUploadAllowed() !== false,
+    canUploadLogins: loginUploadAllowed() !== false,
     addressChanged: serverMode() && serverAddressChanged(),
     configuredUrl: configuredServerUrl() || null,
     storeWarnings: serverMode() ? (srv.storeWarnings || []).map(safe) : [],

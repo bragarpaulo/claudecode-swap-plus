@@ -16,8 +16,9 @@ O que mudou da versão 1.8 para a 2.0. Passo a passo completo no [MANUAL](MANUAL
   **Entrar com Google**. O código de conexão continua como alternativa.
 - **Primeira conexão sem trabalho.** O Swap Plus oferece:
   - **Enviar os logins deste computador** — manda ao servidor as contas vivas que ele ainda não tem, com o mesmo
-    número quando o número está livre, e pula as que ele já tem;
-  - **Usar as regras deste computador no servidor**.
+    número quando o número está livre, e pula as que ele já tem. Essa pergunta só aparece nos computadores do
+    administrador (os outros só usam as contas do servidor; o servidor recusa login vindo deles).
+  - As regras de troca mudam só pelo painel ou pela tela do Swap (não há mais pergunta para levá-las ao servidor).
 - **Painel no navegador**, no mesmo endereço, com login pelo Google. Só o administrador (a conta Google definida no
   servidor) entra. O menu tem três itens:
   - **Contas** — as contas Claude na ordem da fila, o uso de cada uma, os ajustes de cada conta e as **regras de

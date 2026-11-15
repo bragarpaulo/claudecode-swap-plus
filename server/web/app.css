@@ -1152,3 +1152,8 @@ button.closebtn { min-height: 36px; padding: 6px 12px 6px 10px; gap: 6px; }
   .fill, .linemark, .dot { forced-color-adjust: none; }
   input.sw { appearance: auto; -webkit-appearance: checkbox; width: 18px; height: 18px; }
 }
+
+/* Paginação do histórico (10 por página) */
+.pager { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.pager[hidden] { display: none; }
+.pager-info { color: var(--soft, inherit); font-size: 13px; font-variant-numeric: tabular-nums; }

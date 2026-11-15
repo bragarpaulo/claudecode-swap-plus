@@ -2185,8 +2185,22 @@
 
   // ------------------------------------------------------------ Histórico
 
+  // Histórico paginado: 10 por página (pedido do dono). A página atual é mantida quando chegam eventos novos.
+  const HIST_PAGE_SIZE = 10;
+  let histPage = 0;
+
   function renderHistory(box) {
-    const items = Array.isArray(S.history) ? S.history : [];
+    const all = Array.isArray(S.history) ? S.history : [];
+    const pages = Math.max(1, Math.ceil(all.length / HIST_PAGE_SIZE));
+    histPage = Math.min(Math.max(0, histPage), pages - 1);
+    const items = all.slice(histPage * HIST_PAGE_SIZE, (histPage + 1) * HIST_PAGE_SIZE);
+    const pager = $("histPager");
+    if (pager) {
+      pager.hidden = all.length <= HIST_PAGE_SIZE;
+      $("histPage").textContent = `página ${histPage + 1} de ${pages} · ${all.length} eventos`;
+      $("histPrev").disabled = histPage === 0;
+      $("histNext").disabled = histPage >= pages - 1;
+    }
     if (!items.length) {
       box.replaceChildren(h("li", { class: "empty", text: "Nada por aqui ainda. Trocas de conta, logins e avisos aparecem nesta lista." }));
       return;
@@ -2350,6 +2364,8 @@
     $("btnRefresh").addEventListener("click", () => loadState("button"));
     $("btnAccount").addEventListener("click", (e) => openDrawer("accountDlg", e.currentTarget));
     $("btnHistory").addEventListener("click", (e) => openDrawer("historyDlg", e.currentTarget));
+    $("histPrev").addEventListener("click", () => { histPage -= 1; renderHistory($("history")); });
+    $("histNext").addEventListener("click", () => { histPage += 1; renderHistory($("history")); });
     $("btnLogout").addEventListener("click", (e) => logout(e.currentTarget));
     $("toast").addEventListener("click", hideToast);
 

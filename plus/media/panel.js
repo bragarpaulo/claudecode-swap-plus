@@ -878,8 +878,22 @@
     );
   }
 
+  // Histórico paginado: 10 por página (pedido do dono). A página atual é mantida quando
+  // chegam eventos novos; se a lista encolher (ex.: Limpar), volta para a última que existe.
+  const HIST_PAGE_SIZE = 10;
+  let histPage = 0;
+
   function renderHistory() {
-    const items = S.auto.history || [];
+    const all = S.auto.history || [];
+    const pages = Math.max(1, Math.ceil(all.length / HIST_PAGE_SIZE));
+    if (histPage > pages - 1) histPage = pages - 1;
+    if (histPage < 0) histPage = 0;
+    const items = all.slice(histPage * HIST_PAGE_SIZE, (histPage + 1) * HIST_PAGE_SIZE);
+    const pager = $("histPager");
+    pager.classList.toggle("hidden", all.length <= HIST_PAGE_SIZE);
+    $("histPage").textContent = `página ${histPage + 1} de ${pages} · ${all.length} eventos`;
+    $("histPrev").disabled = histPage === 0;
+    $("histNext").disabled = histPage >= pages - 1;
     $("history").replaceChildren(
       ...(items.length
         ? items.map((it) =>
@@ -953,6 +967,8 @@
   });
   $("btnAdd").addEventListener("click", () => send({ type: "add" }));
   $("btnClear").addEventListener("click", () => send({ type: "clearHistory" }));
+  $("histPrev").addEventListener("click", () => { histPage -= 1; renderHistory(); });
+  $("histNext").addEventListener("click", () => { histPage += 1; renderHistory(); });
   $("btnExportOther").addEventListener("click", () => send({ type: "export", mode: "other" }));
   $("btnExportMe").addEventListener("click", () => send({ type: "export", mode: "me" }));
   $("btnImport").addEventListener("click", () => send({ type: "import" }));

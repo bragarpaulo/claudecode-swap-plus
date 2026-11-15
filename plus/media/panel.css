@@ -394,3 +394,8 @@ button.linkbtn:hover { color: var(--vscode-textLink-activeForeground, var(--vsco
   .dev .dacc, .dev .dseen { grid-column: 1 / -1; }
   .srvinfo, .srvmig { grid-template-columns: 1fr; }
 }
+
+/* Paginação do histórico (10 por página) */
+.pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.pager .muted { font-size: 0.9em; font-variant-numeric: tabular-nums; }
+.pager button:disabled { opacity: 0.45; cursor: default; }

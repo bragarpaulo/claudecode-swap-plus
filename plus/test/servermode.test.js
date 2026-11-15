@@ -786,6 +786,7 @@ async function prepararServidor() {
   await limparLimite();
   escreverLogin({ accessToken: segredo("oat01-antigo"), expiresAt: Date.now() + 3600e3, scopes: ["user:inference"] });
   escreverConta(oauthAccountOf(1));
+  await T.waitMotorSync(); // a sincronização com o motor local que começou no modo local termina antes
   await cfgApi.update("mode", "server");
   await ciclo();
 }

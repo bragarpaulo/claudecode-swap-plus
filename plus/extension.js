@@ -167,7 +167,14 @@ function cswapPath() {
   return "swap-plus" + ext;
 }
 
+// No modo servidor o motor local não é usado: só a migração (export/list) e a consulta de versão passam.
+// A conferência é feita na hora de rodar, então nada que começou no modo local chega ao motor depois da troca.
+const SERVER_MODE_ENGINE_ALLOWED = new Set(["export", "list", "--version"]);
+
 function runCswap(args, timeout = 90000) {
+  if (serverMode() && !SERVER_MODE_ENGINE_ALLOWED.has(String(args[0]))) {
+    return Promise.resolve({ code: -1, stdout: "", stderr: "modo servidor: o motor local não é usado", spawnError: "modo servidor" });
+  }
   return new Promise((resolve) => {
     execFile(
       cswapPath(),
@@ -1179,7 +1186,17 @@ function setupLimitWatch() {
  * 15 pontos da linha de troca, mas usa as linhas das configurações DELE. Aqui elas
  * são alinhadas às regras do Swap Plus.
  */
-async function syncMotorLines() {
+// Uma sincronização por vez; quem troca de modo pode esperar a que estiver em andamento (waitMotorSync).
+let motorSyncP = null;
+function syncMotorLines() {
+  if (!motorSyncP) motorSyncP = syncMotorLinesNow().finally(() => { motorSyncP = null; });
+  return motorSyncP;
+}
+function waitMotorSync() {
+  return motorSyncP ? motorSyncP.catch(() => {}) : Promise.resolve();
+}
+
+async function syncMotorLinesNow() {
   if (!swapOn() || serverMode()) return false;
   const r = rules();
   const want = {
@@ -4450,4 +4467,4 @@ function deactivate() {
   }
 }
 
-module.exports = { activate, deactivate, _test: { serverMode, serverStatus, refreshFresh, safeErr, loginKey, syncCredential, historyPayload, applyStateResponse, buildPayload, serverSwitch, syncLoginPrompt, ownerFile, uploadLockDir, srv, addAccount, saveLiveLogin, liveIdentity, loginDead, swapOn, newerInstalledVersion, scanLimitErrors, checkLimitErrors, limitLabel, syncMotorLines, nearLine, setLimitRoot: (r) => (limitRoot = r), claudeCodeStatus, prepareClaudeCode, orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };
+module.exports = { activate, deactivate, _test: { serverMode, serverStatus, refreshFresh, safeErr, loginKey, syncCredential, historyPayload, applyStateResponse, buildPayload, serverSwitch, syncLoginPrompt, ownerFile, uploadLockDir, srv, addAccount, saveLiveLogin, liveIdentity, loginDead, swapOn, newerInstalledVersion, scanLimitErrors, checkLimitErrors, limitLabel, syncMotorLines, waitMotorSync, nearLine, setLimitRoot: (r) => (limitRoot = r), claudeCodeStatus, prepareClaudeCode, orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };

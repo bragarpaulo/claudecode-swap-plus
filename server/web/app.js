@@ -1724,8 +1724,7 @@
 
   function sameRules(x, y) {
     if (!x || !y) return false;
-    if (!!x.autoSwitch !== !!y.autoSwitch) return false;
-    return RULE_KEYS.every((k) => sameVal(x[k], y[k]));
+    return RULE_KEYS.every((k) => sameVal(x[k], y[k])); // a troca automática não entra: ela vale na hora
   }
 
   function paintRangeOut(id) {
@@ -1785,8 +1784,14 @@
   /** Preenche o formulário com as regras do servidor — nunca por cima do que a pessoa está editando. */
   function fillRules(force) {
     if (!S) return;
+    // A troca automática sempre mostra o que vale no servidor (ela não tem rascunho).
+    if (document.activeElement !== $("rAuto") || !$("rAuto").disabled) {
+      $("rAuto").checked = S.autoSwitch !== false;
+      if (rulesBase) rulesBase.autoSwitch = $("rAuto").checked;
+      paintChoices();
+    }
     const cur = stateRuleValues();
-    const sig = JSON.stringify(cur);
+    const sig = JSON.stringify({ ...cur, autoSwitch: undefined }); // a troca automática não conta como "regra mudada"
     fillDefaultsHints();
     if (rulesDirty && !force) {
       $("rulesChanged").classList.toggle("hidden", sig === rulesBaseSig);
@@ -1807,8 +1812,27 @@
     setRulesDirty(false);
   }
 
+  // Troca automática: vale na hora do clique (pedido do dono — antes só valia depois de "Salvar regras",
+  // e ela ficava desligada sem ninguém perceber). Não entra no rascunho das outras regras.
+  async function applyAutoNow(on) {
+    const el = $("rAuto");
+    await act(el, () => api("PUT", "/web/api/rules", { autoSwitch: !!on }), {
+      ok: on
+        ? "Troca automática ligada. Vale agora, para todos os computadores."
+        : "Troca automática desligada. Nenhum computador troca de conta sozinho.",
+    });
+    // Mostra o que ficou valendo no servidor (se o pedido falhou, o botão volta ao estado real).
+    el.checked = !!S && S.autoSwitch !== false;
+    if (rulesBase) rulesBase.autoSwitch = el.checked;
+    paintChoices();
+  }
+
   function onRulesInput(e) {
     if (!rulesBase) return; // estado ainda não chegou
+    if (e && e.target && e.target.id === "rAuto") {
+      if (e.type === "change") applyAutoNow(e.target.checked);
+      return;
+    }
     if (e && e.target && e.target.type === "range") paintRangeOut(e.target.id);
     if (e && e.target && e.target.removeAttribute) e.target.removeAttribute("aria-invalid");
     paintChoices();
@@ -1838,8 +1862,7 @@
     for (const k of RULE_KEYS) if (!sameVal(v[k], rulesBase[k])) changed[k] = v[k];
     const body = {};
     if (Object.keys(changed).length) body.rules = RULE_KEYS.every((k) => sameVal(v[k], def[k])) ? null : changed;
-    if (v.autoSwitch !== rulesBase.autoSwitch) body.autoSwitch = v.autoSwitch;
-    if (!("rules" in body) && !("autoSwitch" in body)) {
+    if (!("rules" in body)) {
       setRulesDirty(false);
       toast("Nada para salvar.");
       return;

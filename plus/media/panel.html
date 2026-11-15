@@ -33,7 +33,7 @@
     </label>
   </div>
   <div id="sessionBox" class="session"></div>
-  <p class="note" id="masterNote">Desligado, o Swap Plus não consulta as contas, não troca de conta e não mexe no login: o Claude Code funciona normalmente com a conta em que você entrar. Ligado, ele também salva na hora o login do Claude Code sempre que ele muda (login novo ou token renovado).</p>
+  <p class="note" id="masterNote">Desligado, o Swap Plus não fala com o servidor e não mexe no login: o Claude Code fica com o acesso que tem agora. Ligado, ele recebe do servidor a conta escolhida para este computador e envia ao servidor todo login novo que você fizer no Claude Code (só nos computadores do administrador).</p>
 </section>
 
 <section class="card" id="serverCard">
@@ -45,7 +45,7 @@
     <div class="row gap" id="serverBtns"></div>
   </div>
   <div id="serverBox"></div>
-  <p class="note">O login de cada conta só vale para quem renovou por último. Por isso, com mais de um computador, o melhor é o modo servidor: só o servidor guarda e renova os logins, e cada computador recebe apenas o acesso da conta que o servidor escolheu para ele. As regras de troca e os ajustes de cada conta ficam no servidor e valem para todos; os avisos e a exibição continuam sendo de cada computador.</p>
+  <p class="note">O login de cada conta só vale para quem renovou por último. Por isso só o servidor guarda e renova os logins, e cada computador recebe apenas o acesso da conta que o servidor escolheu para ele. As regras de troca e os ajustes de cada conta ficam no servidor e valem para todos; os avisos e a exibição continuam sendo de cada computador.</p>
 </section>
 
 <section class="card" id="autoCard">
@@ -61,10 +61,9 @@
     </label>
   </div>
   <div class="row gap wrap">
-    <button id="btnCheck">Verificar agora</button>
-    <button id="btnSim" class="secondary">Simular (sem trocar)</button>
+    <button id="btnCheck">Consultar o servidor agora</button>
   </div>
-  <p class="note" id="autoNote">A sessão não para: a troca é feita antes da conta esgotar e o Claude Code aberto passa a usar a conta nova sozinho (até ~30 s). Funciona enquanto o VS Code estiver aberto.</p>
+  <p class="note" id="autoNote">Quem decide é o servidor, olhando o uso de todas as contas e quais computadores estão usando cada uma. Este computador recebe a conta nova em até 30 s e o Claude Code aberto passa a usá-la sozinho. Ligar ou desligar aqui vale para todos os computadores conectados.</p>
 </section>
 
 <section class="card">
@@ -73,7 +72,7 @@
     <span id="rulesDirty" class="dirty hidden">Alterações não salvas</span>
   </div>
   <p class="muted small">Para cada limite: quando a conta ativa chegar em X%, avisar e/ou trocar de conta. A barrinha mostra o uso atual da conta ativa e onde estão as linhas. As regras valem depois de clicar em “Salvar regras”.</p>
-  <p id="rulesWhere" class="srvnote hidden">Modo servidor: as linhas de troca e a estratégia ficam no servidor e valem para todos os computadores conectados. As linhas de aviso são só deste computador.</p>
+  <p id="rulesWhere" class="srvnote">As linhas de troca e a estratégia ficam no servidor e valem para todos os computadores conectados. As linhas de aviso são só deste computador.</p>
   <div id="rules"></div>
 
   <h3>Quando trocar, ir para qual conta</h3>
@@ -96,32 +95,13 @@
     <h2>Contas</h2>
     <button id="btnAdd" class="secondary">+ Adicionar conta</button>
   </div>
-  <p class="muted small"><span id="acctWhere">Mudanças aqui valem na hora.</span> <span id="acctRuleHelp"><b>Usar regra padrão</b>: desmarque para dar à conta uma linha da sessão de 5h só dela (ex.: 70% para guardar folga).</span> <b>Prioridade</b> só vale na estratégia “Por prioridade”.</p>
+  <p class="muted small">Mudanças aqui valem na hora, no servidor, para todos os computadores. <b>Usar regra padrão</b>: desmarque para dar à conta linhas de troca só dela — sessão de 5h, semanal e modelo (ex.: 70% na sessão para guardar folga). <b>Prioridade</b> só vale na estratégia “Por prioridade”.</p>
   <div id="accounts" class="accounts"></div>
 </section>
 
 <section class="card">
   <h2>Exibição</h2>
   <div id="uiBox"></div>
-</section>
-
-<section class="card" id="xportCard">
-  <h2>Exportar e importar contas</h2>
-  <p class="muted small">Para usar as mesmas contas no seu outro computador sem logar de novo. O arquivo leva as contas e também as regras de troca, os avisos, a exibição e os ajustes de cada conta. As credenciais vão em texto puro: transfira com cuidado e apague depois de importar.</p>
-  <div class="xport">
-    <div class="xrow">
-      <button id="btnExportOther">Export Other</button>
-      <span class="muted small">No outro computador aparece só “Conta 1”, “Conta 2”… sem e-mail. Ele entra em modo privado ao importar.</span>
-    </div>
-    <div class="xrow" id="rowExportMe">
-      <button id="btnExportMe" class="secondary">Export Me</button>
-      <span class="muted small">Com os e-mails, como aqui.</span>
-    </div>
-    <div class="xrow">
-      <button id="btnImport" class="secondary">Importar contas…</button>
-      <span class="muted small">No outro computador: abre o arquivo .cswap e cadastra as contas.</span>
-    </div>
-  </div>
 </section>
 
 <section class="card">
@@ -133,10 +113,7 @@
 </section>
 
 <section class="card">
-  <div class="row between">
-    <h2>Histórico</h2>
-    <button id="btnClear" class="secondary">Limpar</button>
-  </div>
+  <h2>Histórico</h2>
   <ul id="history" class="history"></ul>
   <div id="histPager" class="pager hidden">
     <button id="histPrev" class="secondary small">‹ Anteriores</button>

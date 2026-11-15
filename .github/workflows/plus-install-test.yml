@@ -1,8 +1,9 @@
 # Swap Plus: testa os instaladores numa máquina limpa de verdade (Mac e Windows
 # do GitHub), do jeito que o MANUAL manda: instala o VS Code, roda o comando de
-# instalação e confere o motor e a extensão. Roda quando os instaladores mudam
-# e quando uma versão nova da extensão é publicada (aí confere também que a versão
-# instalada é a que acabou de sair).
+# instalação e confere a extensão (desde a 3.0 os instaladores só instalam a
+# extensão; não há mais motor). Roda quando os instaladores mudam e quando uma
+# versão nova da extensão é publicada (aí confere também que a versão instalada é
+# a que acabou de sair).
 name: Swap Plus — testar a instalação
 
 on:
@@ -12,7 +13,7 @@ on:
     types: [completed]
   push:
     branches: [main]
-    paths: ["plus/scripts/install.sh", "plus/scripts/install.ps1"]
+    paths: ["plus/scripts/install.sh", "plus/scripts/install.ps1", ".github/workflows/plus-install-test.yml"]
 
 permissions:
   contents: read
@@ -32,11 +33,8 @@ jobs:
         run: brew install --cask visual-studio-code
       - name: Instalar (o mesmo comando do MANUAL, usando o script deste commit)
         run: bash plus/scripts/install.sh
-      - name: Conferir
+      - name: Conferir a extensão
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
-          swap-plus --version
-          swap-plus list --json || true
           EXTS=$("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" --list-extensions --show-versions)
           echo "$EXTS"
           echo "$EXTS" | grep -q '^paulo-local\.swap-plus@' || { echo "::error::extensão não instalada"; exit 1; }
@@ -61,12 +59,9 @@ jobs:
         shell: powershell
         # UTF-8 explícito: é o que o irm recebe do GitHub no comando do MANUAL.
         run: Get-Content -Raw -Encoding UTF8 plus/scripts/install.ps1 | Invoke-Expression
-      - name: Conferir
+      - name: Conferir a extensão
         shell: powershell
         run: |
-          & "$HOME\.local\bin\swap-plus.exe" --version
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          & "$HOME\.local\bin\swap-plus.exe" list --json
           $code = "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd"
           if (-not (Test-Path $code)) { $code = "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" }
           $exts = & $code --list-extensions --show-versions
@@ -81,6 +76,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Testes da extensão no Windows (dados simulados)
-        working-directory: plus
-        run: node test/smoke.js --unit
+      - name: Testes da extensão no Windows (dados simulados; smoke --unit, se existir)
+        shell: bash
+        run: |
+          if [ -f plus/test/smoke.js ]; then
+            node plus/test/smoke.js --unit
+          else
+            echo "plus/test/smoke.js não existe: pulado."
+          fi

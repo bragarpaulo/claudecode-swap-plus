@@ -220,7 +220,7 @@ summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
 .badge.on { color: var(--vscode-button-foreground); background: var(--accent); }
 .badge.plain { color: var(--soft); background: transparent; border: 1px solid var(--line); }
 .badge.dead { color: var(--bad); background: transparent; border: 1px solid var(--bad); }
-/* modo servidor: "Em uso neste computador e em: ..." pode ser longo — quebra a linha em vez de empurrar o nome da conta */
+/* "Em uso neste computador e em: ..." pode ser longo — quebra a linha em vez de empurrar o nome da conta */
 .badge.wrap { white-space: normal; text-align: right; max-width: 230px; overflow-wrap: anywhere; }
 .card.dimmed { opacity: 0.55; }
 
@@ -259,7 +259,6 @@ summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
 
 /* ---------- barra de status / histórico */
 .check { display: flex; align-items: center; gap: 8px; margin: 6px 0; cursor: pointer; }
-.uirule { max-width: 620px; }
 
 .history { list-style: none; margin: 8px 0 0; padding: 0; }
 .history li { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
@@ -319,21 +318,13 @@ summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
 .aname .n { color: var(--vscode-foreground); font-weight: 600; margin-right: 6px; }
 
 /* ---------- v1.2 */
-.xport { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
-.xrow { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 12px; }
-.xrow button { width: 100%; }
 .privnote { margin: 2px 0 10px 24px; }
-@media (max-width: 640px) { .xrow { grid-template-columns: 1fr; } }
 
 /* ---------- v1.3 */
 .upd { display: grid; grid-template-columns: 170px repeat(3, minmax(90px, 1fr)); gap: 6px 14px; margin-top: 10px; align-items: baseline; }
 .upd .hd { color: var(--soft); font-size: 0.88em; }
 .upd .nm { font-weight: 600; }
 .upd .new { color: var(--warn); font-weight: 600; }
-
-/* ---------- v1.4 */
-.order { display: flex; gap: 4px; }
-button.arrow { padding: 0 8px; min-width: 28px; line-height: 20px; }
 
 /* ---------- v1.4.3: verde para "ligado" e "participa"; trilhas neutras */
 :root { --green: #2ea043; --trackbg: rgba(128, 128, 128, 0.28); }
@@ -355,14 +346,9 @@ input.rotbox { accent-color: var(--green); }
 /* ---------- v1.6: conta em uso em destaque */
 .inuse { margin: 10px 0 8px; padding: 8px 12px; border: 1px solid var(--green); border-radius: var(--radius); }
 
-/* ---------- v1.8: conta logada não cadastrada */
-.notreg { margin: 10px 0 8px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
-.notreg button { margin-left: auto; }
-
-/* ---------- v2.0: modo servidor */
+/* ---------- v2.0: servidor */
 .dot.bad { background: var(--bad); }
 .badtext { color: var(--bad); }
-.srvmode { margin-top: 12px; }
 .srvinfo { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px; margin-top: 12px; }
 .srvinfo .k { color: var(--soft); }
 .srvinfo .v { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
@@ -391,7 +377,6 @@ button.linkbtn:hover {
   text-decoration: underline;
 }
 button.linkbtn:hover { color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground)); }
-.srvmig { margin-top: 14px; grid-template-columns: 260px 1fr; }
 .srvwarn { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .srvwarn button { margin-left: auto; }
 .srvnote { margin: 8px 0 0; padding: 6px 10px; border-left: 3px solid var(--accent); font-size: 0.92em; }
@@ -400,7 +385,7 @@ button.linkbtn:hover { color: var(--vscode-textLink-activeForeground, var(--vsco
 @media (max-width: 640px) {
   .dev { grid-template-columns: 1fr auto; }
   .dev .dacc, .dev .dseen { grid-column: 1 / -1; }
-  .srvinfo, .srvmig { grid-template-columns: 1fr; }
+  .srvinfo { grid-template-columns: 1fr; }
 }
 
 /* Paginação do histórico (10 por página) */

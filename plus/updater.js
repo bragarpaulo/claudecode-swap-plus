@@ -1,31 +1,26 @@
 "use strict";
-// Atualizações do Swap Plus, no mesmo esquema das extensões do VS Code:
+// Atualizações da extensão Swap Plus, no mesmo esquema das extensões do VS Code:
 // verifica ao abrir o VS Code, a cada 2 dias e ao fechar; instala sozinho se a
 // opção do VS Code "extensions.autoUpdate" estiver ligada, senão só avisa.
 // Tudo roda dentro do VS Code: ao fechar, só verifica e anota; a instalação
 // acontece na próxima abertura. Nada fica rodando depois que ele fecha.
 //
-//   motor     → releases "plus-vX.Y.Z" de bragarpaulo/swap-plus (wheel montado e
-//               testado pelo GitHub Actions a partir do original realiti4/claude-swap)
 //   extensão  → releases "plus-vX.Y.Z" de bragarpaulo/swap-plus-vscode (.vsix)
+//   original  → tags "vX.Y.Z" de smith89k/claude-swap-status (só para avisar no histórico)
 //
-// Quando o original lança versão nova e o fork ainda não preparou, pede ao
-// GitHub para preparar (se o `gh` estiver logado nesta máquina).
+// 3.0: o motor antigo (CLI swap-plus) não é mais usado; o atualizador não o
+// consulta, não instala nem atualiza.
 
 const vscode = require("vscode");
 const https = require("https");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFile } = require("child_process");
 
 const REPOS = {
-  cli: "bragarpaulo/swap-plus",
   ext: "bragarpaulo/swap-plus-vscode",
-  upstreamCli: "realiti4/claude-swap",
   upstreamExt: "smith89k/claude-swap-status",
 };
-const SYNC_WORKFLOW = "plus-sync.yml";
 const STATE_KEY = "swapPlus.updates";
 const PERIOD_MS = 48 * 3600e3; // a cada 2 dias
 const UA = "swap-plus-vscode";
@@ -71,7 +66,7 @@ function pickStableTag(tags) {
   return v[0] ? v[0].slice(1) : null;
 }
 
-// ---------------------------------------------------------------- rede e processos
+// ---------------------------------------------------------------- rede
 
 const RATE_LIMIT_MSG = "o GitHub limitou as consultas desta rede por agora (60 por hora sem login, somando todos os computadores da rede); a próxima verificação tenta de novo";
 
@@ -133,9 +128,6 @@ function request(url, { timeout = 10000, json = true, dest = null, redirects = 5
   });
 }
 
-const IS_WIN = process.platform === "win32";
-
-/** Acha um executável (no Windows também com .exe/.cmd). */
 /** HEAD sem seguir o redirecionamento; devolve o endereço para onde o GitHub manda. */
 function headLocation(url, timeout = 10000) {
   return new Promise((resolve, reject) => {
@@ -172,45 +164,7 @@ function plusReleaseFromTag(repo, tag, assetName) {
   };
 }
 
-const WHEEL_NAME = (v) => `claude_swap-${v}-py3-none-any.whl`;
 const VSIX_NAME = () => "swap-plus.vsix";
-
-function findBin(name) {
-  const home = os.homedir();
-  const dirs = [path.join(home, ".local", "bin"), path.join(home, ".cargo", "bin")];
-  if (IS_WIN) {
-    if (process.env.LOCALAPPDATA) dirs.push(path.join(process.env.LOCALAPPDATA, "Programs", "GitHub CLI"));
-    if (process.env.ProgramFiles) dirs.push(path.join(process.env.ProgramFiles, "GitHub CLI"));
-  } else {
-    dirs.push("/opt/homebrew/bin", "/usr/local/bin");
-  }
-  dirs.push(...(process.env.PATH || "").split(path.delimiter));
-  const names = IS_WIN ? [`${name}.exe`, `${name}.cmd`, name] : [name];
-  for (const d of dirs) {
-    if (!d) continue;
-    for (const n of names) {
-      const p = path.join(d, n);
-      try {
-        fs.accessSync(p, IS_WIN ? fs.constants.F_OK : fs.constants.X_OK);
-        if (fs.statSync(p).isFile()) return p;
-      } catch {}
-    }
-  }
-  return null;
-}
-
-function run(bin, args, timeout = 60000) {
-  return new Promise((resolve) => {
-    execFile(bin, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ code: err ? (typeof err.code === "number" ? err.code : -1) : 0, stdout: stdout || "", stderr: stderr || "", error: err ? String(err.message || err) : null });
-    });
-  });
-}
-
-function lastLine(s) {
-  const lines = String(s || "").trim().split("\n").filter(Boolean);
-  return lines.length ? lines[lines.length - 1] : "";
-}
 
 /** Trava entre janelas do VS Code: no máximo uma verificação por intervalo. */
 function claim(name, ms) {
@@ -232,10 +186,8 @@ function claim(name, ms) {
 // ---------------------------------------------------------------- atualizador
 
 /**
- * deps: { context, cfg, cliVersion(): Promise<string|null>, onCliUpdated(), pushHistory(entries), postState(),
- *         engineWanted?(): boolean — false = o motor (swap-plus) não é usado agora (modo servidor):
- *           não consulta a versão dele, não oferece instalar nem atualizar;
- *         overrides?: { uv, gh, code, autoUpdate } }   (overrides só para testes)
+ * deps: { context, cfg, pushHistory(entries), postState(),
+ *         overrides?: { autoUpdate } }   (overrides só para testes)
  */
 function createUpdater(deps) {
   const { context } = deps;
@@ -249,13 +201,6 @@ function createUpdater(deps) {
   const getState = () => context.globalState.get(STATE_KEY) || {};
   const setState = (patch) => context.globalState.update(STATE_KEY, { ...getState(), ...patch });
   const enabled = () => deps.cfg().get("updates.enabled") !== false;
-  const engineWanted = () => {
-    try {
-      return typeof deps.engineWanted === "function" ? deps.engineWanted() !== false : true;
-    } catch {
-      return true;
-    }
-  };
   const autoUpdate = () => {
     if (typeof ov.autoUpdate === "boolean") return ov.autoUpdate;
     const v = vscode.workspace.getConfiguration("extensions").get("autoUpdate");
@@ -293,48 +238,17 @@ function createUpdater(deps) {
   }
 
   async function check({ reason = "manual", timeout = 10000 } = {}) {
-    const [cliRel, extRel, upCli, upExt, installed] = await Promise.allSettled([
-      latestPlus(REPOS.cli, WHEEL_NAME, timeout),
-      latestPlus(REPOS.ext, VSIX_NAME, timeout),
-      latestStable(REPOS.upstreamCli, timeout),
-      latestStable(REPOS.upstreamExt, timeout),
-      engineWanted() ? deps.cliVersion() : Promise.resolve(null), // modo servidor: o motor não é chamado
-    ]);
+    const [extRel, upExt] = await Promise.allSettled([latestPlus(REPOS.ext, VSIX_NAME, timeout), latestStable(REPOS.upstreamExt, timeout)]);
     const val = (p) => (p.status === "fulfilled" ? p.value : null);
-    const errors = [cliRel, extRel, upCli, upExt].filter((p) => p.status === "rejected").map((p) => String(p.reason && p.reason.message ? p.reason.message : p.reason));
+    const errors = [extRel, upExt].filter((p) => p.status === "rejected").map((p) => String(p.reason && p.reason.message ? p.reason.message : p.reason));
     const r = {
       ts: new Date().toISOString(),
       reason,
-      cli: { installed: val(installed), latest: val(cliRel) ? val(cliRel).version : null, upstream: val(upCli), release: val(cliRel) },
       ext: { installed: extVersion, latest: val(extRel) ? val(extRel).version : null, upstream: val(upExt), base: upstreamExtBase, release: val(extRel) },
       error: errors.length ? errors[0] : null,
     };
     await setState({ last: r });
     return r;
-  }
-
-  async function applyCli(release) {
-    if (!engineWanted()) return false; // modo servidor: o motor não é instalado nem atualizado
-    const uv = ov.uv || findBin("uv");
-    if (!uv) {
-      vscode.window.showWarningMessage(`Swap Plus: o motor ${release.version} está disponível, mas falta o uv nesta máquina. Instale com: curl -LsSf https://astral.sh/uv/install.sh | sh`);
-      return false;
-    }
-    const whl = release.assets.find((a) => /\.whl$/.test(a.name));
-    const spec = whl ? whl.url : `git+https://github.com/${REPOS.cli}@${release.tag}`;
-    const res = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `Swap Plus: atualizando o motor para ${release.version}...`, cancellable: false },
-      () => run(uv, ["tool", "install", "--force", "--reinstall", spec], 300000)
-    );
-    const now = await deps.cliVersion();
-    if (res.code !== 0 || cmpVersion(now, release.version) !== 0) {
-      vscode.window.showErrorMessage(`Swap Plus: não consegui atualizar o motor: ${lastLine(res.stderr) || res.error || `versão instalada continua ${now}`}`);
-      return false;
-    }
-    await deps.pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `Motor atualizado para ${release.version}` }]);
-    await deps.onCliUpdated();
-    vscode.window.showInformationMessage(`Swap Plus: motor atualizado para ${release.version}.`);
-    return true;
   }
 
   async function applyExt(release) {
@@ -357,18 +271,6 @@ function createUpdater(deps) {
     return true;
   }
 
-  /** O original lançou versão que o fork ainda não preparou: pede ao GitHub (uma vez por versão). */
-  async function maybeDispatch(version) {
-    if (getState().dispatched === version) return;
-    const gh = ov.gh || findBin("gh");
-    if (!gh) return;
-    const res = await run(gh, ["workflow", "run", SYNC_WORKFLOW, "-R", REPOS.cli], 30000);
-    if (res.code === 0) {
-      await setState({ dispatched: version });
-      await deps.pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `O claude-swap original lançou ${version}; pedi ao GitHub para testar e preparar o motor` }]);
-    }
-  }
-
   async function offer(text, action) {
     const choice = await vscode.window.showInformationMessage(`Swap Plus: ${text}`, "Atualizar");
     if (choice) await action();
@@ -383,24 +285,14 @@ function createUpdater(deps) {
       const auto = autoUpdate() || reason === "manual";
       const tasks = [];
 
-      // Modo servidor: o motor não é usado; nada de oferecer instalar nem atualizar.
-      const cliRel = engineWanted() ? r.cli.release : null;
-      if (cliRel && !r.cli.installed) {
-        tasks.push(offer(`o motor (swap-plus) não está instalado nesta máquina. Instalar a versão ${cliRel.version}?`, () => applyCli(cliRel)));
-      } else if (cliRel && newer(cliRel.version, r.cli.installed)) {
-        tasks.push(auto ? applyCli(cliRel) : offer(`motor ${cliRel.version} disponível (instalado: ${r.cli.installed}).`, () => applyCli(cliRel)));
-      }
-
       const extRel = r.ext.release;
       if (extRel && newer(extRel.version, extVersion)) {
         tasks.push(auto ? applyExt(extRel) : offer(`extensão ${extRel.version} disponível (instalada: ${extVersion}).`, () => applyExt(extRel)));
       }
 
-      if (r.cli.upstream && (!r.cli.latest || newer(r.cli.upstream, r.cli.latest))) tasks.push(maybeDispatch(r.cli.upstream));
-
       if (newer(r.ext.upstream, r.ext.base) && getState().extNotified !== r.ext.upstream) {
         await setState({ extNotified: r.ext.upstream });
-        await deps.pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `A extensão original lançou ${r.ext.upstream}; o GitHub abriu um aviso no seu repositório para avaliar` }]);
+        await deps.pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `A extensão original (de onde o Swap Plus nasceu) lançou ${r.ext.upstream}. Só informativo: o Swap Plus segue o próprio caminho` }]);
       }
 
       await Promise.all(tasks);
@@ -421,8 +313,7 @@ function createUpdater(deps) {
     try {
       const r = await Promise.race([check({ reason: "close", timeout: 2500 }), new Promise((res) => setTimeout(() => res(null), 3000))]);
       if (!r) return null;
-      const pending =
-        (engineWanted() && r.cli.release && r.cli.installed && newer(r.cli.release.version, r.cli.installed)) || (r.ext.release && newer(r.ext.release.version, extVersion));
+      const pending = !!r.ext.release && newer(r.ext.release.version, extVersion);
       await setState({ pendingOnOpen: !!pending });
       return r;
     } catch {
@@ -451,7 +342,6 @@ function createUpdater(deps) {
     return {
       enabled: enabled(),
       autoUpdate: autoUpdate(),
-      engine: engineWanted(), // false = modo servidor: a tela esconde a linha do motor
       pendingOnOpen: !!getState().pendingOnOpen,
       extInstalled: extVersion,
       last: last
@@ -459,14 +349,13 @@ function createUpdater(deps) {
             ts: last.ts,
             reason: last.reason,
             error: last.error,
-            cli: { installed: last.cli.installed, latest: last.cli.latest, upstream: last.cli.upstream },
-            ext: { installed: extVersion, latest: last.ext.latest, upstream: last.ext.upstream, base: last.ext.base },
+            ext: { installed: extVersion, latest: (last.ext || {}).latest || null, upstream: (last.ext || {}).upstream || null, base: (last.ext || {}).base || null },
           }
         : null,
     };
   }
 
-  return { start, stop, runCheck, onClose, check, summary, applyCli, applyExt };
+  return { start, stop, runCheck, onClose, check, summary, applyExt };
 }
 
-module.exports = { createUpdater, cmpVersion, pickPlusRelease, pickStableTag, findBin, request, latestReleaseTag, RATE_LIMIT_MSG, REPOS };
+module.exports = { createUpdater, cmpVersion, pickPlusRelease, pickStableTag, request, latestReleaseTag, RATE_LIMIT_MSG, REPOS };

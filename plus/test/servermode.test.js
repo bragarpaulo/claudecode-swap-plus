@@ -12,11 +12,13 @@
 //   teste aborta se algum caminho do claudeAuth cair fora dele) e o claudeAuth
 //   grava em arquivo (_test.setStore("file")): nunca toca no Keychain, no
 //   ~/.claude.json nem na credencial de verdade.
-// - O `swap-plus` é um script Node falso. O teste redireciona o execFile desse
-//   caminho para `node <script>`: assim ele roda mesmo com o temporário montado
-//   sem permissão de execução (noexec — comum em servidores e containers), que
-//   era o que fazia os cenários 1 (envio dos logins) e 7 (modo local) falharem
-//   no servidor sem chamar o swap-plus.
+// - 3.0: só servidor. Não há mais modo local nem motor (swap-plus) a chamar. O
+//   cenário 7 confere a limpeza do motor antigo com um `uv` FALSO e um swap-plus
+//   falso em ~/.local/bin do HOME temporário. O `uv` falso é um script Node: o
+//   execFile desse caminho vira `node <script>` (roda mesmo com o temporário
+//   montado sem permissão de execução — noexec, comum em servidores e containers).
+//   O PATH fica só com uma pasta do temporário: nada de verdade (uv, swap-plus)
+//   é achado, e a limpeza automática do activate é cancelada logo depois dele.
 // - createServerClient é observado (sem o token): todo cliente com token tem de
 //   levar tokenOrigin, e o POST /v1/logins vai com timeout de 45 s.
 // - fake.canUpload controla device.canUploadLogins no estado (undefined = campo
@@ -68,16 +70,17 @@ delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
 process.env.TMPDIR = TMP;
 process.env.TMP = TMP;
 process.env.TEMP = TMP;
-process.env.PATH = BIN + path.delimiter + (process.env.PATH || "");
+// Só uma pasta do temporário: a procura do motor antigo e do uv (no PATH) nunca acha nada de verdade.
+process.env.PATH = BIN;
 
-// swap-plus falso: o execFile desse caminho vira `node <script>` (o script não precisa de permissão de execução).
-const SWAP_PLUS_EXE = path.join(BIN, "swap-plus");
+// Executáveis falsos (scripts Node): o execFile desses caminhos vira `node <script>` (não precisam de permissão de execução).
+const FALSOS = new Set();
 const childProcess = require("node:child_process");
 const execFileOrig = childProcess.execFile;
 childProcess.execFile = function (file, ...rest) {
-  if (file === SWAP_PLUS_EXE) {
+  if (FALSOS.has(file)) {
     const args = Array.isArray(rest[0]) ? rest.shift() : [];
-    return execFileOrig.call(this, process.execPath, [SWAP_PLUS_EXE, ...args], ...rest);
+    return execFileOrig.call(this, process.execPath, [file, ...args], ...rest);
   }
   return execFileOrig.call(this, file, ...rest);
 };
@@ -123,16 +126,14 @@ const oauthAccountOf = (n) => ({ accountUuid: `acc-${n}`, emailAddress: `conta${
 const SCOPES = ["user:inference", "user:profile"];
 const credOf = (n, g) => ({ accessToken: acessoServidor(n, g), expiresAt: expOf(n, g), scopes: SCOPES, subscriptionType: "max", rateLimitTier: "default_claude_max_20x" });
 
-const ACESSO_LOCAL = segredo("oat01-local");
-const REFRESH_LOCAL = segredo("ort01-local");
-
 // Chaves que a extensão usa (constantes de plus/extension.js).
 const TOKEN_KEY = "swapPlus.server.token";
 const META_KEY = "swapPlus.server";
 const APPLIED_KEY = "swapPlus.server.applied";
 const SENT_KEY = "swapPlus.server.sentLogin";
-const MIGRATED_KEY = "swapPlus.server.migrated";
+const MIGRATED_KEY = "swapPlus.server.migrated"; // da 2.x: a 3.0 não anota mais nada aqui
 const HISTORY_KEY = "swapPlus.autoHistory";
+const ENGINE_KEY = "swapPlus.engineCleanup";
 
 // ================================================================ logs
 
@@ -145,74 +146,6 @@ for (const m of ["log", "info", "warn", "error", "debug"]) {
     if (process.env.SWAP_PLUS_DEBUG) origConsole[m](...a);
   };
 }
-
-// ================================================================ swap-plus falso
-
-const LISTA_LOCAL = {
-  schemaVersion: 1,
-  activeAccountNumber: 1,
-  accounts: [
-    {
-      number: 1,
-      email: "local1@exemplo.com",
-      organizationName: "Org L1",
-      organizationUuid: "org-l1",
-      plan: { label: "Max" },
-      usageStatus: "ok",
-      usageAgeSeconds: 10,
-      usage: {
-        fiveHour: { pct: 5, resetsAt: new Date(Date.now() + 2 * 3600e3).toISOString() },
-        sevenDay: { pct: 10, resetsAt: new Date(Date.now() + 50 * 3600e3).toISOString() },
-      },
-    },
-  ],
-};
-const EXPORT_LOCAL = {
-  version: 1,
-  accounts: [
-    {
-      number: 1,
-      email: "local1@exemplo.com",
-      organizationUuid: "org-l1",
-      credentials: { claudeAiOauth: { accessToken: ACESSO_LOCAL, refreshToken: REFRESH_LOCAL, expiresAt: Date.now() + 8 * 3600e3, scopes: SCOPES } },
-      config: { oauthAccount: { emailAddress: "local1@exemplo.com", organizationUuid: "org-l1", organizationName: "Org L1" } },
-    },
-  ],
-};
-
-const swapPlusFalso = (() => {
-  const exe = SWAP_PLUS_EXE;
-  const log = path.join(ROOT, "swap-plus.log");
-  const listFile = path.join(ROOT, "lista-local.json");
-  const exportFile = path.join(ROOT, "export-local.json");
-  fs.writeFileSync(listFile, JSON.stringify(LISTA_LOCAL));
-  fs.writeFileSync(exportFile, JSON.stringify(EXPORT_LOCAL));
-  const J = (v) => JSON.stringify(v);
-  fs.writeFileSync(
-    exe,
-    [
-      "#!/usr/bin/env node",
-      "// swap-plus falso (teste): anota a chamada e responde como o motor.",
-      'const fs = require("fs");',
-      "const a = process.argv.slice(2);",
-      `fs.appendFileSync(${J(log)}, a.join(" ") + "\\n");`,
-      "switch (a[0]) {",
-      `  case "list": process.stdout.write(fs.readFileSync(${J(listFile)}, "utf8")); break;`,
-      `  case "status": process.stdout.write(${J('{"schemaVersion":1,"active":null,"totalManagedAccounts":1}\n')}); break;`,
-      `  case "export": fs.copyFileSync(${J(exportFile)}, a[1]); break;`,
-      `  case "config": process.stdout.write(${J('{"settings":[]}\n')}); break;`,
-      `  case "--version": process.stdout.write(${J("swap-plus 9.9.9\n")}); break;`,
-      "}",
-      "",
-    ].join("\n"),
-    { mode: 0o755 }
-  );
-  return {
-    exe,
-    calls: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : []),
-    limpar: () => fs.rmSync(log, { force: true }),
-  };
-})();
 
 // ================================================================ servidor falso
 
@@ -766,16 +699,15 @@ async function limparLimite() {
 
 const codigoConexao = (code, url = fake.url) => "swapplus1:" + Buffer.from(JSON.stringify({ url, code, fp: null }), "utf8").toString("base64url");
 
-/** Volta ao modo local sem conexão (pelo comando de desconectar, como a pessoa faria). */
+/** Sem conexão (pelo comando de desconectar, como a pessoa faria), com o Swap Plus ligado. */
 async function desconectar() {
   const prev = ui.warn;
-  ui.warn = (_m, b) => (b.includes("Desconectar e usar o modo local") ? "Desconectar e usar o modo local" : undefined);
+  ui.warn = (_m, b) => (b.includes("Desconectar") ? "Desconectar" : undefined);
   try {
     await commands["swapPlus.disconnectServer"]();
   } finally {
     ui.warn = prev;
   }
-  if (T.serverMode()) await cfgApi.update("mode", "local");
   if (store["swapPlus.enabled"] === false) await cfgApi.update("enabled", true);
   await ciclo();
 }
@@ -783,12 +715,11 @@ async function desconectar() {
 /**
  * Este computador conectado ao servidor falso (como se outra janela tivesse
  * conectado), com a conta 1 atribuída e o primeiro ciclo já feito.
- * Ordem: modo local primeiro (para o ciclo), depois ligado, estado, modo servidor.
+ * Ordem: Swap Plus desligado (para o ciclo), estado, ligado de novo.
  */
 async function prepararServidor() {
   resetUi();
-  if (T.serverMode()) await cfgApi.update("mode", "local");
-  if (store["swapPlus.enabled"] === false) await cfgApi.update("enabled", true);
+  if (store["swapPlus.enabled"] !== false) await cfgApi.update("enabled", false);
   await ciclo();
   fake.reset();
   fake.devices.set(DEVICE_ID, { token: DEVICE_TOKEN, name: "PC de teste" });
@@ -797,13 +728,25 @@ async function prepararServidor() {
   await globalState.update(APPLIED_KEY, undefined);
   await globalState.update(SENT_KEY, undefined);
   fs.rmSync(T.ownerFile(), { force: true }); // esta janela volta a ser a dona no 1º ciclo
-  Object.assign(T.srv, { rejected: null, loginRetry: null, applyFail: null, discard: null, expectNumber: null, uploadDenied: false, deniedKey: null, deniedWarned: null });
+  Object.assign(T.srv, {
+    state: null,
+    status: null,
+    owner: null,
+    rejected: null,
+    loginRetry: null,
+    applyFail: null,
+    discard: null,
+    expectNumber: null,
+    uploadDenied: false,
+    deniedKey: null,
+    deniedWarned: null,
+    disconnectedWarned: false,
+  });
   fs.rmSync(path.join(CLAUDE_DIR, "projects"), { recursive: true, force: true });
   await limparLimite();
   escreverLogin({ accessToken: segredo("oat01-antigo"), expiresAt: Date.now() + 3600e3, scopes: ["user:inference"] });
   escreverConta(oauthAccountOf(1));
-  await T.waitMotorSync(); // a sincronização com o motor local que começou no modo local termina antes
-  await cfgApi.update("mode", "server");
+  await cfgApi.update("enabled", true);
   await ciclo();
 }
 
@@ -862,21 +805,13 @@ function conferirSemTokens() {
 const timersDoActivate = [];
 
 before(async () => {
-  // O swap-plus falso precisa rodar (os cenários do modo local e do envio dos logins dependem dele).
-  const v = await new Promise((resolve) =>
-    childProcess.execFile(swapPlusFalso.exe, ["--version"], { timeout: 20000 }, (e, out, err) => resolve({ e, out: String(out || ""), err: String(err || "") }))
-  );
-  if (v.e || !/swap-plus 9\.9\.9/.test(v.out)) throw new Error(`o swap-plus falso não rodou: ${v.e ? v.e.code || v.e.message : ""} ${v.err}`.trim());
-  swapPlusFalso.limpar();
   await fake.iniciar();
   Object.assign(store, {
     "swapPlus.updates.enabled": false, // sem GitHub
-    "swapPlus.executablePath": swapPlusFalso.exe,
     "swapPlus.server.url": fake.url, // nunca o endereço padrão
-    "swapPlus.mode": "local",
   });
   T.setLimitRoot(path.join(CLAUDE_DIR, "projects"));
-  // Timers que o activate cria e o deactivate não limpa (atualizador, linhas do motor): limpos no fim.
+  // Timers que o activate cria e o deactivate não limpa (atualizador): limpos no fim.
   const st = global.setTimeout;
   const si = global.setInterval;
   global.setTimeout = function (...a) {
@@ -895,6 +830,8 @@ before(async () => {
     global.setTimeout = st;
     global.setInterval = si;
   }
+  // A limpeza do motor antigo só roda quando o cenário 7 chama (nunca sozinha, no meio de outro cenário).
+  T.cancelEngineCleanup();
   // Tela aberta: tudo o que vai para ela entra na busca de tokens do cenário 9.
   commands["swapPlus.openSettings"]();
   await ciclo();
@@ -929,7 +866,7 @@ after(async () => {
 
 // ================================================================ cenários
 
-test("1. conectar com código: token no cofre, modo servidor; oferta de envio só com contas locais", { timeout: T_MAX }, async () => {
+test("1. conectar com código: token no cofre, batimento e acesso gravado; nada de envio dos logins guardados (nem com ~/.claude-swap-backup)", { timeout: T_MAX }, async () => {
   resetUi();
   await desconectar();
   fake.reset();
@@ -937,7 +874,7 @@ test("1. conectar com código: token no cofre, modo servidor; oferta de envio s�
   fs.rmSync(credFile(), { force: true });
   fs.rmSync(cfgFile(), { force: true });
 
-  // a) sem contas no motor local
+  // a) primeira conexão
   fake.pairCodes.set("PAREAR0001", { id: "dev-1" });
   const code1 = codigoConexao("PAREAR0001");
   ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC de teste" : code1);
@@ -949,9 +886,8 @@ test("1. conectar com código: token no cofre, modo servidor; oferta de envio s�
   assert.ok(fake.devices.has("dev-1"), "o servidor falso pareou o computador");
   const token1 = fake.devices.get("dev-1").token;
   assert.equal(await secrets.get(TOKEN_KEY), token1, "token do dispositivo vai para o cofre de segredos");
-  assert.equal(store["swapPlus.mode"], "server");
-  assert.equal(T.serverMode(), true);
   assert.equal(T.serverStatus(), "online");
+  assert.equal("swapPlus.mode" in store, false, "não existe mais a configuração de modo");
   const meta = globalState.get(META_KEY);
   assert.equal(meta.deviceId, "dev-1");
   assert.equal(meta.url, fake.url);
@@ -972,51 +908,35 @@ test("1. conectar com código: token no cofre, modo servidor; oferta de envio s�
   assert.equal(hb.auth, `Bearer ${token1}`);
   assert.equal(calls.filter(isLogins).length, 0);
   let novas = notes.slice(n0);
-  assert.ok(!novas.some((n) => /Enviar os logins deste computador/.test(n.message)), "sem contas locais: não oferece o envio");
+  assert.ok(!novas.some((n) => /Enviar os logins deste computador/.test(n.message)), "não oferece o envio dos logins guardados");
   assert.ok(novas.some((n) => n.kind === "info" && /conectado ao servidor 127\.0\.0\.1:\d+/.test(n.message)));
   assert.equal(lerLogin().claudeAiOauth.accessToken, acessoServidor(1, 1), "gravou o acesso da conta atribuída");
 
-  // b) com contas no motor local (sequence.json) → oferece e envia
+  // b) conectar de novo com a pasta do motor antigo presente: ela não muda nada (nem pergunta, nem envio)
   fs.mkdirSync(path.join(HOME, ".claude-swap-backup"), { recursive: true });
   fs.writeFileSync(path.join(HOME, ".claude-swap-backup", "sequence.json"), JSON.stringify({ accounts: { 1: { alias: null } } }));
   fake.pairCodes.set("PAREAR0002", { id: "dev-2" });
   const code2 = codigoConexao("PAREAR0002");
   ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC de teste" : code2);
   ui.warn = (_m, b) => (b.includes("Conectar de novo") ? "Conectar de novo" : undefined);
-  // (o servidor falso não manda device.canUploadLogins: servidor antigo → pergunta como antes)
-  ui.info = (m) => (/Enviar os logins deste computador para o servidor\?/.test(m) ? "Sim" : undefined);
+  ui.info = (m) => (/Enviar os logins deste computador para o servidor\?/.test(m) ? "Sim" : undefined); // se perguntasse, seria Sim
   mark = fake.calls.length;
   n0 = notes.length;
-  swapPlusFalso.limpar();
   await commands["swapPlus.connectServer"]("code");
 
   const token2 = fake.devices.get("dev-2").token;
   assert.equal(await secrets.get(TOKEN_KEY), token2);
   novas = notes.slice(n0);
-  const pergunta = novas.find((n) => /Enviar os logins deste computador para o servidor\?/.test(n.message));
-  assert.ok(pergunta, "com contas locais: oferece o envio");
-  assert.equal(pergunta.buttons[0], "Sim", "“Sim” é a opção principal (primeiro botão)");
+  assert.ok(!novas.some((n) => /Enviar os logins deste computador/.test(n.message)), "não pergunta se envia os logins guardados");
   calls = fake.since(mark);
   const del = calls.find(is("DELETE", "/v1/devices/dev-1"));
   assert.ok(del, "a conexão anterior foi revogada no servidor");
   assert.equal(del.auth, `Bearer ${token1}`);
   assert.equal(fake.devices.has("dev-1"), false);
-  const ups = calls.filter(isLogins);
-  assert.equal(
-    ups.length,
-    1,
-    `um login local enviado (avisos: ${notes.slice(n0).filter((n) => n.kind !== "info").map((n) => semSegredo(n.message)).join(" | ") || "nenhum"}; motor: ${swapPlusFalso.calls().join(" | ") || "não chamado"})`
-  );
-  assert.equal(ups[0].auth, `Bearer ${token2}`);
-  assert.equal(ups[0].body.claudeAiOauth.refreshToken, REFRESH_LOCAL);
-  assert.equal(ups[0].body.oauthAccount.emailAddress, "local1@exemplo.com");
-  assert.deepEqual(ups[0].body.plan, { label: "Max" }, "plano vem do swap-plus list --json");
-  const motor = swapPlusFalso.calls();
-  assert.ok(motor.includes("list --json"), motor.join(" | "));
-  assert.ok(motor.some((l) => /^export \S+contas\.cswap$/.test(l)), motor.join(" | "));
-  assert.deepEqual(fs.readdirSync(TMP).filter((f) => f.startsWith("swap-plus-envio-")), [], "o temporário do export foi apagado");
-  assert.ok(novas.some((n) => /1 login aceito pelo servidor/.test(n.message)), "mostra quantos foram aceitos");
-  assert.ok((globalState.get(MIGRATED_KEY) || {})[fake.url], "anota que este servidor já recebeu os logins");
+  assert.equal(calls.filter(isLogins).length, 0, "nenhum POST /v1/logins (o login atual não tem refresh token)");
+  assert.equal(globalState.get(MIGRATED_KEY), undefined, "nada anotado como “logins enviados”");
+  assert.ok(fs.existsSync(path.join(HOME, ".claude-swap-backup", "sequence.json")), "a pasta do motor antigo fica como está");
+  fs.rmSync(path.join(HOME, ".claude-swap-backup"), { recursive: true, force: true });
 });
 
 test("2. conectar com Google: navegador, pending → ok; negado; cancelado sem sobrar dispositivo", { timeout: T_MAX }, async () => {
@@ -1036,7 +956,7 @@ test("2. conectar com Google: navegador, pending → ok; negado; cancelado sem s
     assert.match(err.message, /não está liberada neste servidor/);
     assert.equal(opened.length, o0 + 1, "abriu o navegador");
     assert.equal(await secrets.get(TOKEN_KEY), undefined);
-    assert.equal(T.serverMode(), false);
+    assert.equal(T.serverStatus(), "disconnected");
 
     // b) cancelado enquanto a consulta está no ar; o "ok" chega depois → a extensão revoga
     let chegou;
@@ -1070,7 +990,7 @@ test("2. conectar com Google: navegador, pending → ok; negado; cancelado sem s
     assert.equal(del.auth, `Bearer ${orfao.token}`);
     assert.equal(fake.devices.size, 0, "nenhum dispositivo sobrou no servidor");
     assert.equal(await secrets.get(TOKEN_KEY), undefined, "nada guardado no cofre");
-    assert.equal(T.serverMode(), false);
+    assert.equal(T.serverStatus(), "disconnected");
     assert.ok(notes.slice(n0).some((n) => /conexão com o Google cancelada/.test(n.message)));
 
     // c) pending, pending, ok → conectado
@@ -1095,7 +1015,6 @@ test("2. conectar com Google: navegador, pending → ok; negado; cancelado sem s
     const dev = fake.lastGoogleDevice;
     assert.ok(fake.devices.has(dev.id));
     assert.equal(await secrets.get(TOKEN_KEY), dev.token);
-    assert.equal(T.serverMode(), true);
     assert.equal(T.serverStatus(), "online");
     const meta = globalState.get(META_KEY);
     assert.equal(meta.via, "google");
@@ -1111,7 +1030,6 @@ test("2. conectar com Google: navegador, pending → ok; negado; cancelado sem s
 
 test("3. ciclo: batimento sem tokens; gen novo → acesso do servidor sem refreshToken; oauthAccount e mcpOAuth", { timeout: T_MAX }, async () => {
   await prepararServidor();
-  swapPlusFalso.limpar();
   escreverTranscricao("modelo", "conversa.jsonl", [linhaConversa("claude-fable-5-2")]);
 
   // O 1º ciclo (prepararServidor) já gravou o acesso da conta 1.
@@ -1166,7 +1084,6 @@ test("3. ciclo: batimento sem tokens; gen novo → acesso do servidor sem refres
   assert.equal(calls.filter(isCredential).length, 0);
   assert.match(bar().text, /\$\(cloud\)/);
   assert.match(bar().text, /Sessão \(5h\)/);
-  assert.deepEqual(swapPlusFalso.calls(), [], "no modo servidor o motor local (swap-plus) não é chamado");
 });
 
 test("4. login novo: POST /v1/logins UMA vez com o refreshToken e depois o acesso do servidor por cima; 422", { timeout: T_MAX }, async () => {
@@ -1324,34 +1241,161 @@ test("6. Swap Plus desligado: nenhuma chamada ao servidor e nada gravado", { tim
   }
 });
 
-test("7. modo local: nenhuma chamada ao servidor, mesmo conectado", { timeout: T_MAX }, async () => {
-  await prepararServidor();
-  await cfgApi.update("mode", "local");
-  await ciclo();
-  const mark = fake.calls.length;
-  swapPlusFalso.limpar();
-  fake.gen = 2;
-  loginNovo("local", "conta-local@exemplo.com", "org-x");
-  const loginAntes = lerTexto(credFile());
-  await limparLimite();
-  const tr = escreverTranscricao("local", "c.jsonl", [linhaLimite("You've hit your weekly limit")]);
+test("7. motor antigo: uv tool uninstall do pacote que traz o swap-plus (claude-swap), uma vez e sem senha; falha só registra e espera 1 dia; ~/.claude-swap-backup fica", { timeout: T_MAX }, async () => {
+  await prepararServidor(); // conectado: a limpeza só roda depois de conectar ao servidor
+  resetUi();
+  const LOCAL_BIN = path.join(HOME, ".local", "bin");
+  fs.mkdirSync(LOCAL_BIN, { recursive: true });
+  const motor = path.join(LOCAL_BIN, "swap-plus");
+  const motorExtras = [path.join(LOCAL_BIN, "cswap"), path.join(LOCAL_BIN, "claude-swap")];
+  const uvFalso = path.join(LOCAL_BIN, "uv");
+  const uvLog = path.join(ROOT, "uv.log");
+  const uvModo = path.join(ROOT, "uv-modo.txt"); // "ok" | "falha" | "sem-swap-plus"
+  const backup = path.join(HOME, ".claude-swap-backup");
+  const J = (v) => JSON.stringify(v);
+  const instalarMotor = () => {
+    for (const f of [motor, ...motorExtras]) fs.writeFileSync(f, "#!/bin/sh\necho motor antigo\n", { mode: 0o755 });
+  };
+  // uv falso: anota a chamada; `tool list` no formato do uv; `tool uninstall` apaga os comandos (ou falha).
+  fs.writeFileSync(
+    uvFalso,
+    [
+      "#!/usr/bin/env node",
+      'const fs = require("fs");',
+      'const path = require("path");',
+      "const a = process.argv.slice(2);",
+      `fs.appendFileSync(${J(uvLog)}, a.join(" ") + "\\n");`,
+      `const modo = fs.existsSync(${J(uvModo)}) ? fs.readFileSync(${J(uvModo)}, "utf8").trim() : "ok";`,
+      'if (a[0] === "tool" && a[1] === "list") {',
+      '  if (modo === "sem-swap-plus") process.stdout.write("claude-swap v0.9.0\\n- claude-swap\\n- cswap\\nruff v0.6.9\\n- ruff\\n");',
+      '  else process.stdout.write("claude-swap v1.1.0\\n- claude-swap\\n- cswap\\n- swap-plus\\nruff v0.6.9\\n- ruff\\n");',
+      "  process.exit(0);",
+      "}",
+      'if (a[0] === "tool" && a[1] === "uninstall") {',
+      '  if (modo === "falha") { process.stderr.write("error: falha simulada ao desinstalar\\n"); process.exit(2); }',
+      `  for (const n of ["swap-plus", "cswap", "claude-swap"]) fs.rmSync(path.join(${J(LOCAL_BIN)}, n), { force: true });`,
+      '  process.stdout.write("Uninstalled 3 executables: claude-swap, cswap, swap-plus\\n");',
+      "  process.exit(0);",
+      "}",
+      "process.exit(1);",
+      "",
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+  FALSOS.add(uvFalso);
+  const uvCalls = () => (fs.existsSync(uvLog) ? fs.readFileSync(uvLog, "utf8").split("\n").filter(Boolean) : []);
+  const reset = async () => {
+    await globalState.update(ENGINE_KEY, undefined);
+    fs.rmSync(T.engineLockFile(), { force: true });
+    fs.rmSync(uvLog, { force: true });
+  };
+  const AVISO = "Swap Plus 3.0: o motor antigo (swap-plus) não é mais usado e foi removido deste computador. As contas ficam no servidor.";
+  const avisosMotor = () => notes.filter((n) => n.message.includes("o motor antigo (swap-plus) não é mais usado"));
+  const hist = () => globalState.get(HISTORY_KEY) || [];
   try {
-    await commands["swapPlus.refreshStatus"]();
-    await T.checkLimitErrors();
-    await T.syncMotorLines();
-    await commands["swapPlus.switchAccount"]();
-    await ciclo();
-    await sleep(200);
-    assert.equal(fake.calls.length, mark, `chamadas no modo local: ${fake.since(mark).map((c) => `${c.method} ${c.path}`).join(", ")}`);
-    assert.ok(
-      swapPlusFalso.calls().includes("list --json"),
-      `o ciclo local rodou (com o swap-plus falso); chamadas: ${swapPlusFalso.calls().join(" | ") || "nenhuma"}; erro: ${T.buildPayload().error || "-"}`
-    );
-    assert.equal(lerTexto(credFile()), loginAntes, "o modo local não mexe no login aqui");
-    assert.equal(T.serverStatus(), "local");
-    assert.equal(await secrets.get(TOKEN_KEY), DEVICE_TOKEN, "continua conectado");
+    fs.mkdirSync(backup, { recursive: true });
+    fs.writeFileSync(path.join(backup, "sequence.json"), JSON.stringify({ accounts: { 1: { alias: null } } }));
+
+    // 0) sem conexão com o servidor: não mexe no motor (os logins do modo local só existem nele)
+    await reset();
+    instalarMotor();
+    const tokenGuardado = await secrets.get(TOKEN_KEY);
+    await secrets.delete(TOKEN_KEY);
+    T.resetServerConnection();
+    await T.refreshFresh(); // assenta o ciclo que a mudança do segredo dispara
+    let r0 = await T.cleanupOldEngine();
+    assert.equal(r0.status, "wait", JSON.stringify(r0));
+    assert.equal(r0.reason, "not_connected");
+    assert.deepEqual(uvCalls(), [], "sem conexão, o uv nem é chamado");
+    assert.ok(fs.existsSync(motor), "sem conexão, o motor fica");
+    assert.equal(globalState.get(ENGINE_KEY), undefined, "nada anotado: tenta de novo quando conectar");
+    await secrets.store(TOKEN_KEY, tokenGuardado);
+    T.resetServerConnection();
+    await T.refreshFresh();
+    for (const f of [motor, ...motorExtras]) fs.rmSync(f, { force: true });
+
+    // a) sem o motor: nada a fazer, nenhuma chamada ao uv, sem aviso; anotado como feito
+    await reset();
+    const n0 = notes.length;
+    let r = await T.cleanupOldEngine();
+    assert.equal(r.status, "absent");
+    assert.deepEqual(uvCalls(), [], "sem o motor, o uv nem é chamado");
+    assert.equal(notes.length, n0, "sem aviso");
+    assert.ok(globalState.get(ENGINE_KEY).done, "anotado: não procura de novo");
+    assert.equal((await T.cleanupOldEngine()).status, "done");
+
+    // b) com o motor: só acha o que está no HOME temporário (nada de verdade)
+    await reset();
+    instalarMotor();
+    assert.deepEqual(T.findOldEngine(), [motor], "acha o swap-plus de ~/.local/bin (e só ele)");
+    assert.equal(T.findUv(), uvFalso, "acha o uv de ~/.local/bin (o falso)");
+    for (const p of [...T.findOldEngine(), T.findUv()]) assert.ok(dentro(p), `fora do temporário: ${p}`);
+
+    // c) a desinstalação falha: só registra (histórico), sem aviso; o motor e a pasta ficam
+    fs.writeFileSync(uvModo, "falha");
+    const t0 = Date.now();
+    const n1 = notes.length;
+    r = await T.cleanupOldEngine({ now: t0 });
+    assert.equal(r.status, "fail", JSON.stringify(r));
+    assert.deepEqual(uvCalls(), ["tool list", "tool uninstall claude-swap"], "desinstala o pacote que traz o swap-plus (claude-swap)");
+    assert.equal(notes.length, n1, "falha: nenhuma notificação");
+    assert.match(hist()[0].text, /Não consegui remover o motor antigo \(swap-plus\): uv tool uninstall claude-swap falhou: error: falha simulada/);
+    assert.ok(fs.existsSync(motor), "o motor continua lá");
+    assert.ok(fs.existsSync(path.join(backup, "sequence.json")), "a pasta ~/.claude-swap-backup não é mexida");
+
+    // d) no mesmo dia (e em outra janela, pela trava): não tenta de novo
+    r = await T.cleanupOldEngine({ now: t0 + 3600e3 });
+    assert.equal(r.status, "wait");
+    await globalState.update(ENGINE_KEY, undefined); // como se fosse outra janela (sem o globalState desta)
+    r = await T.cleanupOldEngine({ now: t0 + 2 * 3600e3 });
+    assert.equal(r.status, "wait", "a trava entre janelas também segura");
+    assert.deepEqual(uvCalls(), ["tool list", "tool uninstall claude-swap"], "nenhuma chamada nova ao uv no mesmo dia");
+
+    // e) uv sem nenhum pacote que traga o swap-plus: não mexe em nada (nem no claude-swap original)
+    await reset();
+    fs.writeFileSync(uvModo, "sem-swap-plus");
+    r = await T.cleanupOldEngine({ now: t0 });
+    assert.equal(r.status, "skipped", JSON.stringify(r));
+    assert.deepEqual(uvCalls(), ["tool list"], "nenhum uninstall");
+    assert.match(hist()[0].text, /nenhum pacote do uv traz o comando swap-plus/);
+    assert.ok(fs.existsSync(motor));
+    assert.ok(globalState.get(ENGINE_KEY).skipped, "caso que não muda sozinho: anotado, não repete todo dia");
+    assert.equal((await T.cleanupOldEngine({ now: t0 + 30 * 3600e3 })).status, "done");
+    assert.deepEqual(uvCalls(), ["tool list"], "não chama o uv de novo");
+    await reset();
+
+    // f) no dia seguinte, a desinstalação dá certo: UMA notificação, histórico, a pasta fica
+    fs.writeFileSync(uvModo, "ok");
+    fs.rmSync(uvLog, { force: true });
+    const n2 = notes.length;
+    const a0 = avisosMotor().length;
+    r = await T.cleanupOldEngine({ now: t0 + 25 * 3600e3 });
+    assert.equal(r.status, "removed", JSON.stringify(r));
+    assert.deepEqual(r.packages, ["claude-swap"]);
+    assert.deepEqual(uvCalls(), ["tool list", "tool uninstall claude-swap"]);
+    assert.ok(!uvCalls().some((l) => /sudo|password|senha/i.test(l)), "sem sudo nem senha");
+    assert.equal(fs.existsSync(motor), false, "o comando swap-plus saiu");
+    const novas = notes.slice(n2);
+    assert.equal(novas.length, 1, `uma notificação só: ${novas.map((n) => n.message).join(" | ")}`);
+    assert.equal(novas[0].kind, "info");
+    assert.ok(novas[0].message.startsWith(AVISO), novas[0].message);
+    assert.match(novas[0].message, /~\/\.claude-swap-backup guarda cópias antigas dos logins do modo local: confira no painel se todas as suas contas estão no servidor e, estando, pode apagá-la/);
+    assert.match(hist()[0].text, /Motor antigo \(swap-plus\) removido deste computador \(uv tool uninstall claude-swap\)/);
+    assert.ok(fs.existsSync(path.join(backup, "sequence.json")), "a pasta ~/.claude-swap-backup NÃO é apagada");
+    assert.ok(globalState.get(ENGINE_KEY).done);
+
+    // g) de novo (outra abertura): nada, nem com o motor reinstalado
+    instalarMotor();
+    fs.rmSync(uvLog, { force: true });
+    r = await T.cleanupOldEngine();
+    assert.equal(r.status, "done");
+    assert.deepEqual(uvCalls(), []);
+    assert.equal(avisosMotor().length, a0 + 1, "a notificação aparece uma vez só");
   } finally {
-    fs.rmSync(tr, { force: true });
+    for (const f of [motor, ...motorExtras, uvFalso]) fs.rmSync(f, { force: true });
+    FALSOS.delete(uvFalso);
+    fs.rmSync(uvModo, { force: true });
+    fs.rmSync(backup, { recursive: true, force: true });
   }
 });
 
@@ -1433,11 +1477,16 @@ function segurar() {
 const AVISO_LOGIN = /o login do Claude Code é feito pelo Swap Plus/;
 
 test("10. o token só vai para o endereço em que foi emitido; scope machine e pasta não confiável no package.json", { timeout: T_MAX }, async () => {
-  // a) package.json
+  // a) package.json (3.0: sem modo local, sem motor)
   const props = manifest.contributes.configuration.properties;
-  for (const k of ["swapPlus.mode", "swapPlus.server.url", "swapPlus.enabled", "swapPlus.executablePath"]) {
+  for (const k of ["swapPlus.server.url", "swapPlus.enabled"]) {
     assert.equal(props[k].scope, "machine", `${k} só nas configurações do usuário`);
   }
+  for (const k of ["swapPlus.mode", "swapPlus.executablePath", "swapPlus.autoSwitch.enabled", "swapPlus.pollIntervalMinutes"]) assert.equal(k in props, false, `${k} saiu`);
+  assert.equal(Object.keys(props).some((k) => k.startsWith("swapPlus.rules.")), false, "as regras locais saíram (as regras são do servidor)");
+  const cmds = manifest.contributes.commands.map((c) => c.command);
+  for (const c of ["swapPlus.exportOther", "swapPlus.exportMe", "swapPlus.importAccounts", "swapPlus.addAccount"]) assert.equal(cmds.includes(c), false, `${c} saiu`);
+  assert.match(manifest.version, /^3\./);
   assert.equal(manifest.capabilities && manifest.capabilities.untrustedWorkspaces && manifest.capabilities.untrustedWorkspaces.supported, false);
 
   await prepararServidor();
@@ -1502,31 +1551,43 @@ test("10. o token só vai para o endereço em que foi emitido; scope machine e p
   assert.equal(T.serverStatus(), "online");
 });
 
-test("11. “Enviar os logins deste computador” só no modo servidor; no modo local a lista da tela é a do motor", { timeout: T_MAX }, async () => {
+test("11. sem conexão: barra e tela mostram “não conectado” com “Entrar com Google”; nada vai ao servidor; mensagens antigas da tela são ignoradas", { timeout: T_MAX }, async () => {
   await prepararServidor();
-  fs.mkdirSync(path.join(HOME, ".claude-swap-backup"), { recursive: true });
-  fs.writeFileSync(path.join(HOME, ".claude-swap-backup", "sequence.json"), JSON.stringify({ accounts: { 1: { alias: null } } }));
-  assert.equal(T.buildPayload().server.canMigrate, true, "modo servidor, conectado e com contas locais: pode enviar");
-
-  await cfgApi.update("mode", "local");
-  await ciclo();
+  assert.ok(T.buildPayload().accounts.length > 0, "conectado: a tela tem as contas do servidor");
+  await desconectar();
   const mark = fake.calls.length;
-  const n0 = notes.length;
-  swapPlusFalso.limpar();
-  await tela({ type: "migrate" });
-  assert.equal(fake.since(mark).length, 0, "nenhuma chamada ao servidor no modo local");
-  assert.ok(!swapPlusFalso.calls().some((l) => l.startsWith("export")), `o motor não exporta nada: ${swapPlusFalso.calls().join(" | ")}`);
-  assert.ok(notes.slice(n0).some((n) => /só funciona no modo servidor/.test(n.message)), "explica que é só no modo servidor");
-  assert.equal(T.buildPayload().server.canMigrate, false, "o botão some no modo local");
+  await ciclo();
+  await ciclo();
+  assert.equal(T.serverStatus(), "disconnected");
+  assert.match(bar().text, /não conectado — clique para entrar com Google/);
+  assert.match(String(bar().tooltip), /Entrar com Google/);
+  const p = T.buildPayload();
+  assert.equal(p.server.connected, false, "a tela (Sua conta / Servidor) mostra os botões de entrar");
+  assert.equal(p.server.status, "disconnected");
+  assert.equal(p.accounts.length, 0, "nenhuma conta do servidor antigo fica na tela");
+  assert.equal("serverMode" in p, false);
+  assert.equal("mode" in p.server, false);
+  assert.equal("canMigrate" in p.server, false);
 
-  // Estado do servidor chegando no modo local (ex.: resposta atrasada) não muda a lista da tela.
-  assert.equal(T.applyStateResponse(fake.stateFor(DEVICE_ID)), false);
-  assert.deepEqual(
-    T.buildPayload().accounts.map((a) => a.email),
-    ["local1@exemplo.com"],
-    "a lista continua a do motor deste computador"
-  );
-  assert.doesNotMatch(bar().text, /\$\(cloud\)/);
+  // Clique na barra: oferece entrar com Google (sem “modo local”).
+  let pergunta = null;
+  ui.warn = (m, b) => {
+    pergunta = { m, b };
+    return undefined;
+  };
+  try {
+    await commands["swapPlus.switchAccount"]();
+  } finally {
+    ui.warn = null;
+  }
+  assert.ok(pergunta && pergunta.b.includes("Entrar com Google"), `botões: ${pergunta && pergunta.b.join(", ")}`);
+  assert.ok(!pergunta.b.some((x) => /modo local/i.test(x)));
+
+  // Mensagens da tela da 2.x (exportar, importar, modo, enviar logins, reordenar): ignoradas, nada vai ao servidor.
+  const n0 = notes.length;
+  for (const m of [{ type: "export", mode: "other" }, { type: "import" }, { type: "setMode", mode: "local" }, { type: "migrate" }, { type: "move", number: 1, dir: "up" }]) await tela(m);
+  assert.equal(notes.length, n0, "nenhuma notificação");
+  assert.equal(fake.since(mark).length, 0, `chamadas sem conexão: ${fake.since(mark).map((c) => `${c.method} ${c.path}`).join(", ")}`);
 });
 
 test("12. compare-and-swap: login novo que aparece no meio fica; leitura que falha não grava nem zera o “recusado”", { timeout: T_MAX }, async () => {
@@ -1744,7 +1805,7 @@ test("15. fila única: troca espera o ciclo; desligar no meio do ciclo não grav
   await ciclo();
 });
 
-test("16. modo servidor desliga a tela de login do Claude Code (aviso uma vez) e devolve o valor de antes ao sair", { timeout: T_MAX }, async () => {
+test("16. conectado, a tela de login do Claude Code fica desligada (aviso uma vez) e volta ao valor de antes ao desligar ou desconectar", { timeout: T_MAX }, async () => {
   const cc = getConfiguration("claudeCode");
   await prepararServidor();
   await T.syncLoginPrompt();
@@ -1752,17 +1813,15 @@ test("16. modo servidor desliga a tela de login do Claude Code (aviso uma vez) e
   assert.equal(T.buildPayload().server.loginPromptOff, true);
   assert.equal(notes.filter((n) => AVISO_LOGIN.test(n.message)).length, 1, "avisa uma vez só");
 
-  // a) voltar ao modo local pela tela (com confirmação): volta a “não definido”, como era antes
-  ui.warn = (_m, b) => (b.includes("Voltar ao modo local") ? "Voltar ao modo local" : undefined);
-  await tela({ type: "setMode", mode: "local" });
-  ui.warn = null;
+  // a) desligar o Swap Plus pela tela: volta a “não definido”, como era antes
+  await tela({ type: "setEnabled", enabled: false });
   await T.syncLoginPrompt();
-  assert.equal(T.serverMode(), false);
+  assert.equal(T.serverStatus(), "off");
   assert.equal("claudeCode.disableLoginPrompt" in store, false, "voltou a não estar definido");
 
-  // b) com valor anterior false: liga no modo servidor e volta false ao desconectar
+  // b) com valor anterior false: liga de novo (conectado) e volta false ao desconectar
   await cc.update("disableLoginPrompt", false);
-  await cfgApi.update("mode", "server");
+  await cfgApi.update("enabled", true);
   await T.syncLoginPrompt();
   await ciclo();
   assert.equal(store["claudeCode.disableLoginPrompt"], true);
@@ -1872,7 +1931,7 @@ test("18. várias janelas: só a dona faz o batimento e grava; trava de envio en
 const AVISO_NAO_ENVIADO = /Este computador usa as contas do servidor\. O login local não foi enviado: só os computadores do administrador enviam logins\./;
 const PERGUNTA_ENVIO = /Enviar os logins deste computador para o servidor\?/;
 
-/** Contas guardadas no motor local (sem elas a pergunta do envio nem aparece) e nenhum envio anotado. */
+/** Pasta do motor antigo com contas (até a 2.x, isso fazia a extensão perguntar se enviava os logins). */
 async function contasLocais() {
   fs.mkdirSync(path.join(HOME, ".claude-swap-backup"), { recursive: true });
   fs.writeFileSync(path.join(HOME, ".claude-swap-backup", "sequence.json"), JSON.stringify({ accounts: { 1: { alias: null } } }));
@@ -1885,7 +1944,7 @@ test("19. 1ª conexão: nenhuma pergunta sobre as regras e nenhum PUT /v1/rules;
   fake.reset();
   fs.rmSync(path.join(HOME, ".claude-swap-backup"), { recursive: true, force: true }); // sem a pergunta do envio no meio
   try {
-    // Regras deste computador diferentes das do servidor (antes, isso fazia a extensão oferecer levá-las).
+    // Regras locais que ficaram no settings.json da 2.x (a 3.0 não lê mais): diferentes das do servidor.
     await cfgApi.update("rules.sessionSwitchPct", 85);
     await cfgApi.update("rules.strategy", "headroom");
     escreverLogin({ accessToken: segredo("oat01-antigo"), expiresAt: Date.now() + 3600e3, scopes: ["user:inference"] });
@@ -1902,7 +1961,7 @@ test("19. 1ª conexão: nenhuma pergunta sobre as regras e nenhum PUT /v1/rules;
       `nenhuma pergunta sobre as regras: ${novas.map((n) => n.message).join(" | ")}`
     );
     assert.equal(fake.since(mark).filter(isRules).length, 0, "nenhum PUT /v1/rules na conexão");
-    assert.equal(T.buildPayload().rules.sessionPct, 90, "no modo servidor valem as regras do servidor");
+    assert.equal(T.buildPayload().rules.sessionPct, 90, "valem as regras do servidor (as locais antigas são ignoradas)");
 
     // Pela tela, sim: Salvar regras → PUT /v1/rules
     const m2 = fake.calls.length;
@@ -1929,14 +1988,12 @@ test("20. canUploadLogins false: sem pergunta de envio nem botão, nenhum POST /
   ui.info = (m) => (PERGUNTA_ENVIO.test(m) ? "Sim" : undefined); // se perguntasse, a resposta seria Sim
   let mark = fake.calls.length;
   let n0 = notes.length;
-  swapPlusFalso.limpar();
   await commands["swapPlus.connectServer"]("code");
 
-  // a) conexão: sem a pergunta, sem envio, sem chamar o motor; o login daqui é substituído pela conta do servidor
+  // a) conexão: sem a pergunta, sem envio; o login daqui é substituído pela conta do servidor
   assert.equal(T.serverStatus(), "online");
   assert.ok(!notes.slice(n0).some((n) => PERGUNTA_ENVIO.test(n.message)), "não pergunta se envia os logins");
   assert.equal(fake.since(mark).filter(isLogins).length, 0, "nenhum POST /v1/logins");
-  assert.ok(!swapPlusFalso.calls().some((l) => l.startsWith("export")), `o motor não exporta nada: ${swapPlusFalso.calls().join(" | ")}`);
   let disk = lerLogin();
   assert.deepEqual(disk.claudeAiOauth, credOf(1, 1), "a conta do servidor foi gravada por cima");
   assert.notEqual(disk.claudeAiOauth.accessToken, local.oauth.accessToken);
@@ -1945,7 +2002,7 @@ test("20. canUploadLogins false: sem pergunta de envio nem botão, nenhum POST /
   assert.deepEqual(lerConta().oauthAccount, oauthAccountOf(1));
   assert.equal(notes.slice(n0).filter((n) => AVISO_NAO_ENVIADO.test(n.message)).length, 1, "avisa que o login local não foi enviado");
   assert.ok(!notes.slice(n0).some((n) => n.kind === "error"), "sem aviso de erro");
-  assert.equal(T.buildPayload().server.canMigrate, false, "o botão “Enviar os logins deste computador” some da tela");
+  assert.equal(T.buildPayload().server.canUploadLogins, false, "a tela sabe que este computador não envia logins");
   assert.doesNotMatch(bar().text, /recusado/);
 
   // b) login novo com o servidor ainda sem conta para este computador: fica, nada é enviado e o aviso sai uma vez só
@@ -1969,50 +2026,39 @@ test("20. canUploadLogins false: sem pergunta de envio nem botão, nenhum POST /
   assert.equal("refreshToken" in disk.claudeAiOauth, false);
   assert.equal(notes.slice(n0).filter((n) => AVISO_NAO_ENVIADO.test(n.message)).length, 1, "o aviso não se repete");
 
-  // d) “Enviar os logins” pela tela (mensagem atrasada) e troca manual com login novo: nada vai ao servidor
-  n0 = notes.length;
-  swapPlusFalso.limpar();
+  // d) mensagem antiga da tela (“Enviar os logins”, da 2.x) e troca manual com login novo: nada vai ao servidor
   await tela({ type: "migrate" });
   loginNovo("naoadmin3", "naoadmin3@exemplo.com", "org-na3");
   await T.serverSwitch(2);
   assert.equal(fake.since(mark).filter(isLogins).length, 0, "nenhum POST /v1/logins, nem pela tela nem na troca manual");
-  assert.ok(!swapPlusFalso.calls().some((l) => l.startsWith("export")), `o motor não exporta nada: ${swapPlusFalso.calls().join(" | ")}`);
-  assert.ok(
-    notes.slice(n0).some((n) => n.kind === "warn" && /Os logins dele não foram enviados: só os computadores do administrador enviam logins/.test(n.message)),
-    "a tela explica por que não enviou"
-  );
   disk = lerLogin();
   assert.deepEqual(disk.claudeAiOauth, credOf(2, 1), "a troca manual grava a conta do servidor por cima do login daqui");
   assert.equal("refreshToken" in disk.claudeAiOauth, false);
 });
 
-test("21. canUploadLogins true: pergunta com “Sim” primeiro e envia; login novo continua indo sozinho", { timeout: T_MAX }, async () => {
+test("21. canUploadLogins true: sem pergunta de envio dos logins guardados; o login atual do Claude Code vai sozinho ao servidor (na conexão e depois)", { timeout: T_MAX }, async () => {
   resetUi();
   await desconectar();
   fake.reset();
   fake.canUpload = true; // computador do administrador
   await contasLocais();
-  escreverLogin({ accessToken: segredo("oat01-antigo"), expiresAt: Date.now() + 3600e3, scopes: ["user:inference"] });
-  escreverConta(oauthAccountOf(1));
+  const atual = loginNovo("admin-atual", "admin-atual@exemplo.com", "org-aa"); // login do Claude Code daqui, com refresh token
   fake.pairCodes.set("ADMIN00001", { id: "dev-admin" });
   ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC do administrador" : codigoConexao("ADMIN00001"));
-  ui.info = (m, b) => (PERGUNTA_ENVIO.test(m) ? b[0] : undefined); // clica no primeiro botão
+  ui.info = (m, b) => (PERGUNTA_ENVIO.test(m) ? b[0] : undefined); // se perguntasse, clicaria no primeiro botão
   let mark = fake.calls.length;
   let n0 = notes.length;
-  swapPlusFalso.limpar();
   await commands["swapPlus.connectServer"]("code");
 
   assert.equal(T.serverStatus(), "online");
-  const pergunta = notes.slice(n0).find((n) => PERGUNTA_ENVIO.test(n.message));
-  assert.ok(pergunta, "pergunta se envia os logins");
-  assert.equal(pergunta.modal, true);
-  assert.deepEqual(pergunta.buttons, ["Sim", "Não"], "“Sim” é a opção principal (primeiro botão)");
+  assert.ok(!notes.slice(n0).some((n) => PERGUNTA_ENVIO.test(n.message)), "não pergunta se envia os logins guardados");
   const ups = fake.since(mark).filter(isLogins);
-  assert.equal(ups.length, 1, `o primeiro botão (Sim) envia; motor: ${swapPlusFalso.calls().join(" | ") || "não chamado"}`);
-  assert.equal(ups[0].body.oauthAccount.emailAddress, "local1@exemplo.com");
-  assert.ok(notes.slice(n0).some((n) => /1 login aceito pelo servidor/.test(n.message)));
+  assert.equal(ups.length, 1, "o login atual do Claude Code foi enviado (e só ele)");
+  assert.deepEqual(ups[0].body.claudeAiOauth, atual.oauth);
+  assert.deepEqual(ups[0].body.oauthAccount, atual.oauthAccount);
+  assert.deepEqual(lerLogin().claudeAiOauth, credOf(1, 1), "depois do envio, o acesso da conta do servidor vai por cima");
   assert.ok(!notes.slice(n0).some((n) => AVISO_NAO_ENVIADO.test(n.message)));
-  assert.equal(T.buildPayload().server.canMigrate, true, "o botão “Enviar os logins deste computador” fica na tela");
+  assert.equal(T.buildPayload().server.canUploadLogins, true);
 
   // Login novo no Claude Code: vai ao servidor sozinho, como antes, e a conta do servidor vai por cima.
   mark = fake.calls.length;
@@ -2027,7 +2073,7 @@ test("21. canUploadLogins true: pergunta com “Sim” primeiro e envia; login n
   assert.ok(!notes.slice(n0).some((n) => AVISO_NAO_ENVIADO.test(n.message)));
 });
 
-test("22. 403 not_admin: para de enviar (como canUploadLogins false), com o mesmo aviso uma vez; também no envio pela tela", { timeout: T_MAX }, async () => {
+test("22. 403 not_admin: para de enviar (como canUploadLogins false), com o mesmo aviso uma vez", { timeout: T_MAX }, async () => {
   const notAdmin = () => ({ status: 403, body: { error: "not_admin", message: "Só os computadores do administrador enviam logins." } });
 
   // a) ciclo: o servidor (sem o campo canUploadLogins) recusa o login novo com 403 not_admin
@@ -2047,54 +2093,22 @@ test("22. 403 not_admin: para de enviar (como canUploadLogins false), com o mesm
   assert.equal(notes.slice(n0).filter((n) => AVISO_NAO_ENVIADO.test(n.message)).length, 1, "o mesmo aviso, uma vez");
   assert.ok(!notes.slice(n0).some((n) => n.kind === "error"), "sem aviso de erro");
   assert.doesNotMatch(bar().text, /recusado|fora do ar/);
-  assert.equal(T.buildPayload().server.canMigrate, false, "o botão de enviar some");
+  assert.equal(T.buildPayload().server.canUploadLogins, false, "a tela sabe que este computador não envia logins");
 
-  // daqui em diante não tenta mais: nem o login novo do ciclo, nem a tela
-  const b = loginNovo("recusado403b", "r403b@exemplo.com", "org-403b");
-  swapPlusFalso.limpar();
-  await ciclo();
-  await ciclo();
-  await tela({ type: "migrate" });
-  assert.equal(fake.since(mark).filter(isLogins).length, 1, "nenhum POST /v1/logins depois do 403 not_admin");
-  assert.ok(!swapPlusFalso.calls().some((l) => l.startsWith("export")), `o motor não exporta nada: ${swapPlusFalso.calls().join(" | ")}`);
-  disk = lerLogin();
-  assert.deepEqual(disk.claudeAiOauth, credOf(1, 1));
-  assert.notEqual(disk.claudeAiOauth.accessToken, b.oauth.accessToken);
-
-  // b) envio pela tela (duas contas no motor): o 1º POST volta 403 not_admin → para ali, e o ciclo também não envia mais
-  await prepararServidor();
-  await contasLocais();
-  fake.handlers["POST /v1/logins"] = notAdmin;
-  const exportFile = path.join(ROOT, "export-local.json");
-  const conta2 = {
-    ...EXPORT_LOCAL.accounts[0],
-    number: 2,
-    email: "local2@exemplo.com",
-    organizationUuid: "org-l2",
-    config: { oauthAccount: { emailAddress: "local2@exemplo.com", organizationUuid: "org-l2", organizationName: "Org L2" } },
-  };
-  fs.writeFileSync(exportFile, JSON.stringify({ ...EXPORT_LOCAL, accounts: [...EXPORT_LOCAL.accounts, conta2] }));
-  try {
-    mark = fake.calls.length;
-    n0 = notes.length;
-    await tela({ type: "migrate" });
-    assert.equal(fake.since(mark).filter(isLogins).length, 1, "parou no primeiro 403 not_admin");
-    assert.ok(
-      notes.slice(n0).some((n) => n.kind === "warn" && /só os computadores do administrador enviam logins/.test(n.message)),
-      "explica por que não enviou"
-    );
-    assert.ok(!notes.slice(n0).some((n) => /logins? aceitos? pelo servidor/.test(n.message)), "sem o resumo de envio");
-    assert.equal((globalState.get(MIGRATED_KEY) || {})[fake.url], undefined, "nada anotado como enviado");
-    assert.equal(T.buildPayload().server.canMigrate, false);
-  } finally {
-    fs.writeFileSync(exportFile, JSON.stringify(EXPORT_LOCAL));
-  }
+  // daqui em diante não tenta mais: nem o login novo do ciclo, nem a troca manual
   n0 = notes.length;
-  loginNovo("recusado403c", "r403c@exemplo.com", "org-403c");
+  const b = loginNovo("recusado403b", "r403b@exemplo.com", "org-403b");
   await ciclo();
-  assert.equal(fake.since(mark).filter(isLogins).length, 1, "o ciclo também não envia mais");
-  assert.deepEqual(lerLogin().claudeAiOauth, credOf(1, 1), "a conta do servidor vai por cima do login novo");
-  assert.equal(notes.slice(n0).filter((n) => AVISO_NAO_ENVIADO.test(n.message)).length, 1);
+  await ciclo();
+  assert.equal(fake.since(mark).filter(isLogins).length, 1, "nenhum POST /v1/logins depois do 403 not_admin");
+  disk = lerLogin();
+  assert.deepEqual(disk.claudeAiOauth, credOf(1, 1), "a conta do servidor vai por cima do login novo");
+  assert.notEqual(disk.claudeAiOauth.accessToken, b.oauth.accessToken);
+  assert.equal(notes.slice(n0).filter((n) => AVISO_NAO_ENVIADO.test(n.message)).length, 1, "o aviso sai uma vez para o login novo");
+  loginNovo("recusado403c", "r403c@exemplo.com", "org-403c");
+  await T.serverSwitch(2);
+  assert.equal(fake.since(mark).filter(isLogins).length, 1, "nem na troca manual");
+  assert.deepEqual(lerLogin().claudeAiOauth, credOf(2, 1));
   delete fake.handlers["POST /v1/logins"];
 });
 

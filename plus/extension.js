@@ -4,14 +4,13 @@
 // - Barra de status: um único item, com ícone de e-mail (endereço no hover),
 //   sessão de 5h, semanal e limites semanais por modelo (ex.: Fable).
 // - Clique na barra: lista de contas, com "Configurações" em primeiro.
-// - Modo privado: mostra só "Conta N", sem e-mail (Export Other liga sozinho).
-// - Regras de aviso e de troca automática, com linhas separadas para sessão,
-//   semanal e por modelo. A decisão é tomada aqui, olhando o modelo que está em
-//   uso no Claude Code; a troca em si é feita pelo CLI `swap-plus`
-//   (fork do claude-swap; o `cswap` original também serve).
-// - Modo servidor (2.0, `swapPlus.mode = "server"`): um servidor guarda os
-//   logins, renova e decide as trocas; este computador recebe só o acesso da
-//   conta escolhida para ele. Ver a seção "modo servidor" abaixo.
+// - Modo privado: mostra só "Conta N", sem e-mail.
+// - 3.0 (só servidor): um servidor Swap Plus guarda os logins, renova e decide as
+//   trocas (com as regras do rules.js) para todos os computadores; este computador
+//   recebe só o acesso da conta escolhida para ele. Ver a seção "servidor" abaixo.
+//   Sem conexão, a barra e a tela mostram "não conectado" com "Entrar com Google".
+// - O motor antigo (CLI swap-plus/cswap, do antigo modo local) não é mais usado:
+//   na primeira abertura da 3.0 ele é desinstalado (seção "motor antigo").
 
 const vscode = require("vscode");
 const { execFile } = require("child_process");
@@ -33,16 +32,13 @@ const {
   scopedNames,
   modelLabel,
   watchedModels,
-  decide,
   RULE_DEFAULTS,
 } = require("./rules");
 
 const NS = "swapPlus";
 const HISTORY_KEY = "swapPlus.autoHistory";
-const LAST_TICK_KEY = "swapPlus.lastTick";
 const LAST_SWITCH_KEY = "swapPlus.lastAutoSwitch";
 const ALERTED_KEY = "swapPlus.alerted";
-const AUTO_LOCK = path.join(os.tmpdir(), "swap-plus-auto.lock");
 const HISTORY_MAX = 40;
 const MODEL_WINDOW_MS = 30 * 60 * 1000; // modelo "em uso" = usado nos últimos 30 min
 const YELLOW_AT = 70;
@@ -57,21 +53,18 @@ const STATUS_LABELS = {
   keychain_unavailable: "Keychain indisponível",
   foreign_credential: "credencial de outra conta",
   unavailable: "indisponível",
-  unknown: "sem leitura ainda", // modo servidor: conta que o servidor ainda não consultou
+  unknown: "sem leitura ainda", // conta que o servidor ainda não consultou
 };
 
 let extContext;
 let mainItem;
 let panel;
 let pollTimer;
-let autoTimer;
-let autoGen = 0;
 let refreshing = null;
-let lastBlockedWarnAt = 0;
 let updater = null;
-let state = { list: null, records: {}, models: [], error: null, fetchedAt: 0, unmanaged: null };
+let state = { list: null, records: {}, models: [], error: null, fetchedAt: 0 };
 
-// Modo servidor: conexão e último estado recebido (detalhes na seção "modo servidor").
+// Servidor: conexão e último estado recebido (detalhes na seção "servidor").
 const srv = {
   token: undefined, // token deste computador no servidor; undefined = ainda não lido do cofre do VS Code
   client: null,
@@ -80,7 +73,7 @@ const srv = {
   status: null, // null | "online" | "offline" | "revoked"
   lastOkAt: 0,
   lastError: null,
-  hold: false, // conexão, envio de logins, desligar ou voltar ao modo local em andamento: o ciclo espera
+  hold: false, // conexão, desligar ou desconectar em andamento: o ciclo espera
   rejected: null, // { key, at, reason }: login atual recusado pelo servidor (não é apagado)
   loginRetry: null, // { key, at }: o servidor não conseguiu conferir o login agora (refresh_failed...): tenta de novo em ~1 min
   applyFail: null, // { key, at }: falha ao gravar a credencial (espera 1 min)
@@ -103,44 +96,15 @@ function cfg() {
   return vscode.workspace.getConfiguration(NS);
 }
 
-function numSetting(key, def, lo, hi) {
-  const v = cfg().get(key);
-  const n = Number(v);
-  if (v === null || v === undefined || v === "" || !isFinite(n)) return def;
-  return Math.max(lo, Math.min(hi, n));
-}
-
-// Regra só do modo servidor: computadores em contas separadas (padrão) ou todos juntos na mesma conta.
+// Regra do servidor: computadores em contas separadas (padrão) ou todos juntos na mesma conta.
 const DEVICE_PLACEMENTS = ["separate", "together"];
 
+/** Regras de troca: as do servidor (valem para todos os computadores). Sem resposta do servidor ainda: as padrão. */
 function rules() {
-  // Modo servidor: as regras são as do servidor (valem para todos os computadores).
-  if (serverMode() && srv.state && srv.state.rules) {
-    const r = { ...RULE_DEFAULTS, ...srv.state.rules };
-    if (!STRATEGY_LABELS[r.strategy]) r.strategy = "max";
-    if (!DEVICE_PLACEMENTS.includes(r.devicePlacement)) r.devicePlacement = "separate";
-    return r;
-  }
-  return localRules();
-}
-
-/** Regras das configurações deste VS Code (as do modo local). */
-function localRules() {
-  const st = cfg().get("rules.strategy");
-  const pref = cfg().get("rules.preferModel");
-  return {
-    sessionPct: numSetting("rules.sessionSwitchPct", 90, 50, 100),
-    weeklyPct: numSetting("rules.weeklySwitchPct", 80, 50, 100),
-    modelPct: numSetting("rules.modelSwitchPct", 95, 50, 100),
-    preferModel: typeof pref === "string" ? pref.trim() : "Fable",
-    strategy: STRATEGY_LABELS[st] ? st : "max", // padrão: aproveitar ao máximo (fila por renovação)
-    expiringHours: numSetting("rules.expiringHours", 24, 1, 168),
-    cooldownMin: numSetting("rules.cooldownMinutes", 5, 0, 240),
-    marginPct: numSetting("rules.marginPct", 5, 0, 30),
-    intervalSec: numSetting("rules.intervalSeconds", 60, 15, 3600),
-    // O que fazer quando o limite de um modelo (ex.: Fable) acaba na conta em uso.
-    onModelLimit: cfg().get("rules.onModelLimit") === "switchAccount" ? "switchAccount" : "sameAccount",
-  };
+  const r = { ...RULE_DEFAULTS, ...((srv.state && srv.state.rules) || {}) };
+  if (!STRATEGY_LABELS[r.strategy]) r.strategy = "max";
+  if (!DEVICE_PLACEMENTS.includes(r.devicePlacement)) r.devicePlacement = "separate";
+  return r;
 }
 
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
@@ -159,58 +123,6 @@ function displayName(acc) {
   if (privateMode()) return `Conta ${acc.number}`;
   const alias = accountAlias(acc);
   return `Conta ${acc.number}${alias ? ` “${alias}”` : ""} — ${acc.email}`;
-}
-
-function cswapPath() {
-  const configured = (cfg().get("executablePath") || "").trim();
-  if (configured) return configured;
-  // swap-plus é o comando do fork; cswap (o original) fica como reserva.
-  // No Windows o uv instala os comandos como .exe na mesma pasta.
-  const ext = process.platform === "win32" ? ".exe" : "";
-  for (const name of ["swap-plus", "cswap"]) {
-    const local = path.join(os.homedir(), ".local", "bin", name + ext);
-    if (fs.existsSync(local)) return local;
-  }
-  return "swap-plus" + ext;
-}
-
-// No modo servidor o motor local não é usado: só a migração (export/list) e a consulta de versão passam.
-// A conferência é feita na hora de rodar, então nada que começou no modo local chega ao motor depois da troca.
-const SERVER_MODE_ENGINE_ALLOWED = new Set(["export", "list", "--version"]);
-
-function runCswap(args, timeout = 90000) {
-  if (serverMode() && !SERVER_MODE_ENGINE_ALLOWED.has(String(args[0]))) {
-    return Promise.resolve({ code: -1, stdout: "", stderr: "modo servidor: o motor local não é usado", spawnError: "modo servidor" });
-  }
-  return new Promise((resolve) => {
-    execFile(
-      cswapPath(),
-      args,
-      { timeout, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, NO_COLOR: "1" } },
-      (err, stdout, stderr) => {
-        const code = err ? (typeof err.code === "number" ? err.code : -1) : 0;
-        resolve({ code, stdout: stdout || "", stderr: stderr || "", spawnError: code === -1 ? String(err.message || err) : null });
-      }
-    );
-  });
-}
-
-// Comandos que gravam no motor (add, alias, linha, prioridade, rotação, troca,
-// reordenar) rodam um de cada vez: o motor regrava a lista de contas inteira e
-// dois ao mesmo tempo podem perder a mudança de um deles.
-let writeChain = Promise.resolve();
-function runCswapWrite(args, timeout) {
-  const p = writeChain.then(() => runCswap(args, timeout));
-  writeChain = p.catch(() => {});
-  return p;
-}
-
-function parseJson(s) {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
 }
 
 function lastLine(s) {
@@ -232,12 +144,6 @@ function swapOn() {
   return cfg().get("enabled") !== false;
 }
 
-
-function progressBar(pct) {
-  const total = 5;
-  const filled = Math.max(0, Math.min(total, Math.round((pct / 100) * total)));
-  return "█".repeat(filled) + "░".repeat(total - filled);
-}
 
 function resetIn(iso) {
   if (!iso) return null;
@@ -369,26 +275,6 @@ async function detectModels(now = Date.now()) {
   return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([id, ts]) => ({ id, label: modelLabel(id), ts }));
 }
 
-// ---------------------------------------------------------------- decisão de troca
-
-
-// ---------------------------------------------------------------- dados
-
-async function readRecords() {
-  const root = path.join(os.homedir(), ".claude-swap-backup");
-  try {
-    const seq = JSON.parse(await fs.promises.readFile(path.join(root, "sequence.json"), "utf8"));
-    const out = {};
-    for (const [num, rec] of Object.entries(seq.accounts || {})) {
-      // Só as preferências da conta; nada de credenciais.
-      out[num] = { alias: rec.alias || null, disabled: !!rec.disabled, threshold: rec.threshold ?? null, priority: rec.priority ?? 0 };
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
 /**
  * Versão mais nova do Swap Plus já instalada nesta máquina (pelo instalador, pelo
  * terminal ou por outra janela) do que a que está rodando nesta janela. O VS Code
@@ -426,90 +312,9 @@ function checkNewerInstalled() {
     .then((c) => c && vscode.commands.executeCommand("workbench.action.reloadWindow"));
 }
 
-// ---------------------------------------------------------------- salvar o login na hora
-//
-// O refresh token de cada conta é de uso único: quando o Claude Code renova o
-// token (ou você entra de novo), o anterior deixa de valer. Se a cópia guardada
-// no Swap Plus ficar com o token velho, a conta "morre" para o Swap Plus. Por
-// isso, sempre que o login do Claude Code muda numa conta cadastrada, ele é
-// salvo na hora (`swap-plus add` regrava a cópia da conta logada).
-
-const SAVED_LOGIN_KEY = "swapPlus.savedLogin";
-const SAVE_RETRY_MS = 10 * 60 * 1000;
-let saveTriedAt = {};
-
+/** Pasta de configuração do Claude Code (respeita CLAUDE_CONFIG_DIR). */
 function claudeConfigDir() {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
-}
-
-/** Só a validade do login atual do Claude Code (nunca guarda nem mostra o token). */
-function liveLoginExpiresAt() {
-  const pick = (text) => {
-    const j = parseJson(text);
-    const o = j && j.claudeAiOauth;
-    // Login sem refresh token (entregue por um servidor Swap Plus): não há o que guardar,
-    // e gravar por cima estragaria a cópia do motor.
-    if (o && !o.refreshToken) return null;
-    return o && typeof o.expiresAt === "number" ? o.expiresAt : null;
-  };
-  return new Promise((resolve) => {
-    if (process.platform === "darwin") {
-      execFile("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], { timeout: 10000 }, (err, stdout) => {
-        if (!err && stdout) return resolve(pick(stdout.trim()));
-        fs.readFile(path.join(claudeConfigDir(), ".credentials.json"), "utf8", (e2, t) => resolve(e2 ? null : pick(t)));
-      });
-    } else {
-      fs.readFile(path.join(claudeConfigDir(), ".credentials.json"), "utf8", (e, t) => resolve(e ? null : pick(t)));
-    }
-  });
-}
-
-/** Conta logada agora no Claude Code (e-mail + organização), lida do ~/.claude.json. */
-function liveIdentity() {
-  const files = [path.join(os.homedir(), ".claude.json"), path.join(claudeConfigDir(), ".claude.json")];
-  for (const f of files) {
-    try {
-      const o = JSON.parse(fs.readFileSync(f, "utf8")).oauthAccount;
-      if (o && o.emailAddress) return { email: String(o.emailAddress).toLowerCase(), org: o.organizationUuid || null };
-    } catch {}
-  }
-  return null;
-}
-
-/**
- * Salva o login atual na conta cadastrada quando ele é novo (token renovado ou
- * login refeito). Devolve true quando salvou. Não cadastra conta nova: isso
- * continua sendo perguntado (offerRegister).
- */
-async function saveLiveLogin(list) {
-  const who = liveIdentity();
-  if (!who) return false;
-  const acc = list.accounts.find(
-    (a) => String(a.email || "").toLowerCase() === who.email && (!who.org || !a.organizationUuid || a.organizationUuid === who.org)
-  );
-  if (!acc) return false;
-  const exp = await liveLoginExpiresAt();
-  // Login vencido ou ilegível: não há nada novo para guardar (e não estraga a cópia).
-  if (!exp || exp <= Date.now() + 60 * 1000) return false;
-  const id = `${acc.email}|${acc.organizationUuid || ""}`;
-  const saved = extContext.globalState.get(SAVED_LOGIN_KEY) || {};
-  if (saved[id] === exp && !loginDead(acc)) return false;
-  // Mesma versão do login: tenta de novo no máximo a cada 10 min (evita repetir a cada ciclo).
-  if (saveTriedAt[id + exp] && Date.now() - saveTriedAt[id + exp] < SAVE_RETRY_MS) return false;
-  saveTriedAt[id + exp] = Date.now();
-  const r = await runCswapWrite(["add"], 60000);
-  if (r.code !== 0) {
-    console.error("[swap-plus] salvar login", lastLine(r.stderr) || lastLine(r.stdout));
-    return false;
-  }
-  delete saveTriedAt[id + exp];
-  await extContext.globalState.update(SAVED_LOGIN_KEY, { ...saved, [id]: exp });
-  if (loginDead(acc)) {
-    const text = `Login da conta ${acc.number} salvo de novo no Swap Plus (estava “${statusLabel(acc.usageStatus)}”)`;
-    await pushHistory([{ ts: new Date().toISOString(), kind: "info", text }]);
-    vscode.window.showInformationMessage(`Swap Plus: ${text}.`);
-  }
-  return true;
 }
 
 /** Depois de gravar: espera a atualização em andamento (que pode ter lido antes da gravação) e lê de novo. */
@@ -520,70 +325,28 @@ function refreshFresh() {
 
 function refresh() {
   if (refreshing) return refreshing;
+  checkNewerInstalled(); // mesmo desligado ou sem servidor: avisa quando há versão nova instalada para recarregar
   if (!swapOn()) {
-    // Desligado: nenhuma chamada ao swap-plus (não renova token de nenhuma conta).
-    state = { ...state, error: null, unmanaged: null };
+    // Desligado: nenhum contato com o servidor (e nada gravado no login).
+    state = { ...state, error: null };
     render();
     postState();
     return Promise.resolve();
   }
-  if (serverMode()) {
-    // Modo servidor: um ciclo = batimento no servidor (+ aplicar a conta escolhida). Nada do motor local.
-    // Na fila única: nunca ao mesmo tempo que uma troca manual, um limite ou "usar a conta do servidor".
-    refreshing = srvQueue(() => serverSync())
-      .catch((e) => {
-        // Erro daqui (ex.: arquivo da extensão faltando), não do servidor: mostra e não mexe no login.
-        console.error("[swap-plus] servidor", safeErr(e));
-        srv.status = "offline";
-        srv.lastError = `erro na extensão: ${safeErr(e)}`;
-        state = { ...state, error: cap(serverErrorLine()), fetchedAt: Date.now() };
-        finishSync();
-      })
-      .finally(() => {
-        refreshing = null;
-      });
-    return refreshing;
-  }
-  refreshing = (async () => {
-    const [l0, models, records] = await Promise.all([runCswap(["list", "--json"]), detectModels(), readRecords()]);
-    let l = l0;
-    let list = parseJson(l.stdout);
-    if (list && Array.isArray(list.accounts)) {
-      let saved = false;
-      try {
-        saved = await saveLiveLogin(list);
-      } catch (e) {
-        console.error("[swap-plus] salvar login", e);
-      }
-      if (saved) {
-        l = await runCswap(["list", "--json"]);
-        list = parseJson(l.stdout);
-      }
-    }
-    const ok = list && Array.isArray(list.accounts);
-    // Sem conta em uso entre as cadastradas: o Claude Code pode estar logado numa conta nova.
-    let unmanaged = null;
-    if (ok && !list.accounts.some((a) => a.number === list.activeAccountNumber)) {
-      const st = parseJson((await runCswap(["status", "--json"], 30000)).stdout);
-      const a = st && st.active;
-      if (a && a.managed === false && a.email) unmanaged = { email: a.email, org: a.organizationName || "" };
-    }
-    state = {
-      list: ok ? list : null,
-      records,
-      models,
-      unmanaged,
-      error: ok ? null : l.spawnError || lastLine(l.stderr) || "não foi possível ler 'swap-plus list --json'",
-      fetchedAt: Date.now(),
-    };
-    render();
-    postState();
-    if (unmanaged) offerRegister(unmanaged);
-    checkAlerts().catch((e) => console.error("[swap-plus] alerts", e));
-    checkNewerInstalled();
-  })().finally(() => {
-    refreshing = null;
-  });
+  // Um ciclo = batimento no servidor (+ gravar a conta escolhida para este computador).
+  // Na fila única: nunca ao mesmo tempo que uma troca manual, um limite ou "usar a conta do servidor".
+  refreshing = srvQueue(() => serverSync())
+    .catch((e) => {
+      // Erro daqui (ex.: arquivo da extensão faltando), não do servidor: mostra e não mexe no login.
+      console.error("[swap-plus] servidor", safeErr(e));
+      srv.status = "offline";
+      srv.lastError = `erro na extensão: ${safeErr(e)}`;
+      state = { ...state, error: cap(serverErrorLine()), fetchedAt: Date.now() };
+      finishSync();
+    })
+    .finally(() => {
+      refreshing = null;
+    });
   return refreshing;
 }
 
@@ -635,14 +398,12 @@ function usageTooltip(acc, w, l) {
     t.appendMarkdown("\n");
     t.appendText(`Modelo em uso: ${state.models[0].label}`);
   }
-  if (serverMode()) {
-    t.appendMarkdown("\n\n");
-    const last = srv.lastOkAt ? fmtWhen(srv.lastOkAt) : null;
-    t.appendText(`Modo servidor: ${serverHost()}${last ? ` · último contato ${last}` : ""}. Quem escolhe a conta e troca é o servidor.`);
-    for (const wtext of srv.storeWarnings || []) {
-      t.appendMarkdown("\n\n**Atenção:** ");
-      t.appendText(safe(wtext));
-    }
+  t.appendMarkdown("\n\n");
+  const last = srv.lastOkAt ? fmtWhen(srv.lastOkAt) : null;
+  t.appendText(`Servidor ${serverHost()}${last ? ` · último contato ${last}` : ""}. Quem escolhe a conta e troca é o servidor.`);
+  for (const wtext of srv.storeWarnings || []) {
+    t.appendMarkdown("\n\n**Atenção:** ");
+    t.appendText(safe(wtext));
   }
   t.appendMarkdown("\n\n_Clique para trocar de conta ou abrir as configurações_");
   return t;
@@ -665,18 +426,18 @@ function render() {
     return;
   }
 
-  if (serverMode() && renderServerProblem()) return;
+  if (renderServerProblem()) return;
 
   if (!list) {
-    mainItem.text = frame("$(mail)  $(warning) Swap Plus: erro");
-    mainItem.tooltip = `Falha ao executar o swap-plus.\n${state.error || ""}\n\nVerifique se 'swap-plus list --json' funciona no terminal.`;
-    mainItem.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+    // Conectado, mas ainda sem a lista de contas do servidor.
+    mainItem.text = frame("$(mail) $(cloud)  Swap Plus: esperando o servidor");
+    mainItem.tooltip = `${state.error || "Ainda sem a lista de contas do servidor."}\n\nO Swap Plus fala com o servidor a cada 30 s.`;
     mainItem.show();
     return;
   }
 
   const acc = list.accounts.find((a) => a.number === list.activeAccountNumber);
-  if (!acc && serverMode()) {
+  if (!acc) {
     mainItem.text = frame(
       list.accounts.length ? "$(mail) $(cloud)  sem conta atribuída — clique para escolher" : "$(mail) $(cloud)  nenhuma conta no servidor ainda"
     );
@@ -684,19 +445,7 @@ function render() {
       ? "O servidor ainda não escolheu uma conta para este computador. Clique para escolher uma."
       : loginUploadAllowed() === false
         ? "O servidor ainda não tem nenhuma conta. Quem adiciona as contas é o administrador (pelo painel do servidor ou por um computador dele)."
-        : "O servidor ainda não tem nenhuma conta. Entre com uma conta no Claude Code: o Swap Plus envia o login ao servidor sozinho. Ou, em Configurações → Servidor, use “Enviar os logins deste computador”.";
-    mainItem.show();
-    return;
-  }
-  if (!acc) {
-    if (state.unmanaged) {
-      mainItem.text = frame("$(mail)  conta logada não cadastrada — clique para cadastrar");
-      mainItem.tooltip = `O Claude Code está logado em ${privateMode() ? "uma conta" : state.unmanaged.email} que ainda não está no Swap Plus. Enquanto ela não for cadastrada, o Swap Plus não acompanha o uso nem troca de conta. Clique para cadastrar.`;
-      mainItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-    } else {
-      mainItem.text = frame("$(mail)  sem conta ativa");
-      mainItem.tooltip = "Nenhuma conta logada no Claude Code. Clique para escolher uma conta ou abrir as configurações.";
-    }
+        : "O servidor ainda não tem nenhuma conta. Entre com uma conta no Claude Code: o Swap Plus envia o login ao servidor sozinho.";
     mainItem.show();
     return;
   }
@@ -704,9 +453,9 @@ function render() {
   const r = rules();
   const l = linesFor(acc, r, state.records);
   const w = windows(acc);
-  // Modo servidor: aviso sobre onde o Claude Code lê o login (ex.: variável de ambiente que passa na frente).
-  const storeWarn = serverMode() && (srv.storeWarnings || []).length > 0;
-  const icon = (cfg().get("statusBar.showAccountNumber") ? `$(mail) ${acc.number}` : "$(mail)") + (serverMode() ? " $(cloud)" : "") + (storeWarn ? " $(warning)" : "");
+  // Aviso sobre onde o Claude Code lê o login (ex.: variável de ambiente que passa na frente).
+  const storeWarn = (srv.storeWarnings || []).length > 0;
+  const icon = (cfg().get("statusBar.showAccountNumber") ? `$(mail) ${acc.number}` : "$(mail)") + " $(cloud)" + (storeWarn ? " $(warning)" : "");
   mainItem.tooltip = usageTooltip(acc, w, l);
 
   if (!w) {
@@ -742,15 +491,9 @@ function setupPolling() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = undefined;
   if (!swapOn()) return refresh(); // só desenha o estado "desligado"
-  if (serverMode()) {
-    // Batimento no servidor a cada 30 s (o intervalo de atualização do modo local não vale aqui).
-    refresh();
-    pollTimer = setInterval(() => refresh(), HEARTBEAT_MS);
-    return;
-  }
-  const minutes = Math.max(0.5, Number(cfg().get("pollIntervalMinutes")) || 1);
+  // Batimento no servidor a cada 30 s.
   refresh();
-  pollTimer = setInterval(() => refresh(), minutes * 60 * 1000);
+  pollTimer = setInterval(() => refresh(), HEARTBEAT_MS);
 }
 
 // ---------------------------------------------------------------- alertas
@@ -884,71 +627,11 @@ function prepareClaudeCode(file = claudeSettingsPath()) {
   return { ok: true, changes };
 }
 
-// ---------------------------------------------------------------- troca automática
+// ---------------------------------------------------------------- troca automática (decidida pelo servidor)
 
+/** A troca automática liga/desliga no servidor (vale para todos os computadores). Swap Plus desligado: false. */
 function autoEnabled() {
-  if (!swapOn()) return false;
-  // Modo servidor: a troca automática liga/desliga no servidor (vale para todos os computadores).
-  if (serverMode()) return !!(srv.state && srv.state.autoSwitch);
-  return !!cfg().get("autoSwitch.enabled");
-}
-
-function claimSlot(ms) {
-  // Evita que várias janelas do VS Code decidam ao mesmo tempo.
-  try {
-    const now = Date.now();
-    let last = 0;
-    try {
-      last = Number(fs.readFileSync(AUTO_LOCK, "utf8")) || 0;
-    } catch {}
-    if (now - last < ms * 0.8) return false;
-    fs.writeFileSync(AUTO_LOCK, String(now));
-    return true;
-  } catch {
-    return true;
-  }
-}
-
-function setupAuto() {
-  const gen = ++autoGen;
-  if (autoTimer) clearTimeout(autoTimer);
-  autoTimer = undefined;
-  if (serverMode() || !autoEnabled()) return; // modo servidor: quem decide é o servidor
-  const loop = async () => {
-    if (gen !== autoGen) return;
-    try {
-      await autoTick({ manual: false });
-    } catch (e) {
-      console.error("[swap-plus] auto tick", e);
-    }
-    if (gen === autoGen && autoEnabled() && !serverMode()) autoTimer = setTimeout(loop, effectiveIntervalSec() * 1000);
-  };
-  autoTimer = setTimeout(loop, 5000);
-}
-
-const NEAR_LINE_PCT = 15; // mesma faixa em que o motor passa a atualizar o uso a cada minuto
-const NEAR_LINE_INTERVAL_S = 30;
-
-/** Conta em uso perto de alguma linha de troca: verifica a cada 30 s (o dado vem do cache do motor, sem gastar cota). */
-function nearLine() {
-  const list = state.list;
-  const acc = list && list.accounts.find((a) => a.number === list.activeAccountNumber);
-  const w = acc && windows(acc);
-  if (!w) return false;
-  const r = rules();
-  const l = linesFor(acc, r, state.records);
-  const rows = [[w.session.pct, l.session]];
-  if (w.weekly) rows.push([w.weekly.pct, l.weekly]);
-  if (r.onModelLimit === "switchAccount") {
-    const watch = watchedModels(state.models.map((m) => m.id), scopedNames(list));
-    for (const m of w.models) if (watch.includes(m.name)) rows.push([m.pct, l.model]);
-  }
-  return rows.some(([pct, line]) => pct >= line - NEAR_LINE_PCT);
-}
-
-function effectiveIntervalSec() {
-  const base = rules().intervalSec;
-  return nearLine() ? Math.min(base, NEAR_LINE_INTERVAL_S) : base;
+  return swapOn() && !!(srv.state && srv.state.autoSwitch);
 }
 
 async function pushHistory(entries) {
@@ -957,65 +640,6 @@ async function pushHistory(entries) {
   const fresh = entries.filter((e) => !(hist[0] && hist[0].kind === e.kind && hist[0].text === e.text));
   if (!fresh.length) return;
   await extContext.globalState.update(HISTORY_KEY, [...fresh.reverse(), ...hist].slice(0, HISTORY_MAX));
-}
-
-async function execSwitch(d) {
-  const res = await runCswapWrite(["switch", String(d.to)], 120000);
-  await refreshFresh();
-  const now = state.list ? state.list.activeAccountNumber : null;
-  if (res.code === 0 && now === d.to) return { ok: true };
-  return { ok: false, error: lastLine(res.stderr) || res.spawnError || `a conta ativa continua ${now}` };
-}
-
-async function autoTick({ manual = false, dryRun = false } = {}) {
-  if (serverMode()) return null; // a decisão local não roda no modo servidor
-  const r = rules();
-  if (!manual && !claimSlot(effectiveIntervalSec() * 1000)) return null;
-  await refresh();
-  const ts = new Date().toISOString();
-  let main;
-  if (!state.list) {
-    main = { ts, kind: "error", text: `Erro ao ler as contas: ${state.error}` };
-  } else {
-    const d = decide({
-      list: state.list,
-      records: state.records,
-      r,
-      modelIds: state.models.map((m) => m.id),
-      now: Date.now(),
-      lastSwitchAt: extContext.globalState.get(LAST_SWITCH_KEY) || 0,
-    });
-    if (d.action === "switch" && dryRun) {
-      main = { ts, kind: "sim", text: `Trocaria ${d.text}` };
-    } else if (d.action === "switch") {
-      const res = await execSwitch(d);
-      if (res.ok) {
-        await extContext.globalState.update(LAST_SWITCH_KEY, Date.now());
-        main = { ts, kind: "switch", text: `Trocou ${d.text}`, atLimit: !!d.atLimit };
-      } else {
-        main = { ts, kind: "error", text: `Falha ao trocar para a conta ${d.to}: ${res.error}` };
-      }
-    } else {
-      main = { ts, kind: d.kind, text: d.kind === "idle" ? `Sem troca: ${d.text}` : d.text.charAt(0).toUpperCase() + d.text.slice(1) };
-    }
-  }
-
-  if (!dryRun) {
-    await extContext.globalState.update(LAST_TICK_KEY, main);
-    if (main.kind !== "idle") await pushHistory([main]);
-  }
-  if (main.kind === "switch") {
-    const model = state.models[0];
-    vscode.window.showInformationMessage(`Swap Plus: ${main.text}.${model ? ` O Claude Code continua no ${model.label}.` : ""}${main.atLimit ? RESUME_TIP : ""}`);
-  } else if (main.kind === "blocked" && !manual && !dryRun && Date.now() - lastBlockedWarnAt > 60 * 60 * 1000) {
-    lastBlockedWarnAt = Date.now();
-    vscode.window.showWarningMessage(`Swap Plus: ${main.text}.`);
-  } else if (main.kind === "error" && !manual) {
-    vscode.window.showErrorMessage(`Swap Plus: ${main.text}`);
-  }
-  render();
-  postState();
-  return main;
 }
 
 // ---------------------------------------------------------------- limite estourado: reação imediata
@@ -1125,62 +749,7 @@ async function checkLimitErrors() {
   await extContext.globalState.update(LIMIT_KEY, hit.ts);
   const label = limitLabel(hit.text);
   if (!label || !claimLimit(hit.ts)) return null;
-  return handleLimitHit(label);
-}
-
-async function handleLimitHit(label) {
-  if (serverMode()) return serverLimitHit(label);
-  await refresh();
-  const list = state.list;
-  if (!list) return null;
-  const from = list.activeAccountNumber;
-  const ts = new Date().toISOString();
-  if (!autoEnabled()) {
-    const text = `A conta ${from} bateu o ${label}.`;
-    await pushHistory([{ ts, kind: "alert", text }]);
-    vscode.window.showWarningMessage(`Swap Plus: ${text} A troca automática está desligada.`, "Trocar para a melhor conta").then((c) => c && switchBest());
-    postState();
-    return { kind: "alert" };
-  }
-  const d = decide({ list, records: state.records, r: rules(), modelIds: state.models.map((m) => m.id), now: Date.now(), limitHit: label });
-  let main;
-  if (d.action === "switch") {
-    const res = await execSwitch(d);
-    if (res.ok) {
-      await extContext.globalState.update(LAST_SWITCH_KEY, Date.now());
-      main = { ts, kind: "switch", text: `Trocou na hora ${d.text}`, atLimit: true };
-      vscode.window.showInformationMessage(`Swap Plus: ${main.text}.${RESUME_TIP}`);
-    } else {
-      main = { ts, kind: "error", text: `A conta ${from} bateu o ${label}, mas a troca falhou: ${res.error}` };
-      vscode.window.showErrorMessage(`Swap Plus: ${main.text}`);
-    }
-  } else {
-    main = { ts, kind: "blocked", text: d.text.charAt(0).toUpperCase() + d.text.slice(1) };
-    vscode.window.showWarningMessage(`Swap Plus: ${main.text}.`);
-  }
-  await extContext.globalState.update(LAST_TICK_KEY, main);
-  await pushHistory([main]);
-  render();
-  postState();
-  return main;
-}
-
-/**
- * Atualiza a barra e a tela no instante em que a conta em uso muda — por esta
- * janela, por outra janela do VS Code ou pelo terminal — sem esperar o próximo ciclo.
- */
-function watchAccounts() {
-  const dir = path.join(os.homedir(), ".claude-swap-backup");
-  let t = null;
-  try {
-    const w = fs.watch(dir, (_ev, name) => {
-      if (serverMode()) return; // modo servidor: as contas do motor local não importam
-      if (name && !String(name).startsWith("sequence.json")) return;
-      clearTimeout(t);
-      t = setTimeout(() => refresh().catch(() => {}), 700);
-    });
-    extContext.subscriptions.push({ dispose: () => w.close() });
-  } catch {}
+  return serverLimitHit(label); // quem decide a troca é o servidor
 }
 
 function setupLimitWatch() {
@@ -1188,64 +757,9 @@ function setupLimitWatch() {
   limitTimer = setInterval(() => checkLimitErrors().catch((e) => console.error("[swap-plus] limit watch", e)), LIMIT_SCAN_S * 1000);
 }
 
-// ---------------------------------------------------------------- linhas do motor (ritmo de atualização do uso)
-
-/**
- * O motor atualiza o uso mais rápido (a cada minuto) quando a conta em uso chega a
- * 15 pontos da linha de troca, mas usa as linhas das configurações DELE. Aqui elas
- * são alinhadas às regras do Swap Plus.
- */
-// Uma sincronização por vez; quem troca de modo pode esperar a que estiver em andamento (waitMotorSync).
-let motorSyncP = null;
-function syncMotorLines() {
-  if (!motorSyncP) motorSyncP = syncMotorLinesNow().finally(() => { motorSyncP = null; });
-  return motorSyncP;
-}
-function waitMotorSync() {
-  return motorSyncP ? motorSyncP.catch(() => {}) : Promise.resolve();
-}
-
-async function syncMotorLinesNow() {
-  if (!swapOn() || serverMode()) return false;
-  const r = rules();
-  const want = {
-    "autoswitch.threshold": Math.min(99.9, r.sessionPct),
-    "autoswitch.weeklyThreshold": Math.min(99.9, r.weeklyPct),
-    "autoswitch.model": r.onModelLimit === "switchAccount" && r.preferModel ? r.preferModel : null,
-  };
-  const c = parseJson((await runCswap(["config", "--json"])).stdout);
-  if (!c || !Array.isArray(c.settings)) return false;
-  const cur = Object.fromEntries(c.settings.map((x) => [x.key, x]));
-  for (const [k, v] of Object.entries(want)) {
-    // O modo pode ter virado "servidor" (ou o Swap Plus desligado) no meio: nenhuma chamada ao motor depois disso.
-    if (!swapOn() || serverMode()) return false;
-    const now = cur[k] ? cur[k].value : undefined;
-    if (v === null) {
-      if (cur[k] && cur[k].isSet) await runCswap(["config", "unset", k]);
-    } else if (Number(now) !== Number(v) && String(now) !== String(v)) {
-      await runCswap(["config", "set", k, String(v)]);
-    }
-  }
-  return true;
-}
-
+/** Trocar para a melhor conta: quem escolhe é o servidor. */
 async function switchBest() {
-  if (serverMode()) return serverSwitch(null); // o servidor escolhe a melhor conta
-  await refresh();
-  if (!state.list) return vscode.window.showErrorMessage(`Swap Plus: ${state.error}`);
-  const d = decide({ list: state.list, records: state.records, r: rules(), modelIds: state.models.map((m) => m.id), now: Date.now(), force: true });
-  if (d.action !== "switch") return vscode.window.showInformationMessage(`Swap Plus: ${d.text}.`);
-  const res = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: `Trocando para a conta ${d.to}...`, cancellable: false },
-    () => execSwitch(d)
-  );
-  if (res.ok) {
-    await pushHistory([{ ts: new Date().toISOString(), kind: "manual", text: `Troca manual ${d.text}` }]);
-    vscode.window.showInformationMessage(`Swap Plus: agora na conta ${d.to}.`);
-  } else {
-    vscode.window.showErrorMessage(`Falha ao trocar de conta: ${res.error}`);
-  }
-  postState();
+  return serverSwitch(null);
 }
 
 // ---------------------------------------------------------------- lista de contas
@@ -1295,37 +809,36 @@ async function switchAccount() {
     return;
   }
   await refresh();
-  if (serverMode()) {
-    const st = serverStatus();
-    if (st === "disconnected" || st === "revoked") {
-      const c = await vscode.window.showWarningMessage(`Swap Plus: ${serverErrorLine()}`, "Conectar ao servidor", "Usar o modo local", "Configurações");
-      if (c === "Conectar ao servidor") return connectServer();
-      if (c === "Usar o modo local") return setMode("local");
-      if (c === "Configurações") return openSettings();
-      return;
-    }
-    if (st !== "online") {
-      const c = await vscode.window.showWarningMessage(`Swap Plus: ${serverErrorLine()} Enquanto isso não dá para trocar de conta.`, "Tentar de novo", "Configurações");
-      if (c === "Tentar de novo") return refreshFresh();
-      if (c === "Configurações") return openSettings();
-      return;
-    }
-    if (srv.rejected) {
-      const c = await vscode.window.showWarningMessage(
-        `Swap Plus: o servidor recusou o login atual do Claude Code: ${srv.rejected.reason}.`,
-        "Usar a conta do servidor",
-        "Escolher conta",
-        "Configurações"
-      );
-      if (c === "Usar a conta do servidor") return useServerAccount();
-      if (c === "Configurações") return openSettings();
-      if (c !== "Escolher conta") return;
-    }
+  const st = serverStatus();
+  if (st === "disconnected" || st === "revoked") {
+    // Sem conexão: o caminho é entrar (com Google ou com o código de conexão).
+    const c = await vscode.window.showWarningMessage(`Swap Plus: ${serverErrorLine()}`, "Entrar com Google", "Colar código", "Configurações");
+    if (c === "Entrar com Google") return connectServer("google");
+    if (c === "Colar código") return connectServer("code");
+    if (c === "Configurações") return openSettings();
+    return;
+  }
+  if (st !== "online") {
+    const c = await vscode.window.showWarningMessage(`Swap Plus: ${serverErrorLine()} Enquanto isso não dá para trocar de conta.`, "Tentar de novo", "Configurações");
+    if (c === "Tentar de novo") return refreshFresh();
+    if (c === "Configurações") return openSettings();
+    return;
+  }
+  if (srv.rejected) {
+    const c = await vscode.window.showWarningMessage(
+      `Swap Plus: o servidor recusou o login atual do Claude Code: ${srv.rejected.reason}.`,
+      "Usar a conta do servidor",
+      "Escolher conta",
+      "Configurações"
+    );
+    if (c === "Usar a conta do servidor") return useServerAccount();
+    if (c === "Configurações") return openSettings();
+    if (c !== "Escolher conta") return;
   }
   const list = state.list;
   if (!list || !list.accounts.length) {
     const choice = await vscode.window.showErrorMessage(
-      list ? (serverMode() ? "Nenhuma conta no servidor ainda." : "Nenhuma conta Claude cadastrada ainda.") : `Swap Plus: ${state.error}`,
+      list ? "Nenhuma conta no servidor ainda." : `Swap Plus: ${state.error || "ainda sem a lista de contas do servidor."}`,
       "Configurações",
       "Adicionar conta"
     );
@@ -1342,24 +855,17 @@ async function switchAccount() {
     };
   });
   const menu = [
-    ...(state.unmanaged
-      ? [{ label: "$(add) Cadastrar a conta logada no Claude Code", description: privateMode() ? "conta nova" : state.unmanaged.email, accountNum: -3 }]
-      : []),
     { label: "$(gear) Configurações...", description: "regras de aviso e de troca automática", accountNum: -2 },
     { label: "Contas", kind: vscode.QuickPickItemKind.Separator },
     ...items,
     { label: "", kind: vscode.QuickPickItemKind.Separator },
-    {
-      label: "$(add) Adicionar conta...",
-      description: serverMode() ? "entre com a conta no Claude Code; o login vai para o servidor" : "cadastra a conta logada agora no Claude Code",
-      accountNum: -1,
-    },
-    { label: "$(debug-disconnect) Desligar o Swap Plus", description: "para de consultar e trocar contas; o Claude Code fica normal", accountNum: -4 },
+    { label: "$(add) Adicionar conta...", description: "entre com a conta no Claude Code; o login vai para o servidor", accountNum: -1 },
+    { label: "$(debug-disconnect) Desligar o Swap Plus", description: "para de falar com o servidor e de trocar contas; o Claude Code fica normal", accountNum: -4 },
   ];
 
   const picked = await vscode.window.showQuickPick(menu, { placeHolder: "Escolha a conta Claude ou abra as configurações" });
   if (!picked) return;
-  if (picked.accountNum === -1 || picked.accountNum === -3) return addAccount();
+  if (picked.accountNum === -1) return addAccount();
   if (picked.accountNum === -2) return openSettings();
   if (picked.accountNum === -4) return setEnabled(false);
   if (picked.accountNum !== list.activeAccountNumber) await doSwitch(picked.accountNum);
@@ -1369,453 +875,55 @@ async function doSwitch(num) {
   const target = state.list && state.list.accounts.find((a) => a.number === Number(num));
   if (loginDead(target)) {
     const c = await vscode.window.showWarningMessage(
-      serverMode()
-        ? `O login da conta ${num} não vale mais no servidor (${statusLabel(target.usageStatus)}). Se trocar, o Claude Code vai pedir login. Depois de entrar com ela no Claude Code, o Swap Plus envia o login novo ao servidor sozinho.`
-        : `O login guardado da conta ${num} não vale mais (${statusLabel(target.usageStatus)}). Se trocar, o Claude Code vai pedir login. Depois de entrar com ela no Claude Code, o Swap Plus salva o login novo sozinho.`,
+      `O login da conta ${num} não vale mais no servidor (${statusLabel(target.usageStatus)}). Se trocar, o Claude Code vai pedir login. ${
+        loginUploadAllowed() === false
+          ? "Para usar esta conta de novo, o administrador precisa entrar outra vez com ela."
+          : "Depois de entrar com ela no Claude Code, o Swap Plus envia o login novo ao servidor sozinho."
+      }`,
       { modal: true },
       "Trocar mesmo assim"
     );
     if (c !== "Trocar mesmo assim") return;
   }
-  if (serverMode()) return serverSwitch(Number(num));
-  const r = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: `Trocando para a conta ${num}...`, cancellable: false },
-    () => runCswapWrite(["switch", String(num)], 120000)
-  );
-  if (r.code === 0) {
-    vscode.window.showInformationMessage(`Swap Plus: agora na conta ${num}.`);
-    await pushHistory([{ ts: new Date().toISOString(), kind: "manual", text: `Troca manual para a conta ${num}` }]);
-  } else {
-    vscode.window.showErrorMessage(`Falha ao trocar de conta: ${lastLine(r.stderr) || r.spawnError || "erro desconhecido"}`);
-  }
-  await refreshFresh();
+  return serverSwitch(Number(num));
 }
 
-// ---------------------------------------------------------------- exportar / importar
+// ---------------------------------------------------------------- adicionar conta
 
 /**
- * Export Other: todas as contas, e o outro computador entra em modo privado ao
- * importar (mostra só "Conta N"). Export Me: igual, mas sem ligar o modo privado.
- * O arquivo leva as credenciais em texto puro; o outro lado importa com o
- * botão "Importar contas" (ou `swap-plus import`, que ignora a marca).
+ * Como adicionar uma conta: não há "cadastrar" aqui. O login novo do Claude Code vai
+ * sozinho para o servidor — só nos computadores do administrador.
  */
-const SERVER_NO_XPORT =
-  "Swap Plus: no modo servidor as contas ficam no servidor. Para usá-las em outro computador, conecte esse computador ao mesmo servidor (Swap Plus: Conectar ao servidor).";
-
-async function exportAccounts(mode) {
-  if (serverMode()) {
-    vscode.window.showInformationMessage(SERVER_NO_XPORT);
-    return null;
+function addAccount() {
+  const st = serverStatus();
+  if (st === "disconnected" || st === "revoked") {
+    vscode.window
+      .showInformationMessage("Swap Plus: as contas ficam no servidor. Conecte este computador primeiro (Entrar com Google).", "Entrar com Google")
+      .then((c) => c && connectServer("google"));
+    return { ok: false };
   }
-  const other = mode === "other";
-  const name = other ? "Export Other" : "Export Me";
-  if (!other && privateMode()) {
-    vscode.window.showInformationMessage("Swap Plus: em modo privado só o Export Other fica disponível.");
-    return null;
-  }
-  const def = path.join(os.homedir(), "Desktop", other ? "swap-plus-other.cswap" : "swap-plus-me.cswap");
-  const uri = await vscode.window.showSaveDialog({
-    defaultUri: vscode.Uri.file(def),
-    filters: { "Swap Plus": ["cswap"] },
-    saveLabel: name,
-    title: `${name}: onde salvar o arquivo com as contas`,
-  });
-  if (!uri) return null;
-  const file = uri.fsPath;
-  await refresh(); // ajustes por conta atualizados
-  // Gera numa pasta temporária local e só no fim grava no destino: assim funciona
-  // também quando o destino é uma pasta de rede (que o VS Code bloqueia no Windows).
-  const tmpOut = path.join(os.tmpdir(), `swap-plus-export-${process.pid}-${Date.now()}.cswap`);
-  let env = null;
-  try {
-    const r = await runCswap(["export", tmpOut], 120000);
-    try {
-      env = JSON.parse(fs.readFileSync(tmpOut, "utf8"));
-    } catch {}
-    if (r.code !== 0 || !env || !Array.isArray(env.accounts)) {
-      vscode.window.showErrorMessage(`Swap Plus: falha no ${name}: ${lastLine(r.stderr) || r.spawnError || "arquivo não foi gerado"}`);
-      return null;
-    }
-  } finally {
-    try {
-      fs.unlinkSync(tmpOut);
-    } catch {}
-  }
-  env.swapPlus = {
-    hideEmails: other,
-    exportedAt: new Date().toISOString(),
-    settings: collectSettings(),
-    accounts: env.accounts.map((a) => {
-      const rec = recordOf(state.records, a.number);
-      return { email: a.email, organizationUuid: a.organizationUuid || "", disabled: !!rec.disabled, threshold: rec.threshold ?? null, priority: Number(rec.priority) || 0 };
-    }),
-  };
-  if (!(await writeFileAny(file, JSON.stringify(env, null, 2) + "\n"))) {
-    vscode.window.showErrorMessage(`Swap Plus: não consegui salvar o arquivo em “${file}”. Escolha uma pasta deste computador (por exemplo, a Área de Trabalho).`);
-    return null;
-  }
-  const n = env.accounts.length;
-  await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `${name}: ${n} contas exportadas` }]);
-  postState();
-  vscode.window
-    .showInformationMessage(
-      `Swap Plus: ${n} contas exportadas (${name}), com as regras de troca, os avisos e os ajustes de cada conta${other ? ". No outro computador vai aparecer só “Conta 1”, “Conta 2”…" : ""}. O arquivo tem as credenciais das contas: leve para o outro computador, importe e apague.`,
-      "Mostrar a pasta"
-    )
-    .then((c) => c && vscode.commands.executeCommand("revealFileInOS", uri));
-  return { file, n };
-}
-
-/** Configurações do Swap Plus que viajam no export (não vão: caminho do executável, modo privado e o servidor, que são de cada máquina). */
-const NOT_EXPORTED = new Set(["swapPlus.executablePath", "swapPlus.privacy.hideEmails", "swapPlus.mode", "swapPlus.server.url"]);
-
-function settingKeys() {
-  const pkg = (extContext.extension && extContext.extension.packageJSON) || require("./package.json");
-  const props = (pkg.contributes && pkg.contributes.configuration && pkg.contributes.configuration.properties) || {};
-  return Object.keys(props).filter((k) => k.startsWith(`${NS}.`) && !NOT_EXPORTED.has(k));
-}
-
-function collectSettings() {
-  const out = {};
-  for (const k of settingKeys()) out[k] = cfg().get(k.slice(NS.length + 1));
-  return out;
-}
-
-async function applySettings(settings) {
-  if (!settings || typeof settings !== "object") return 0;
-  const known = new Set(settingKeys());
-  let n = 0;
-  for (const [k, v] of Object.entries(settings)) {
-    if (!known.has(k) || v === undefined) continue;
-    const key = k.slice(NS.length + 1);
-    if (JSON.stringify(cfg().get(key)) === JSON.stringify(v)) continue;
-    await cfg().update(key, v, vscode.ConfigurationTarget.Global);
-    n++;
-  }
-  return n;
-}
-
-/** Fora da rotação, linha própria e prioridade de cada conta, achando a conta pelo e-mail + organização. */
-async function applyAccountPrefs(prefs) {
-  if (!Array.isArray(prefs) || !prefs.length) return 0;
-  const l = await runCswap(["list", "--json"]);
-  const list = parseJson(l.stdout);
-  if (!list || !Array.isArray(list.accounts)) return 0;
-  const records = await readRecords();
-  let n = 0;
-  for (const p of prefs) {
-    const acc = list.accounts.find((a) => a.email === p.email && (a.organizationUuid || "") === (p.organizationUuid || ""));
-    if (!acc) continue;
-    const num = String(acc.number);
-    const rec = recordOf(records, acc.number);
-    const cmds = [];
-    if (!!p.disabled !== !!rec.disabled) cmds.push([p.disabled ? "disable" : "enable", num]);
-    const th = p.threshold === null || p.threshold === undefined ? null : Number(p.threshold);
-    const cur = rec.threshold === null || rec.threshold === undefined ? null : Number(rec.threshold);
-    if (th !== cur) cmds.push(th === null ? ["threshold", num, "--unset"] : ["threshold", num, String(th)]);
-    if ((Number(p.priority) || 0) !== (Number(rec.priority) || 0)) cmds.push(["priority", num, String(Number(p.priority) || 0)]);
-    for (const c of cmds) await runCswapWrite(c);
-    if (cmds.length) n++;
-  }
-  return n;
-}
-
-async function importAccounts() {
-  if (serverMode()) {
-    vscode.window.showInformationMessage(SERVER_NO_XPORT);
-    return null;
-  }
-  const uris = await vscode.window.showOpenDialog({
-    canSelectMany: false,
-    canSelectFolders: false,
-    filters: { "Swap Plus": ["cswap", "json"] },
-    openLabel: "Importar",
-    title: "Importar contas do Swap Plus",
-  });
-  if (!uris || !uris.length) return null;
-  const picked = uris[0].fsPath;
-  const temps = [];
-  const tmpName = (tag) => path.join(os.tmpdir(), `swap-plus-import-${tag}-${process.pid}-${Date.now()}.cswap`);
-  try {
-    let source = picked;
-    let read = readExportFile(picked);
-    if (read.code === UNC_ERR) {
-      // Pasta de rede: o VS Code não deixa a extensão ler, mas o Windows copia normalmente.
-      const local = tmpName("rede");
-      temps.push(local);
-      if (await copyFileAny(picked, local)) {
-        read = readExportFile(local);
-        source = local;
-      }
-    }
-    if (read.error) {
-      vscode.window.showErrorMessage(`Swap Plus: não deu para importar “${path.basename(picked)}”: ${read.error}`);
-      return null;
-    }
-    // Se o arquivo chegou com outra codificação, o motor recebe uma cópia limpa (UTF-8).
-    let file = source;
-    if (read.normalized) {
-      file = tmpName("limpo");
-      temps.push(file);
-      fs.writeFileSync(file, read.text, { mode: 0o600 });
-    }
-    return await importEnvelope(read.env, file, picked);
-  } finally {
-    for (const t of temps) {
-      try {
-        fs.unlinkSync(t);
-      } catch {}
-    }
-  }
-}
-
-// ---------------------------------------------------------------- arquivos (inclusive pasta de rede no Windows)
-
-const UNC_ERR = "ERR_UNC_HOST_NOT_ALLOWED";
-const IS_WIN = process.platform === "win32";
-
-/** Roda um comando de arquivo no PowerShell, com os caminhos em variáveis de ambiente (sem problema de aspas). */
-function shellFile(command, src, dst) {
-  return new Promise((resolve) => {
-    execFile(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", command],
-      { env: { ...process.env, SWAP_PLUS_SRC: src || "", SWAP_PLUS_DST: dst || "" }, timeout: 60000, windowsHide: true },
-      (err) => resolve(!err)
-    );
-  });
-}
-
-/** Copia um arquivo. No Windows, se o VS Code bloquear (pasta de rede), o próprio Windows copia. */
-async function copyFileAny(src, dst) {
-  try {
-    fs.copyFileSync(src, dst);
-    return true;
-  } catch {
-    if (!IS_WIN) return false;
-    const ok = await shellFile("Copy-Item -LiteralPath $env:SWAP_PLUS_SRC -Destination $env:SWAP_PLUS_DST -Force", src, dst);
-    return ok && fs.existsSync(dst);
-  }
-}
-
-/** Grava o arquivo só com permissão para o seu usuário; pasta de rede no Windows via cópia local. */
-async function writeFileAny(dst, content) {
-  try {
-    fs.writeFileSync(dst, content, { mode: 0o600 });
-    try {
-      fs.chmodSync(dst, 0o600);
-    } catch {}
-    return true;
-  } catch {
-    if (!IS_WIN) return false;
-    const tmp = path.join(os.tmpdir(), `swap-plus-out-${process.pid}-${Date.now()}.cswap`);
-    try {
-      fs.writeFileSync(tmp, content, { mode: 0o600 });
-      return await shellFile("Copy-Item -LiteralPath $env:SWAP_PLUS_SRC -Destination $env:SWAP_PLUS_DST -Force", tmp, dst);
-    } finally {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {}
-    }
-  }
-}
-
-async function removeFileAny(p) {
-  try {
-    fs.unlinkSync(p);
-    return true;
-  } catch {
-    if (!IS_WIN) return false;
-    return shellFile("Remove-Item -LiteralPath $env:SWAP_PLUS_SRC -Force", p, "");
-  }
-}
-
-/**
- * Lê um arquivo de export tolerando o que costuma acontecer na transferência
- * entre computadores: marca BOM do Windows, UTF-16, espaços nas pontas. Quando
- * não dá, diz exatamente o motivo (sem mostrar credenciais).
- */
-function readExportFile(file) {
-  let buf;
-  try {
-    buf = fs.readFileSync(file);
-  } catch (e) {
-    if (e.code === UNC_ERR) {
-      return {
-        code: UNC_ERR,
-        error: "o arquivo está numa pasta de rede, que o VS Code não deixa extensões lerem. Copie o arquivo para uma pasta deste computador (por exemplo, a Área de Trabalho) e importe de lá.",
-      };
-    }
-    return { code: e.code, error: `não consegui ler o arquivo (${e.code || e.message}).` };
-  }
-  if (!buf.length) {
-    return { error: "o arquivo está vazio (0 bytes). Se ele está numa pasta do OneDrive, iCloud ou Google Drive, baixe-o para o computador ou copie para outra pasta e tente de novo." };
-  }
-  // Arquivo auxiliar que o macOS cria ao copiar para pen drive ou disco de Windows:
-  // "._nome.cswap", com a mesma extensão do verdadeiro.
-  if (path.basename(file).startsWith("._") || (buf.length >= 4 && buf.readUInt32BE(0) === 0x00051607)) {
-    const real = path.basename(file).replace(/^\._/, "");
-    return { error: `esse é um arquivo auxiliar que o Mac cria ao copiar para pen drive (começa com “._”). Escolha o arquivo “${real}”, sem o “._” no começo.` };
-  }
-  if (buf[0] === 0x50 && buf[1] === 0x4b) {
-    return { error: "o arquivo é um .zip. Descompacte e escolha o arquivo .cswap que está dentro." };
-  }
-  let text;
-  let normalized = false;
-  if (buf[0] === 0xff && buf[1] === 0xfe) {
-    text = buf.subarray(2).toString("utf16le");
-    normalized = true;
-  } else if (buf[0] === 0xfe && buf[1] === 0xff) {
-    const le = Buffer.from(buf.subarray(2));
-    le.swap16();
-    text = le.toString("utf16le");
-    normalized = true;
-  } else if (buf.length > 3 && buf[1] === 0 && buf[3] === 0) {
-    text = buf.toString("utf16le");
-    normalized = true;
-  } else {
-    text = buf.toString("utf8");
-  }
-  if (text.charCodeAt(0) === 0xfeff) {
-    text = text.slice(1);
-    normalized = true;
-  }
-  // Espaços e quebras de linha nas pontas não atrapalham (nem aqui nem no motor).
-  let env;
-  try {
-    env = JSON.parse(text);
-  } catch (e) {
-    if (/[“”]/.test(text.slice(0, 400))) {
-      return { error: "o conteúdo foi alterado no caminho (as aspas viraram aspas curvas). Transfira o próprio arquivo, sem copiar e colar o texto." };
-    }
-    const start = text.slice(0, 24).replace(/\s+/g, " ");
-    return { error: `o conteúdo não é um export do Swap Plus (${buf.length} bytes, começa com “${start}”). Gere o arquivo de novo no computador principal (Configurações → Export Other ou Export Me).` };
-  }
-  if (!env || typeof env !== "object" || Array.isArray(env)) return { error: "o conteúdo não é um export do Swap Plus." };
-  if (env.encrypted === true) return { error: "o arquivo está criptografado; o Swap Plus importa só exports sem criptografia." };
-  if (!Array.isArray(env.accounts)) {
-    return { error: "o arquivo não tem a lista de contas. Ele parece ser outro tipo de arquivo; gere o export de novo no computador principal." };
-  }
-  if (!env.accounts.length) return { error: "o arquivo não tem nenhuma conta." };
-  if (env.version !== 1) return { error: `o arquivo é de um formato que esta versão não conhece (versão ${env.version}).` };
-  return { env, text, normalized };
-}
-
-async function importEnvelope(env, file, picked) {
-  const hide = !!(env.swapPlus && env.swapPlus.hideEmails);
-  // Liga o modo privado antes, para nenhuma mensagem do import mostrar e-mail.
-  if (hide) await cfg().update("privacy.hideEmails", true, vscode.ConfigurationTarget.Global);
-  const r = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: "Importando contas...", cancellable: false },
-    () => runCswapWrite(["import", file], 180000)
-  );
-  await refresh();
-  if (r.code !== 0) {
-    vscode.window.showErrorMessage(`Swap Plus: falha ao importar: ${lastLine(r.stderr) || r.spawnError || "erro desconhecido"}`);
-    return { ok: false, hide };
-  }
-  const n = env.accounts.length;
-  const sp = env.swapPlus || {};
-  if (sp.hideEmails === false) await cfg().update("privacy.hideEmails", false, vscode.ConfigurationTarget.Global);
-  const nSettings = await applySettings(sp.settings);
-  const nAccounts = await applyAccountPrefs(sp.accounts);
-  await refresh();
-  const carried = nSettings || nAccounts ? ", com as regras de troca, os avisos e os ajustes de cada conta" : "";
-  await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `Importadas ${n} contas${carried ? " e configurações" : ""}${hide ? " (modo privado)" : ""}` }]);
-  postState();
-  vscode.window
-    .showInformationMessage(
-      `Swap Plus: ${n} contas importadas${carried}${hide ? ". Modo privado ligado: aqui aparece só “Conta N”." : "."} Apague o arquivo agora que ele não é mais necessário.`,
-      "Apagar o arquivo"
-    )
-    .then((c) => {
-      if (c) {
-        removeFileAny(picked).then((ok) => {
-          if (!ok) vscode.window.showWarningMessage(`Swap Plus: não consegui apagar “${picked}”. Apague à mão.`);
-        });
-      }
-    });
-  return { ok: true, hide, n };
-}
-
-async function cliVersion() {
-  if (serverMode()) return null; // modo servidor: o motor não é usado, nem consultado pelo atualizador
-  const r = await runCswap(["--version"], 20000);
-  const m = `${r.stdout} ${r.stderr}`.match(/(\d+\.\d+\.\d+\S*)/);
-  return r.code === 0 && m ? m[1] : null;
-}
-
-/**
- * Cadastra no Swap Plus a conta que está logada agora no Claude Code (é o que o
- * `swap-plus add` faz; sem número de posição ele não faz perguntas).
- */
-async function addAccount() {
-  if (serverMode()) {
-    // Não há "cadastrar" no modo servidor: o login novo do Claude Code vai para o servidor sozinho.
-    if (loginUploadAllowed() === false) {
-      vscode.window.showInformationMessage(
-        "Swap Plus (modo servidor): só os computadores do administrador enviam logins ao servidor. Para adicionar uma conta, use o painel do servidor (Contas → + Adicionar conta) ou entre com ela no Claude Code de um computador do administrador."
-      );
-      return { ok: false, server: true };
-    }
+  if (loginUploadAllowed() === false) {
     vscode.window.showInformationMessage(
-      "Swap Plus (modo servidor): para adicionar uma conta, entre com ela no Claude Code (comando /login), sem sair da anterior. Em até 30 s o Swap Plus envia o login ao servidor, que passa a cuidar dela. Para levar todas as contas guardadas neste computador de uma vez: Configurações → Servidor → Enviar os logins deste computador."
-    );
-    return { ok: false, server: true };
-  }
-  const before = state.list ? state.list.accounts.map((a) => a.number) : [];
-  const r = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: "Swap Plus: cadastrando a conta logada no Claude Code...", cancellable: false },
-    () => runCswapWrite(["add"], 120000)
-  );
-  await refreshFresh();
-  if (r.code !== 0) {
-    const err = lastLine(r.stderr) || lastLine(r.stdout) || r.spawnError || "erro desconhecido";
-    const noLogin = /log in first|No active Claude account|No credentials/i.test(`${r.stderr} ${r.stdout}`);
-    vscode.window.showErrorMessage(
-      noLogin
-        ? "Swap Plus: não há conta logada no Claude Code. Entre com a conta nova no Claude Code (sem fazer logout da anterior) e clique em Adicionar conta de novo."
-        : `Swap Plus: não consegui cadastrar a conta: ${err}`
+      "Swap Plus: só os computadores do administrador enviam logins ao servidor. Para adicionar uma conta, use o painel do servidor (Contas → + Adicionar conta) ou entre com ela no Claude Code de um computador do administrador."
     );
     return { ok: false };
   }
-  const list = state.list;
-  const acc = list && list.accounts.find((a) => a.number === list.activeAccountNumber);
-  const isNew = acc && !before.includes(acc.number);
-  const text = acc ? `${isNew ? "Conta nova cadastrada" : "Conta atualizada"}: ${displayName(acc)}, em uso agora` : "Conta cadastrada";
-  await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: safe(text) }]);
-  postState();
-  vscode.window.showInformationMessage(`Swap Plus: ${safe(text)}.${autoEnabled() ? " Ela já participa da troca automática." : ""}`);
-  return { ok: true, number: acc ? acc.number : null };
-}
-
-let registerOffered = null;
-/** Pergunta uma vez por conta se é para cadastrar a conta logada que o Swap Plus não conhece. */
-function offerRegister(u) {
-  if (registerOffered === u.email) return;
-  registerOffered = u.email;
-  vscode.window
-    .showWarningMessage(
-      `Swap Plus: o Claude Code está logado em ${privateMode() ? "uma conta" : u.email} que ainda não está cadastrada. Sem isso, o Swap Plus não acompanha o uso nem troca de conta.`,
-      "Cadastrar agora"
-    )
-    .then((c) => c && addAccount());
+  vscode.window.showInformationMessage(
+    "Swap Plus: para adicionar uma conta, entre com ela no Claude Code (comando /login), sem sair da anterior. Em até 30 s o Swap Plus envia o login ao servidor, que passa a cuidar dela."
+  );
+  return { ok: false };
 }
 
 async function setEnabled(on) {
   const write = () => cfg().update("enabled", !!on, vscode.ConfigurationTarget.Global);
-  // Modo servidor: desligar espera o ciclo em andamento (batimento, troca, gravação) terminar.
-  if (!on && serverMode()) await holdServer(write);
+  // Desligar espera o ciclo em andamento (batimento, troca, gravação) terminar.
+  if (!on) await holdServer(write);
   else await write();
   await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: on ? "Swap Plus ligado" : "Swap Plus desligado" }]);
   vscode.window.showInformationMessage(
     on
-      ? serverMode()
-        ? "Swap Plus ligado. Ele volta a falar com o servidor e a receber a conta escolhida para este computador."
-        : "Swap Plus ligado. Ele volta a acompanhar as contas e salva o login atual do Claude Code."
-      : serverMode()
-        ? "Swap Plus desligado. Sem contato com o servidor e sem mexer no login: o Claude Code fica com o acesso que tem agora."
-        : "Swap Plus desligado. O Claude Code fica normal: sem consultas, sem troca de conta, sem mexer no login."
+      ? "Swap Plus ligado. Ele volta a falar com o servidor e a receber a conta escolhida para este computador."
+      : "Swap Plus desligado. Sem contato com o servidor e sem mexer no login: o Claude Code fica com o acesso que tem agora."
   );
 }
 
@@ -1824,29 +932,24 @@ async function toggleEnabled() {
 }
 
 async function toggleAuto() {
-  if (serverMode()) {
-    // A chave que vale é a do servidor (autoEnabled() diz false com o Swap Plus desligado).
-    if (!swapOn()) {
-      vscode.window.showInformationMessage("Swap Plus está desligado: ligue-o para mudar a troca automática do servidor.");
-      return;
-    }
-    if (!srv.state) {
-      vscode.window.showWarningMessage(`Swap Plus: ainda sem resposta do servidor; tente de novo em instantes.${serverErrorLine() ? ` (${serverErrorLine()})` : ""}`);
-      return;
-    }
-    return setServerAuto(!srv.state.autoSwitch);
+  // A chave que vale é a do servidor (autoEnabled() diz false com o Swap Plus desligado).
+  if (!swapOn()) {
+    vscode.window.showInformationMessage("Swap Plus está desligado: ligue-o para mudar a troca automática do servidor.");
+    return;
   }
-  const next = !autoEnabled();
-  await cfg().update("autoSwitch.enabled", next, vscode.ConfigurationTarget.Global);
-  vscode.window.showInformationMessage(`Swap Plus: troca automática ${next ? "ligada" : "desligada"}.`);
+  if (!srv.state) {
+    vscode.window.showWarningMessage(`Swap Plus: ainda sem resposta do servidor; tente de novo em instantes.${serverErrorLine() ? ` (${serverErrorLine()})` : ""}`);
+    return;
+  }
+  return setServerAuto(!srv.state.autoSwitch);
 }
 
-// ---------------------------------------------------------------- modo servidor
+// ---------------------------------------------------------------- servidor
 //
 // O refresh token de cada conta é de uso único: quem renova primeiro invalida a
-// cópia dos outros. No modo servidor só o servidor guarda o refresh token e
-// renova; ele também decide as trocas (mesma regra do rules.js) para todos os
-// computadores. Este computador:
+// cópia dos outros. Por isso só o servidor guarda o refresh token e renova; ele
+// também decide as trocas (mesma regra do rules.js) para todos os computadores.
+// Este computador:
 //   - a cada 30 s manda um batimento (modelos em uso + conta e validade do login
 //     atual) e recebe o estado (contas, uso, regras, histórico, dispositivos).
 //     Com várias janelas do VS Code abertas, só uma (a "dona", por trava em
@@ -1867,23 +970,23 @@ async function toggleAuto() {
 //     (servidor antigo), envia como antes;
 //   - o token deste computador só vai para o endereço em que foi emitido (o
 //     guardado na conexão). Endereço novo nas configurações = conectar de novo;
-//   - enquanto o modo servidor está ligado, a tela de login do Claude Code fica
-//     desligada (claudeCode.disableLoginPrompt): quem faz o login é o Swap Plus.
-//     Ao sair do modo servidor (ou desconectar) a configuração volta como estava.
-// Aqui o motor local (swap-plus) não é chamado — só no envio dos logins deste
-// computador (list + export) — e a decisão local (decide) não roda.
-// Tokens nunca vão para log nem para mensagens.
+//   - enquanto está conectado (e o Swap Plus ligado), a tela de login do Claude
+//     Code fica desligada (claudeCode.disableLoginPrompt): quem faz o login é o
+//     Swap Plus. Ao desconectar (ou desligar) a configuração volta como estava.
+// Sem conexão, nada vai ao servidor e nada é gravado no login: a barra e a tela
+// mostram "não conectado" com "Entrar com Google". O motor antigo (swap-plus) não
+// é chamado. Tokens nunca vão para log nem para mensagens.
 
 const SERVER_TOKEN_KEY = "swapPlus.server.token"; // em context.secrets
 const SERVER_META_KEY = "swapPlus.server"; // globalState: { url, fp, deviceId, name, via, connectedAt, revokedAt } — url = onde o token foi emitido
 const SERVER_APPLIED_KEY = "swapPlus.server.applied"; // globalState: { number, gen, expiresAt, at, noIdentity } — última credencial gravada
-const SERVER_MIGRATED_KEY = "swapPlus.server.migrated"; // globalState: { "<url>": ms } — logins deste computador já enviados
 const SERVER_SENT_KEY = "swapPlus.server.sentLogin"; // globalState: [hash] — logins com refresh token já resolvidos (enviados, mortos ou gastos); nunca o token
-const LOGIN_PROMPT_KEY = "swapPlus.server.loginPrompt"; // globalState: { applied, had, value, noticed } — claudeCode.disableLoginPrompt de antes do modo servidor
+const LOGIN_PROMPT_KEY = "swapPlus.server.loginPrompt"; // globalState: { applied, had, value, noticed } — claudeCode.disableLoginPrompt de antes da conexão
 const HEARTBEAT_MS = 30 * 1000;
 const DEVICE_ACTIVE_MS = 5 * 60 * 1000;
 const LOGIN_POST_TIMEOUT_MS = 90 * 1000; // POST /v1/logins: o servidor renova o login na hora (fala com a Anthropic)
 const LOGIN_RETRY_MS = 60 * 1000; // refresh_failed / profile_unavailable: tenta de novo em ~1 min, sem aviso
+const REJECT_RETRY_MS = 10 * 60 * 1000; // login recusado pelo servidor: o envio é tentado de novo depois de 10 min
 const APPLY_RETRY_MS = 60 * 1000; // gravação que falhou: tenta de novo em 1 min
 const OWNER_STALE_MS = 25 * 1000; // dona que não renova a trava por mais que isso: outra janela assume
 const OWNER_TOUCH_MS = 10 * 1000; // a dona renova a trava a cada 10 s (e a cada ciclo)
@@ -1895,11 +998,7 @@ const WINDOW_ID = `${process.pid}-${crypto.randomBytes(6).toString("hex")}`;
 const CREDMAN_RE = /Gerenciador de Credenciais do Windows/;
 const NO_ACCOUNT_TEXT = "o servidor ainda não tem conta para este computador";
 const UPLOAD_DENIED_TEXT = "Este computador usa as contas do servidor. O login local não foi enviado: só os computadores do administrador enviam logins.";
-const LOGIN_PROMPT_NOTE = "Enquanto estiver no modo servidor, o login do Claude Code é feito pelo Swap Plus";
-
-function serverMode() {
-  return cfg().get("mode") === "server";
-}
+const LOGIN_PROMPT_NOTE = "Enquanto este computador estiver conectado ao servidor, o login do Claude Code é feito pelo Swap Plus";
 
 function serverMeta() {
   return (extContext && extContext.globalState.get(SERVER_META_KEY)) || {};
@@ -1932,7 +1031,7 @@ function defaultServerUrl() {
   return String(d || DEFAULT_SERVER_URL).trim();
 }
 
-/** Origem ("https://host[:porta]") de um endereço, ou "". (Sem carregar o serverClient: vale também no modo local.) */
+/** Origem ("https://host[:porta]") de um endereço, ou "" (sem carregar o serverClient). */
 function urlOrigin(u) {
   try {
     const x = new URL(String(u || "").trim());
@@ -1978,7 +1077,7 @@ function serverHost(url = serverUrl()) {
   }
 }
 
-// Carregados só quando o modo servidor é usado: o modo local não depende deles.
+// Carregados na primeira vez em que são usados.
 function claudeAuth() {
   return require("./claudeAuth");
 }
@@ -2045,16 +1144,6 @@ function readJsonFile(file) {
 function defaultDeviceName() {
   const h = String(os.hostname() || "").replace(/\.local$/i, "").trim();
   return h || (process.platform === "darwin" ? "Mac" : process.platform === "win32" ? "Windows" : "Linux");
-}
-
-/** O motor local tem contas guardadas? (só lê o sequence.json; não chama o motor) */
-function localEngineHasAccounts() {
-  try {
-    const seq = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".claude-swap-backup", "sequence.json"), "utf8"));
-    return Object.keys(seq.accounts || {}).length > 0;
-  } catch {
-    return false;
-  }
 }
 
 async function serverToken() {
@@ -2166,9 +1255,8 @@ function srvErrText(e) {
   }
 }
 
-/** "local" | "off" | "disconnected" | "revoked" | "connecting" | "online" | "offline" */
+/** "off" | "disconnected" | "revoked" | "connecting" | "online" | "offline" */
 function serverStatus() {
-  if (!serverMode()) return "local";
   if (!swapOn()) return "off";
   if (srv.token === undefined) return "connecting";
   if (!srv.token || serverAddressChanged()) return "disconnected";
@@ -2195,7 +1283,7 @@ function serverErrorLine() {
   const last = lastContactText();
   if (st === "disconnected") {
     if (serverAddressChanged()) return addressChangedText();
-    return "este computador ainda não está conectado ao servidor. Use “Conectar ao servidor” (paleta de comandos ou Configurações → Servidor).";
+    return "este computador ainda não está conectado ao servidor. Entre com Google (ou cole o código de conexão) para usar as contas do servidor.";
   }
   if (st === "revoked") return "o servidor recusou o acesso deste computador (foi revogado ou desconectado). Conecte de novo: entre com Google ou cole um código novo.";
   if (st === "offline") return `servidor fora do ar${last ? ` (último contato: ${last})` : ""} — ${srv.lastError || "sem resposta"}. O login do Claude Code não é mexido enquanto isso.`;
@@ -2206,12 +1294,12 @@ function serverErrorLine() {
 function serverStatusText(st) {
   const host = serverHost();
   switch (st) {
-    case "local":
-      return srv.token ? `os logins ficam neste computador (motor swap-plus). Continua conectado a ${host}: dá para voltar ao modo servidor quando quiser.` : "os logins ficam neste computador (motor swap-plus).";
     case "off":
       return "Swap Plus desligado: sem contato com o servidor e sem mexer no login.";
     case "disconnected":
-      return serverAddressChanged() ? addressChangedText() : "modo servidor ligado, mas este computador ainda não foi conectado.";
+      return serverAddressChanged()
+        ? addressChangedText()
+        : `este computador ainda não está conectado${connectUrl() ? ` a ${serverHost(connectUrl())}` : ""}. Entre com Google para usar as contas do servidor.`;
     case "connecting":
       return `falando com ${host}…`;
     case "online":
@@ -2243,7 +1331,7 @@ function storeBlockReason(list = srv.storeWarnings) {
     : null;
 }
 
-/** Barra de status no modo servidor quando não dá para mostrar o uso (sem conexão, fora do ar…). true = já desenhou. */
+/** Barra de status quando não dá para mostrar o uso (sem conexão, fora do ar…). true = já desenhou. */
 function renderServerProblem() {
   const st = serverStatus();
   const last = lastContactText();
@@ -2255,8 +1343,8 @@ function renderServerProblem() {
     tip = `${cap(addressChangedText())}\n\nO login do Claude Code não foi mexido.`;
     bg = "statusBarItem.warningBackground";
   } else if (st === "disconnected") {
-    text = "$(mail) $(cloud)  servidor não conectado — clique para conectar";
-    tip = "O Swap Plus está no modo servidor, mas este computador ainda não foi conectado. Clique e escolha “Conectar ao servidor”: entre com a sua conta Google (liberada pelo dono do servidor) ou cole o código de conexão gerado no servidor.";
+    text = "$(mail) $(cloud)  não conectado — clique para entrar com Google";
+    tip = `Este computador ainda não está conectado ao servidor Swap Plus (${serverHost(connectUrl())}). Clique e escolha “Entrar com Google” (a conta Google precisa estar liberada pelo dono do servidor) ou cole o código de conexão gerado no servidor.\n\nEnquanto isso o Swap Plus não mexe no login do Claude Code.`;
     bg = "statusBarItem.warningBackground";
   } else if (st === "revoked") {
     text = "$(mail) $(warning)  servidor recusou este computador — clique para conectar";
@@ -2291,13 +1379,8 @@ function finishSync() {
   postState();
 }
 
-/**
- * Guarda o estado recebido do servidor; barra, lista e tela passam a usar
- * list/records/rules/history dele. Só no modo servidor: no modo local a lista
- * da tela é sempre a do motor deste computador.
- */
+/** Guarda o estado recebido do servidor; barra, lista e tela passam a usar list/records/rules/history dele. */
 function applyStateResponse(resp) {
-  if (!serverMode()) return false;
   if (!resp || !resp.list || !Array.isArray(resp.list.accounts)) return false;
   // O servidor passou de "não pode" para "pode enviar logins" (ex.: voltou a ser computador do administrador
   // depois de um reinício do servidor): a recusa anterior (403 not_admin) deixa de valer.
@@ -2307,7 +1390,7 @@ function applyStateResponse(resp) {
   srv.status = "online";
   srv.lastOkAt = Date.now();
   srv.lastError = null;
-  state = { ...state, list: resp.list, records: resp.records || {}, error: null, fetchedAt: Date.now(), unmanaged: null };
+  state = { ...state, list: resp.list, records: resp.records || {}, error: null, fetchedAt: Date.now() };
   return true;
 }
 
@@ -2342,18 +1425,6 @@ async function notifyUploadDenied(key) {
   vscode.window.showWarningMessage(`Swap Plus: ${UPLOAD_DENIED_TEXT}`);
 }
 
-/** Busca e guarda o estado do servidor (GET /v1/state), sem aviso de erro. true = veio. */
-async function fetchServerState() {
-  try {
-    const client = await serverClient();
-    if (!client || serverStatus() === "revoked") return false;
-    return applyStateResponse(await client.request("GET", "/v1/state"));
-  } catch (e) {
-    console.warn("[swap-plus] estado do servidor", srvErrText(e));
-    return false;
-  }
-}
-
 async function serverFailed(e, where) {
   const kind = srvErrKind(e);
   srv.lastError = srvErrText(e);
@@ -2380,14 +1451,15 @@ function warnDisconnectedOnce() {
   srv.disconnectedWarned = true;
   const text = serverAddressChanged()
     ? `Swap Plus: ${addressChangedText()}`
-    : "Swap Plus: o modo servidor está ligado, mas este computador ainda não foi conectado ao servidor.";
-  vscode.window.showWarningMessage(text, "Conectar ao servidor", "Usar o modo local").then((c) => {
-    if (c === "Conectar ao servidor") connectServer();
-    else if (c === "Usar o modo local") setMode("local");
+    : "Swap Plus: este computador ainda não está conectado ao servidor. Entre com Google para usar as contas do servidor.";
+  vscode.window.showWarningMessage(text, "Entrar com Google", "Colar código").then((c) => {
+    if (c === "Entrar com Google") connectServer("google");
+    else if (c === "Colar código") connectServer("code");
   });
 }
 
-function onServerModeChanged() {
+/** O endereço do servidor mudou nas configurações: esquece o estado e o cliente; avisa se o acesso deste computador não vale lá. */
+function onServerUrlChanged() {
   srv.state = null;
   srv.status = null;
   srv.rejected = null;
@@ -2396,18 +1468,16 @@ function onServerModeChanged() {
   srv.originMismatch = false;
   srv.owner = null;
   srv.disconnectedWarned = false;
-  state = { ...state, list: null, records: {}, error: null, unmanaged: null };
-  if (!serverMode() || !swapOn()) releaseOwner();
-  if (serverMode()) {
-    serverToken()
-      .then((t) => {
-        if ((!t || serverAddressChanged()) && serverMode()) warnDisconnectedOnce();
-      })
-      .catch(() => {});
-  }
+  state = { ...state, list: null, records: {}, error: null };
+  if (!swapOn()) releaseOwner();
+  serverToken()
+    .then((t) => {
+      if (swapOn() && (!t || serverAddressChanged())) warnDisconnectedOnce();
+    })
+    .catch(() => {});
 }
 
-// ---- fila única do modo servidor
+// ---- fila única
 //
 // Ciclo (batimento + gravação), troca manual, limite batido e "usar a conta do
 // servidor" rodam um de cada vez: dois gravando ao mesmo tempo poderiam deixar no
@@ -2420,7 +1490,7 @@ function srvQueue(fn) {
   return p;
 }
 
-/** Segura o ciclo do modo servidor e espera o que estiver em andamento (ciclo, troca, gravação) antes de fn. */
+/** Segura o ciclo e espera o que estiver em andamento (ciclo, troca, gravação) antes de fn. */
 async function holdServer(fn) {
   const prev = srv.hold;
   srv.hold = true;
@@ -2498,7 +1568,7 @@ function isOwnerNow() {
   return !!cur && cur.id === WINDOW_ID;
 }
 
-/** Larga a posição de dona (saiu do modo servidor, desligou ou a janela fechou): outra janela assume logo. */
+/** Larga a posição de dona (desligou, desconectou ou a janela fechou): outra janela assume logo. */
 function releaseOwner() {
   try {
     withOwnerLock(() => {
@@ -2513,7 +1583,7 @@ function setupOwnerTimer() {
   if (ownerTimer) clearInterval(ownerTimer);
   ownerTimer = setInterval(() => {
     try {
-      if (serverMode() && swapOn() && srv.token && isOwnerNow()) claimOwner(false);
+      if (swapOn() && srv.token && isOwnerNow()) claimOwner(false);
     } catch {}
   }, OWNER_TOUCH_MS);
   if (ownerTimer.unref) ownerTimer.unref();
@@ -2674,7 +1744,7 @@ async function uploadLiveLogin(auth, live) {
   const allowed = loginUploadAllowed();
   if (allowed === false) return denyLiveLogin(key); // só os computadores do administrador enviam logins: nenhum POST
   if (allowed === null) return { kind: "wait", key }; // sem o estado do servidor ainda: não se sabe se este computador pode enviar
-  if (srv.rejected && srv.rejected.key === key && now - srv.rejected.at < SAVE_RETRY_MS) return { kind: "rejected", key };
+  if (srv.rejected && srv.rejected.key === key && now - srv.rejected.at < REJECT_RETRY_MS) return { kind: "rejected", key };
   if (srv.loginRetry && srv.loginRetry.key === key && now - srv.loginRetry.at < LOGIN_RETRY_MS) return { kind: "wait", key };
   const oauthAccount = await liveOauthAccount(auth);
   if (!oauthAccount) return { kind: "wait", key }; // o Claude Code ainda não gravou os dados da conta
@@ -2784,7 +1854,7 @@ function sameIdentity(who, target) {
  */
 async function stripLiveRefresh(auth, live) {
   const o = live && live.oauth;
-  if (!o || !o.refreshToken || !swapOn() || !serverMode()) return false;
+  if (!o || !o.refreshToken || !swapOn()) return false;
   const key = loginKey(live);
   const same = (c) => !!(c && c.claudeAiOauth && c.claudeAiOauth.refreshToken) && loginKey({ oauth: c.claudeAiOauth }) === key;
   try {
@@ -2807,13 +1877,13 @@ async function stripLiveRefresh(auth, live) {
 /**
  * Grava no Claude Code o acesso da conta que o servidor escolheu para este computador, quando:
  * a versão (gen) ou a conta mudou, a conta logada não é a atribuída, ou a validade do login
- * atual difere da do servidor. Só o acesso: o refresh token nunca é gravado no modo servidor.
+ * atual difere da do servidor. Só o acesso: o refresh token nunca é gravado aqui.
  * opts: live (login atual já lido), up (resultado do envio do login atual, se já feito),
  *   force (buscar e gravar mesmo sem mudança), retryNow (não esperar 1 min depois de uma falha).
  * → null (nada a fazer) | { number, prev, wrote: true } | { blocked: código, reason, quiet, stripped }
  */
 async function syncCredential(client, resp, { live = null, up = null, force = false, retryNow = false } = {}) {
-  if (!swapOn() || !serverMode()) return null; // desligado ou modo local: nunca grava
+  if (!swapOn()) return null; // desligado: nunca grava
   const auth = claudeAuth();
   const storeBlock = storeBlockReason(refreshStoreWarnings());
   if (storeBlock) return { blocked: "store", reason: storeBlock };
@@ -2880,7 +1950,7 @@ async function applyServerCredential(client, resp, auth, live, { force, retryNow
   const target = oa ? { email: oa.emailAddress, orgUuid: oa.organizationUuid || null } : acc ? { email: acc.email, orgUuid: acc.organizationUuid } : null;
   // Trocando de conta: o "dispositivo confiável" é da conta anterior (o próprio Claude Code apaga no /login).
   const switching = !sameIdentity(who, target);
-  if (!swapOn() || !serverMode()) return null; // desligado (ou modo local) no meio do caminho: não grava
+  if (!swapOn()) return null; // desligado no meio do caminho: não grava
   try {
     await auth.writeLive(clean, { canReplace: canReplaceLive, dropTrustedDevice: switching });
   } catch (e) {
@@ -2947,13 +2017,13 @@ async function syncCredentialSafe(client, resp, opts) {
 }
 
 /**
- * Um ciclo do modo servidor. Janela dona: envia login novo (se houver), batimento,
+ * Um ciclo. Janela dona: envia login novo (se houver), batimento,
  * grava a conta escolhida. Outras janelas: só leem o estado.
  */
 async function serverSync() {
   const models = await detectModels();
-  state = { ...state, models, unmanaged: null };
-  if (srv.hold || !serverMode() || !swapOn()) return finishSync(); // conexão, envio de logins, desligar... em andamento
+  state = { ...state, models };
+  if (srv.hold || !swapOn()) return finishSync(); // conexão, desligar, desconectar... em andamento
   let client = null;
   try {
     client = await serverClient();
@@ -2962,6 +2032,11 @@ async function serverSync() {
   }
   const st = serverStatus();
   if (!client || st === "revoked") {
+    if (!srv.token) {
+      // Sem conexão (desconectado aqui ou em outra janela): nada do servidor fica na barra nem na tela.
+      srv.state = null;
+      state = { ...state, list: null, records: {} };
+    }
     state = { ...state, error: cap(serverErrorLine() || srv.lastError || "sem conexão com o servidor"), fetchedAt: Date.now() };
     if (st === "disconnected") warnDisconnectedOnce();
     return finishSync();
@@ -2975,7 +2050,7 @@ async function serverSync() {
     } catch (e) {
       return serverFailed(e, "estado");
     }
-    if (!serverMode() || !swapOn()) return finishSync(); // mudou de modo (ou desligou) no meio
+    if (!swapOn()) return finishSync(); // desligou no meio
     if (!applyStateResponse(resp)) return serverFailed(new Error("a resposta do servidor veio sem a lista de contas"), "estado");
     finishSync();
     checkAlerts().catch((e) => console.error("[swap-plus] alerts", safeErr(e)));
@@ -2998,7 +2073,7 @@ async function serverSync() {
       } catch (e) {
         return serverFailed(e, "estado");
       }
-      if (!serverMode() || !swapOn()) return finishSync(); // mudou de modo (ou desligou) no meio
+      if (!swapOn()) return finishSync(); // desligou no meio
       applyStateResponse(st0);
     }
     up = await uploadLiveLogin(auth, live);
@@ -3013,7 +2088,7 @@ async function serverSync() {
   } catch (e) {
     return serverFailed(e, "batimento");
   }
-  if (!serverMode() || !swapOn()) return finishSync(); // mudou de modo (ou desligou) no meio: não grava nada
+  if (!swapOn()) return finishSync(); // desligou no meio: não grava nada
   if (!applyStateResponse(resp)) return serverFailed(new Error("a resposta do servidor veio sem a lista de contas"), "batimento");
   // 3) credencial. Login recusado (ou ainda sendo enviado por outra janela): nada por cima, para não perdê-lo.
   let res = null;
@@ -3058,18 +2133,17 @@ async function serverCall(method, p, body, what) {
   }
 }
 
-/** Troca manual no modo servidor (num = null: o servidor escolhe a melhor conta). */
+/** Troca manual (num = null: o servidor escolhe a melhor conta). */
 async function serverSwitch(num) {
   if (!swapOn()) {
     vscode.window.showInformationMessage("Swap Plus está desligado: ligue-o para trocar de conta.");
     return null;
   }
-  if (!serverMode()) return null;
   return srvQueue(() => serverSwitchNow(num));
 }
 
 async function serverSwitchNow(num) {
-  if (!swapOn() || !serverMode()) return null;
+  if (!swapOn()) return null;
   let client = null;
   try {
     client = await serverClient();
@@ -3118,12 +2192,12 @@ async function serverSwitchNow(num) {
 
 /** Limite batido (visto na transcrição): avisa o servidor, que decide a troca. */
 async function serverLimitHit(label) {
-  if (!swapOn() || !serverMode()) return null;
+  if (!swapOn()) return null;
   return srvQueue(() => serverLimitHitNow(label));
 }
 
 async function serverLimitHitNow(label) {
-  if (!swapOn() || !serverMode()) return null;
+  if (!swapOn()) return null;
   let client = null;
   try {
     client = await serverClient();
@@ -3267,13 +2341,13 @@ async function useServerAccount() {
 
 // ---- tela de login do Claude Code (claudeCode.disableLoginPrompt)
 //
-// No modo servidor o Claude Code recebe só o acesso (sem refresh token). Quando o
-// acesso vence antes de o Swap Plus gravar o novo, o Claude Code (extensão do VS
-// Code) abriria a tela de login. Enquanto o modo servidor está ligado, a tela fica
-// desligada; o valor anterior fica guardado e volta ao sair.
+// O Claude Code recebe só o acesso (sem refresh token). Quando o acesso vence antes
+// de o Swap Plus gravar o novo, o Claude Code (extensão do VS Code) abriria a tela de
+// login. Enquanto este computador está conectado (e o Swap Plus ligado), a tela fica
+// desligada; o valor anterior fica guardado e volta ao desconectar ou desligar.
 
 function loginPromptWanted() {
-  return serverMode() && swapOn() && !!srv.token && !!serverMeta().url;
+  return swapOn() && !!srv.token && !!serverMeta().url;
 }
 
 let loginPromptChain = Promise.resolve();
@@ -3311,7 +2385,7 @@ async function doSyncLoginPrompt() {
     if (!saved.noticed) {
       await extContext.globalState.update(LOGIN_PROMPT_KEY, { ...(extContext.globalState.get(LOGIN_PROMPT_KEY) || {}), noticed: true });
       vscode.window.showInformationMessage(
-        `Swap Plus: ${LOGIN_PROMPT_NOTE.charAt(0).toLowerCase()}${LOGIN_PROMPT_NOTE.slice(1)}: a tela de login do Claude Code fica desligada (claudeCode.disableLoginPrompt) e volta como estava ao sair do modo servidor ou desconectar.`
+        `Swap Plus: ${LOGIN_PROMPT_NOTE.charAt(0).toLowerCase()}${LOGIN_PROMPT_NOTE.slice(1)}: a tela de login do Claude Code fica desligada (claudeCode.disableLoginPrompt) e volta como estava ao desconectar ou desligar o Swap Plus.`
       );
     }
     postState();
@@ -3322,37 +2396,6 @@ async function doSyncLoginPrompt() {
   if (g === true) await cc.update("disableLoginPrompt", saved.had ? saved.value : undefined, vscode.ConfigurationTarget.Global);
   await extContext.globalState.update(LOGIN_PROMPT_KEY, { applied: false, noticed: !!saved.noticed });
   postState();
-}
-
-async function setMode(mode) {
-  const want = mode === "server" ? "server" : "local";
-  const cur = serverMode() ? "server" : "local";
-  const ts = new Date().toISOString();
-  if (want === "server") {
-    if (!(await serverToken())) return connectServer(); // conecta e liga o modo servidor no fim
-    if (cur === "server") return;
-    await cfg().update("mode", "server", vscode.ConfigurationTarget.Global);
-    await pushHistory([{ ts, kind: "info", text: `Modo servidor ligado (${serverHost()})` }]);
-    vscode.window.showInformationMessage(`Swap Plus: modo servidor (${serverHost()}). O servidor guarda os logins e escolhe a conta deste computador.`);
-    return;
-  }
-  if (cur === "local") return;
-  const c = await vscode.window.showWarningMessage(
-    "Voltar para o modo local?",
-    {
-      modal: true,
-      detail:
-        "No modo local o motor swap-plus deste computador volta a cuidar (e a renovar) os logins que ele guarda. Um login que o servidor também tem morre lá quando é renovado aqui: o login só vale para quem renovou por último. Use o modo local só se não for mais usar o servidor com essas contas.\n\nEste computador continua conectado: dá para voltar ao modo servidor a qualquer momento. O Claude Code fica com o acesso atual até ele vencer; depois, entre de novo com uma conta.",
-    },
-    "Voltar ao modo local"
-  );
-  if (c !== "Voltar ao modo local") return postState();
-  // Espera o ciclo em andamento (que pode estar gravando) antes de mudar de modo.
-  await holdServer(async () => {
-    await cfg().update("mode", "local", vscode.ConfigurationTarget.Global);
-    await pushHistory([{ ts, kind: "info", text: "Modo local ligado" }]);
-  });
-  await syncLoginPrompt();
 }
 
 function pairErrorText(e, url) {
@@ -3409,7 +2452,7 @@ async function connectServer(method) {
 
 async function connectServerFlow(method) {
   if (!extContext.secrets) {
-    vscode.window.showErrorMessage("Swap Plus: esta versão do VS Code não tem o cofre de segredos; atualize o VS Code para usar o modo servidor.");
+    vscode.window.showErrorMessage("Swap Plus: esta versão do VS Code não tem o cofre de segredos; atualize o VS Code para conectar ao servidor.");
     return;
   }
   if (!swapOn()) {
@@ -3736,7 +2779,8 @@ async function connectByGoogle(lib, { askUrl = false } = {}) {
 /**
  * Caminho de sucesso comum (código ou Google): revoga o acesso anterior deste
  * computador, guarda o token no cofre de segredos e endereço/deviceId/fp no
- * globalState, liga o modo servidor, oferece o envio dos logins e atualiza.
+ * globalState e atualiza. O login atual do Claude Code vai para o servidor no
+ * ciclo seguinte (só nos computadores do administrador).
  */
 async function finishConnect(got, had) {
   const { url, deviceId, token, name } = got;
@@ -3744,7 +2788,7 @@ async function finishConnect(got, had) {
   const via = got.via === "google" ? "google" : "code";
   // Conexão anterior: o cliente é o do servidor que emitiu o token antigo (mesmo que o endereço tenha mudado).
   const old = had ? { meta: serverMeta(), client: await issuerClient() } : null;
-  srv.hold = true; // o ciclo espera até o fim (inclusive o envio dos logins)
+  srv.hold = true; // o ciclo espera até o fim
   try {
     if (refreshing) await refreshing.catch(() => {});
     await srvChain;
@@ -3763,24 +2807,20 @@ async function finishConnect(got, had) {
     srv.rejected = null;
     srv.loginRetry = null;
     srv.applyFail = null;
+    srv.disconnectedWarned = false;
     // url = onde o token foi emitido: é para lá (e só para lá) que ele vai daqui em diante.
     await extContext.globalState.update(SERVER_META_KEY, { url, fp, deviceId, name, via, connectedAt: Date.now() });
     await extContext.globalState.update(SERVER_APPLIED_KEY, undefined);
-    // Primeiro o modo (o ciclo está parado por srv.hold), depois o endereço.
-    if (!serverMode()) await cfg().update("mode", "server", vscode.ConfigurationTarget.Global);
     if (String(cfg().get("server.url") || "").replace(/\/+$/, "") !== url) await cfg().update("server.url", url, vscode.ConfigurationTarget.Global);
     await syncLoginPrompt();
     await pushHistory([
       { ts: new Date().toISOString(), kind: "info", text: `Conectado ao servidor ${serverHost(url)} como “${name}”${via === "google" ? " (entrou com Google)" : ""}` },
     ]);
-    // 1ª conexão a este servidor: oferecer o envio dos logins guardados neste computador — só
-    // nos computadores do administrador (o estado do servidor diz se este pode enviar).
-    const migrated = extContext.globalState.get(SERVER_MIGRATED_KEY) || {};
-    if (localEngineHasAccounts() && !migrated[url] && (await fetchServerState()) && loginUploadAllowed() === true) await offerMigration();
   } finally {
     srv.hold = false;
   }
   await refreshFresh();
+  cleanupOldEngine().catch(() => {}); // 3.0: agora que está conectado, o motor antigo pode sair
   const n = state.list ? state.list.activeAccountNumber : null;
   const tail =
     serverStatus() !== "online"
@@ -3791,206 +2831,6 @@ async function finishConnect(got, had) {
           ? "O servidor ainda não tem conta para este computador: quem adiciona as contas é o administrador."
           : "O servidor ainda não tem conta para este computador: entre com uma conta no Claude Code e o login vai para o servidor.";
   vscode.window.showInformationMessage(`Swap Plus: conectado ao servidor ${serverHost()}. ${tail}`);
-}
-
-async function offerMigration() {
-  // "Sim" é a opção principal (o primeiro botão); "Não" fecha a pergunta.
-  const yes = { title: "Sim" };
-  const no = { title: "Não", isCloseAffordance: true };
-  const c = await vscode.window.showInformationMessage(
-    "Enviar os logins deste computador para o servidor?",
-    {
-      modal: true,
-      detail:
-        "O Swap Plus lê as contas guardadas neste computador (motor swap-plus) e envia o login de cada uma ao servidor, que passa a ser o único a renovar. Contas que o servidor já tem funcionando ficam como estão. Nada é apagado deste computador.\n\nO login em uso agora no Claude Code vai para o servidor de qualquer jeito.",
-    },
-    yes,
-    no
-  );
-  if (c === yes) await migrateLocalLogins();
-}
-
-function removeDir(dir) {
-  try {
-    fs.rmSync(dir, { recursive: true, force: true });
-  } catch {}
-}
-
-/**
- * "Enviar os logins deste computador": swap-plus list (planos) + export para um
- * arquivo temporário numa pasta só do seu usuário → cada conta com refresh token
- * vai para POST /v1/logins → o temporário é apagado na hora. Única vez em que o
- * modo servidor chama o motor local.
- */
-async function migrateLocalLogins() {
-  if (!swapOn()) {
-    vscode.window.showInformationMessage("Swap Plus está desligado: ligue-o para enviar os logins.");
-    return null;
-  }
-  if (!serverMode()) {
-    // No modo local o motor daqui é quem renova: mandar os logins ao servidor faria os dois renovarem a mesma conta.
-    vscode.window.showInformationMessage(
-      "Swap Plus: “Enviar os logins deste computador” só funciona no modo servidor. Ligue o modo servidor (Configurações → Servidor) e tente de novo."
-    );
-    return null;
-  }
-  // Só os computadores do administrador enviam logins: nos outros, nada vai ao servidor (nem o motor é chamado).
-  const denied = () => {
-    postState();
-    vscode.window.showWarningMessage(
-      "Swap Plus: este computador usa as contas do servidor. Os logins dele não foram enviados: só os computadores do administrador enviam logins."
-    );
-    return null;
-  };
-  if (loginUploadAllowed() === false) return denied();
-  let client = null;
-  try {
-    client = await serverClient({ timeoutMs: LOGIN_POST_TIMEOUT_MS }); // o servidor renova cada login na hora
-  } catch {}
-  if (!client || serverStatus() === "revoked") {
-    vscode.window.showErrorMessage(`Swap Plus: ${serverErrorLine() || "conecte este computador ao servidor antes."}`);
-    return null;
-  }
-  const prevHold = srv.hold;
-  srv.hold = true;
-  let dir = null;
-  let out = null;
-  try {
-    if (!prevHold) {
-      if (refreshing) await refreshing.catch(() => {});
-      await srvChain;
-    }
-    out = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: "Swap Plus: enviando os logins deste computador ao servidor...", cancellable: false },
-      async (progress) => {
-        // 1) O que o servidor já tem: conta viva lá não recebe a cópia daqui (a de lá é a mais nova).
-        let remote = [];
-        try {
-          const st = await client.request("GET", "/v1/state");
-          if (applyStateResponse(st)) remote = st.list.accounts;
-        } catch (e) {
-          if (srvErrKind(e) !== "rejected") {
-            await serverFailed(e, "envio dos logins");
-            return { error: srvErrText(e) };
-          }
-        }
-        if (loginUploadAllowed() === false) return { denied: true }; // o estado novo diz que este computador não envia logins
-        // 2) Planos (list) e logins (export) do motor local.
-        progress.report({ message: "lendo as contas deste computador" });
-        const list = parseJson((await runCswap(["list", "--json"])).stdout);
-        dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-envio-")); // pasta só do seu usuário
-        const file = path.join(dir, "contas.cswap");
-        const r = await runCswap(["export", file], 120000);
-        let env = null;
-        try {
-          env = JSON.parse(fs.readFileSync(file, "utf8"));
-        } catch {}
-        removeDir(dir); // apaga o temporário assim que leu
-        dir = null;
-        if (r.code !== 0 || !env || !Array.isArray(env.accounts)) {
-          return { error: `não consegui ler os logins guardados neste computador: ${lastLine(r.stderr) || r.spawnError || "o motor não gerou o arquivo"}` };
-        }
-        // 3) Login em uso no Claude Code: é o mais novo da conta dele.
-        const live = await readLiveSafe(claudeAuth());
-        const results = [];
-        let abort = null;
-        let i = 0;
-        for (const a of env.accounts) {
-          i++;
-          progress.report({ message: `conta ${i} de ${env.accounts.length}` });
-          const label = privateMode() ? `Conta ${a.number}` : `Conta ${a.number} (${a.email})`;
-          if (abort) {
-            results.push({ label, ok: false, reason: `não enviada: ${abort}` });
-            continue;
-          }
-          const email = String(a.email || "").toLowerCase();
-          const org = a.organizationUuid || "";
-          if (a.kind === "api_key" || !a.credentials || typeof a.credentials !== "object") {
-            results.push({ label, ok: false, reason: "é uma chave de API, não um login de conta" });
-            continue;
-          }
-          const oauthAccount = a.config && a.config.oauthAccount;
-          let oauth = a.credentials.claudeAiOauth;
-          let isLive = false;
-          if (live.oauth && live.oauth.refreshToken && live.who && live.who.email === email && (!live.who.orgUuid || !org || live.who.orgUuid === org)) {
-            oauth = live.oauth;
-            isLive = true;
-          }
-          if (!oauth || !oauth.refreshToken) {
-            results.push({ label, ok: false, reason: "não tem login guardado completo (sem refresh token)" });
-            continue;
-          }
-          if (!oauthAccount || !oauthAccount.emailAddress) {
-            results.push({ label, ok: false, reason: "faltam os dados da conta (oauthAccount)" });
-            continue;
-          }
-          const there = remote.find(
-            (x) => String(x.email || "").toLowerCase() === email && (!org || !x.organizationUuid || x.organizationUuid === org)
-          );
-          if (there && !loginDead(there) && !isLive) {
-            results.push({ label, ok: false, skip: true, reason: `o servidor já tem esta conta funcionando (conta ${there.number} lá); o login de lá foi mantido` });
-            continue;
-          }
-          const la = list && Array.isArray(list.accounts) ? list.accounts.find((x) => x.number === a.number) : null;
-          const body = { claudeAiOauth: oauth, oauthAccount };
-          if (la && la.plan && la.plan.label) body.plan = { label: la.plan.label };
-          try {
-            const res = await client.request("POST", "/v1/logins", body);
-            results.push({ label, ok: true, number: res.number, created: !!res.created });
-            if (isLive) await markLoginSent(loginKey(live), "sent"); // o ciclo não reenvia (e pode gravar por cima)
-          } catch (e) {
-            if (isNotAdmin(e)) {
-              // Este computador não é do administrador: para de enviar (nem este lote, nem o login novo do ciclo).
-              srv.uploadDenied = true;
-              return { denied: true };
-            }
-            if (srvErrKind(e) === "rejected") {
-              if (isLive && (e.code === "dead_login" || e.code === "stale_login" || e.code === "identity_mismatch_spent")) await markLoginSent(loginKey(live), "dead");
-              results.push({ label, ok: false, reason: loginRejectReason(e) });
-            } else {
-              abort = srvErrText(e);
-              results.push({ label, ok: false, reason: `não enviada: ${abort}` });
-            }
-          }
-        }
-        return { results };
-      }
-    );
-  } finally {
-    if (dir) removeDir(dir);
-    srv.hold = prevHold;
-  }
-  if (!out) return null;
-  if (out.error) {
-    vscode.window.showErrorMessage(`Swap Plus: ${out.error}`);
-    return null;
-  }
-  if (out.denied) return denied();
-  const results = out.results;
-  const ok = results.filter((x) => x.ok);
-  const skipped = results.filter((x) => x.skip);
-  const bad = results.filter((x) => !x.ok && !x.skip);
-  const head =
-    `${ok.length} ${ok.length === 1 ? "login aceito" : "logins aceitos"} pelo servidor` +
-    (skipped.length ? `, ${skipped.length} já ${skipped.length === 1 ? "estava" : "estavam"} lá` : "") +
-    (bad.length ? `, ${bad.length} ${bad.length === 1 ? "recusado" : "recusados"}` : "");
-  const lines = [
-    ...ok.map((x) => `✓ ${x.label} → conta ${x.number} no servidor${x.created ? " (nova)" : " (atualizada)"}`),
-    ...skipped.map((x) => `• ${x.label}: ${x.reason}`),
-    ...bad.map((x) => `✗ ${x.label}: ${x.reason}`),
-  ];
-  const migrated = extContext.globalState.get(SERVER_MIGRATED_KEY) || {};
-  await extContext.globalState.update(SERVER_MIGRATED_KEY, { ...migrated, [serverUrl()]: Date.now() });
-  await pushHistory([{ ts: new Date().toISOString(), kind: bad.length ? "warn" : "info", text: `Logins deste computador enviados ao servidor: ${head}` }]);
-  if (!prevHold) await refreshFresh();
-  post({ type: "toast", kind: bad.length ? "error" : "info", text: `${cap(head)}.` });
-  vscode.window.showInformationMessage(safe(`Swap Plus: ${head}.`), {
-    modal: true,
-    detail: safe(
-      `${lines.join("\n")}\n\nAs cópias guardadas pelo motor neste computador continuam aqui, mas agora quem renova esses logins é o servidor. Não use o modo local com essas contas (nem neste nem em outro computador): ao renovar aqui, elas morrem no servidor.`
-    ),
-  });
-  return { ok: ok.length, skipped: skipped.length, bad: bad.length };
 }
 
 async function forgetServer() {
@@ -4010,34 +2850,29 @@ async function forgetServer() {
   srv.applyFail = null;
   srv.discard = null;
   srv.storeWarnings = [];
+  state = { ...state, list: null, records: {}, error: null };
 }
 
 /** Comando "Desconectar do servidor": revoga este computador no servidor e apaga o acesso guardado. */
 async function disconnectServer() {
   const token = await serverToken();
   if (!token) {
-    if (serverMode()) {
-      await holdServer(() => cfg().update("mode", "local", vscode.ConfigurationTarget.Global));
-      await syncLoginPrompt();
-      vscode.window.showInformationMessage("Swap Plus: este computador não estava conectado a um servidor. Modo local ligado.");
-    } else {
-      vscode.window.showInformationMessage("Swap Plus: este computador não está conectado a nenhum servidor.");
-    }
+    vscode.window.showInformationMessage("Swap Plus: este computador não está conectado a nenhum servidor.");
     return;
   }
+  const DISCONNECT = "Desconectar";
   const OFF = "Desconectar e desligar o Swap Plus";
-  const LOCAL = "Desconectar e usar o modo local";
   const c = await vscode.window.showWarningMessage(
     `Desconectar este computador do servidor ${serverHost()}?`,
     {
       modal: true,
       detail:
-        "O servidor deixa de mandar o login para este computador. O Claude Code fica com o acesso atual até ele vencer (algumas horas); depois disso, entre de novo com uma conta.\n\n• Desligar o Swap Plus: o mais seguro se outros computadores continuam usando o servidor.\n• Modo local: o motor swap-plus deste computador volta a cuidar das contas guardadas aqui — mas, ao renovar uma conta que o servidor também tem, ela morre no servidor.",
+        "O servidor deixa de mandar o login para este computador e a tela de login do Claude Code volta como estava. O Claude Code fica com o acesso atual até ele vencer (algumas horas); depois disso, entre de novo com Google no Swap Plus.\n\n• Desconectar: o Swap Plus fica ligado, mostrando “não conectado”.\n• Desconectar e desligar: o Claude Code fica normal, sem o Swap Plus (entre com uma conta direto nele).",
     },
-    OFF,
-    LOCAL
+    DISCONNECT,
+    OFF
   );
-  if (c !== OFF && c !== LOCAL) return postState();
+  if (c !== DISCONNECT && c !== OFF) return postState();
   await holdServer(async () => {
     const meta = serverMeta();
     // Revoga no servidor que emitiu o token (o endereço da conexão), mesmo que o das configurações tenha mudado.
@@ -4048,16 +2883,16 @@ async function disconnectServer() {
       } catch {}
     }
     await forgetServer();
+    srv.disconnectedWarned = true; // a pessoa acabou de desconectar: sem o aviso de "não conectado"
     if (c === OFF) await cfg().update("enabled", false, vscode.ConfigurationTarget.Global);
-    if (serverMode()) await cfg().update("mode", "local", vscode.ConfigurationTarget.Global);
   });
   await syncLoginPrompt();
-  await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: c === OFF ? "Desconectado do servidor; Swap Plus desligado" : "Desconectado do servidor; modo local ligado" }]);
-  postState();
+  await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: c === OFF ? "Desconectado do servidor; Swap Plus desligado" : "Desconectado do servidor" }]);
+  finishSync();
   vscode.window.showInformationMessage(
     c === OFF
       ? "Swap Plus: desconectado do servidor e desligado. O Claude Code fica normal."
-      : "Swap Plus: desconectado do servidor. Modo local ligado. Se alguma conta aparecer como “Login morto”, entre de novo com ela no Claude Code."
+      : "Swap Plus: desconectado do servidor. Para voltar a usar as contas do servidor, entre com Google de novo (Configurações → Sua conta)."
   );
 }
 
@@ -4100,11 +2935,11 @@ function serverLastDecision() {
   return h ? { ts: h.ts, kind: h.kind, text: safe(h.text) } : null;
 }
 
-/** Histórico da tela: no modo servidor, o do servidor + o deste computador desde a conexão. */
+/** Histórico da tela: o do servidor + o deste computador desde a conexão (sem conexão: só o deste computador). */
 function historyPayload() {
   const local = extContext.globalState.get(HISTORY_KEY) || [];
   const fmt = (h) => ({ ...h, text: safe(h.text), when: fmtWhen(h.ts) });
-  if (!serverMode() || !srv.state || !Array.isArray(srv.state.history)) return local.map(fmt);
+  if (!srv.state || !Array.isArray(srv.state.history)) return local.map(fmt);
   const names = {};
   for (const d of srv.state.devices || []) names[d.id] = d.name;
   const since = serverMeta().connectedAt || 0;
@@ -4151,9 +2986,7 @@ function serverPayload() {
   // "Sua conta" no cartão principal: com qual conta Google este computador entrou e qual conta Claude ele usa agora.
   const me = devices.find((d) => d.current) || null;
   const myAssigned = st && st.device ? st.device.assigned : null;
-  const migratedAt = (extContext.globalState.get(SERVER_MIGRATED_KEY) || {})[serverUrl()] || null;
   return {
-    mode: serverMode() ? "server" : "local",
     status,
     statusText: serverStatusText(status),
     connected: !!srv.token,
@@ -4171,18 +3004,15 @@ function serverPayload() {
       ? { value: typeof dg.oldTokenValidAfterRefresh === "boolean" ? dg.oldTokenValidAfterRefresh : null, when: dg.checkedAt ? fmtWhen(dg.checkedAt) : null }
       : null,
     rejected: srv.rejected ? { reason: srv.rejected.reason } : null,
-    // Só no modo servidor (no modo local o motor daqui é quem renova esses logins) e só nos
-    // computadores do administrador (os outros não enviam logins: o botão some).
-    canMigrate: serverMode() && !!srv.token && localEngineHasAccounts() && loginUploadAllowed() !== false,
+    // Só os computadores do administrador enviam logins (a tela muda a dica da conta com login morto).
     canUploadLogins: loginUploadAllowed() !== false,
-    addressChanged: serverMode() && serverAddressChanged(),
+    addressChanged: serverAddressChanged(),
     configuredUrl: configuredServerUrl() || null,
-    storeWarnings: serverMode() ? (srv.storeWarnings || []).map(safe) : [],
-    storeBlocked: serverMode() && !!storeBlockReason(),
-    loginPromptOff: serverMode() && !!(extContext.globalState.get(LOGIN_PROMPT_KEY) || {}).applied,
+    storeWarnings: (srv.storeWarnings || []).map(safe),
+    storeBlocked: !!storeBlockReason(),
+    loginPromptOff: !!(extContext.globalState.get(LOGIN_PROMPT_KEY) || {}).applied,
     loginPromptNote: LOGIN_PROMPT_NOTE,
-    otherWindow: serverMode() && srv.owner === false && serverStatus() === "online",
-    migratedWhen: migratedAt ? fmtWhen(migratedAt) : null,
+    otherWindow: srv.owner === false && serverStatus() === "online",
   };
 }
 
@@ -4226,23 +3056,21 @@ function buildPayload() {
           weekly: w && w.weekly ? winPayload(w.weekly, l.weekly) : null,
           models: w ? w.models.map((m) => ({ name: m.name, ...winPayload(m, l.model) })) : [],
           disabled: !!rec.disabled,
-          // Regra própria da conta (null = segue a regra geral). Semanal e modelo só existem no modo servidor.
+          // Regra própria da conta (null = segue a regra geral): sessão de 5h, semanal e modelo.
           threshold: rec.threshold ?? null,
           weeklyThreshold: rec.weeklyThreshold ?? null,
           modelThreshold: rec.modelThreshold ?? null,
           priority: rec.priority || 0,
-          // Modo servidor: computadores que estão usando esta conta agora.
+          // Computadores que estão usando esta conta agora.
           devices: Array.isArray(acc.assignedDevices) ? acc.assignedDevices.map(String) : [],
         };
       })
     : [];
   const names = scopedNames(list);
-  const isServer = serverMode();
-  const last = isServer ? serverLastDecision() : extContext.globalState.get(LAST_TICK_KEY) || null;
+  const last = serverLastDecision();
   return {
     type: "state",
     error: state.error ? safe(state.error) : null,
-    serverMode: isServer,
     server: serverPayload(),
     fetchedAt: state.fetchedAt,
     accounts,
@@ -4253,19 +3081,17 @@ function buildPayload() {
     alerts: alertSettings(),
     swapOn: swapOn(),
     auto: {
-      enabled: isServer ? !!(srv.state && srv.state.autoSwitch) : !!cfg().get("autoSwitch.enabled"),
+      enabled: !!(srv.state && srv.state.autoSwitch),
       last,
       lastWhen: last && last.ts ? fmtWhen(last.ts) : null,
       history: historyPayload(),
     },
     privacy: priv,
-    unmanaged: state.unmanaged ? { email: priv ? null : state.unmanaged.email } : null,
     claudeCode: claudeCodeStatus(),
     updates: updater ? (() => { const u = updater.summary(); if (u.last) u.last.when = fmtWhen(u.last.ts); return u; })() : null,
     ui: {
       showAccountNumber: !!cfg().get("statusBar.showAccountNumber"),
       showModelWeekly: !!cfg().get("statusBar.showModelWeekly"),
-      pollIntervalMinutes: Number(cfg().get("pollIntervalMinutes")) || 1,
     },
   };
 }
@@ -4306,19 +3132,6 @@ function openSettings() {
   panel.webview.onDidReceiveMessage((m) => handleMessage(m).catch((e) => post({ type: "toast", kind: "error", text: String(e && e.message ? e.message : e) })));
 }
 
-const RULE_SETTINGS = {
-  sessionPct: "rules.sessionSwitchPct",
-  weeklyPct: "rules.weeklySwitchPct",
-  modelPct: "rules.modelSwitchPct",
-  preferModel: "rules.preferModel",
-  strategy: "rules.strategy",
-  expiringHours: "rules.expiringHours",
-  cooldownMin: "rules.cooldownMinutes",
-  marginPct: "rules.marginPct",
-  intervalSec: "rules.intervalSeconds",
-  onModelLimit: "rules.onModelLimit",
-};
-
 /** Avisos ("avisar em X%"): sempre deste computador, nas configurações do VS Code. */
 async function saveAlerts(alerts) {
   const ca = alertSettings();
@@ -4338,107 +3151,35 @@ async function handleMessage(m) {
       return;
 
     case "setAuto":
-      if (serverMode()) return setServerAuto(!!m.enabled);
-      await cfg().update("autoSwitch.enabled", !!m.enabled, vscode.ConfigurationTarget.Global);
-      return; // onDidChangeConfiguration cuida do resto
+      return setServerAuto(!!m.enabled);
 
     case "setEnabled":
       await setEnabled(!!m.enabled);
       return;
 
-    case "checkNow": {
-      if (serverMode()) {
-        if (m.dryRun) {
-          post({ type: "toast", kind: "info", text: "No modo servidor quem decide é o servidor: a simulação não está disponível." });
-          return;
-        }
-        post({ type: "busy", on: true, text: "Consultando o servidor..." });
-        await refreshFresh();
-        post({ type: "busy", on: false });
-        post({ type: "toast", kind: serverStatus() === "online" ? "info" : "error", text: serverCheckText() });
-        return;
-      }
-      post({ type: "busy", on: true, text: m.dryRun ? "Simulando..." : "Verificando..." });
-      const res = await autoTick({ manual: true, dryRun: !!m.dryRun });
-      post({ type: "busy", on: false });
-      if (res) post({ type: "toast", kind: res.kind === "error" ? "error" : "info", text: (m.dryRun ? "Simulação: " : "") + res.text });
-      return;
-    }
-
-    case "saveRules": {
-      if (serverMode()) return saveServerRules(m);
-      const cur = rules();
-      for (const [k, key] of Object.entries(RULE_SETTINGS)) {
-        if (!m.rules || !(k in m.rules) || m.rules[k] === cur[k]) continue;
-        await cfg().update(key, m.rules[k], vscode.ConfigurationTarget.Global);
-      }
-      if (m.alerts && typeof m.alerts === "object") await saveAlerts(m.alerts);
-      setupAuto();
-      syncMotorLines().catch(() => {});
-      render();
-      postState();
-      if (autoEnabled()) {
-        // Aplica as regras novas na hora, em vez de esperar o próximo ciclo.
-        const res = await autoTick({ manual: true });
-        post({ type: "toast", kind: res && res.kind === "error" ? "error" : "info", text: `Regras salvas. ${res ? res.text : ""}`.trim() });
-      } else {
-        post({ type: "toast", kind: "info", text: "Regras salvas." });
-      }
-      return;
-    }
-
-    case "account": {
-      if (serverMode()) return serverAccountOp(m);
-      const n = String(m.number);
-      // Modo local: o motor só tem a linha própria da sessão de 5h (semanal e modelo por conta são do servidor).
-      const ruleOp = m.op === "threshold" || m.op === "useDefault";
-      let args;
-      if (m.op === "disabled") args = [m.value ? "disable" : "enable", n];
-      else if (m.op === "useDefault") args = ["threshold", n, "--unset"];
-      else if (m.op === "threshold") args = m.value === null || m.value === "" ? ["threshold", n, "--unset"] : ["threshold", n, String(m.value)];
-      else if (m.op === "priority") args = ["priority", n, String(m.value === null || m.value === "" ? 0 : m.value)];
-      else if (m.op === "alias") args = m.value ? ["alias", n, String(m.value)] : ["alias", n, "--unset"];
-      else {
-        if (m.op === "weeklyThreshold" || m.op === "modelThreshold") post({ type: "acctSaved", number: Number(m.number), op: m.op, seq: m.seq ?? null, ok: false });
-        return;
-      }
-      const r = await runCswapWrite(args);
-      if (r.code !== 0) post({ type: "toast", kind: "error", text: `Conta ${n}: ${lastLine(r.stderr) || lastLine(r.stdout) || r.spawnError || "erro"}` });
-      if (ruleOp) post({ type: "acctSaved", number: Number(m.number), op: m.op, seq: m.seq ?? null, ok: r.code === 0 });
+    case "checkNow":
+      post({ type: "busy", on: true, text: "Consultando o servidor..." });
       await refreshFresh();
+      post({ type: "busy", on: false });
+      post({ type: "toast", kind: serverStatus() === "online" ? "info" : "error", text: serverCheckText() });
       return;
-    }
+
+    case "saveRules":
+      return saveServerRules(m);
+
+    case "account":
+      return serverAccountOp(m);
 
     case "switch":
       await doSwitch(m.number);
       return;
-
-    case "move": {
-      if (serverMode()) {
-        post({ type: "toast", kind: "info", text: "No modo servidor o número de cada conta é dado pelo servidor e não muda daqui." });
-        return;
-      }
-      // Reordenar: troca a posição (número) com a conta vizinha. O swap-plus leva
-      // junto apelido, ajustes, cópias e histórico; a sessão aberta não é tocada.
-      const nums = state.list ? state.list.accounts.map((a) => a.number).sort((a, b) => a - b) : [];
-      const i = nums.indexOf(Number(m.number));
-      const j = m.dir === "up" ? i - 1 : i + 1;
-      if (i < 0 || j < 0 || j >= nums.length) return;
-      post({ type: "busy", on: true, text: "Reordenando..." });
-      const r = await runCswapWrite(["swap", String(nums[i]), String(nums[j])], 60000);
-      post({ type: "busy", on: false });
-      if (r.code !== 0) post({ type: "toast", kind: "error", text: `Não consegui reordenar: ${lastLine(r.stderr) || lastLine(r.stdout) || r.spawnError || "erro"}` });
-      else await pushHistory([{ ts: new Date().toISOString(), kind: "info", text: `Contas ${nums[i]} e ${nums[j]} trocaram de posição` }]);
-      await refreshFresh();
-      return;
-    }
 
     case "add":
       addAccount();
       return;
 
     case "ui": {
-      const allowed = ["statusBar.showAccountNumber", "statusBar.showModelWeekly", "pollIntervalMinutes", "privacy.hideEmails"];
+      const allowed = ["statusBar.showAccountNumber", "statusBar.showModelWeekly", "privacy.hideEmails"];
       if (!allowed.includes(m.key)) return;
       await cfg().update(m.key, m.value, vscode.ConfigurationTarget.Global);
       return;
@@ -4452,14 +3193,6 @@ async function handleMessage(m) {
       return;
     }
 
-    case "export":
-      await exportAccounts(m.mode === "other" ? "other" : "me");
-      return;
-
-    case "import":
-      await importAccounts();
-      return;
-
     case "checkUpdates": {
       post({ type: "busy", on: true, text: "Verificando atualizações..." });
       const r = updater ? await updater.runCheck({ reason: "manual" }) : null;
@@ -4469,16 +3202,6 @@ async function handleMessage(m) {
       else if (r) post({ type: "toast", kind: "info", text: "Verificação concluída." });
       return;
     }
-
-    case "clearHistory":
-      await extContext.globalState.update(HISTORY_KEY, []);
-      postState();
-      return;
-
-    // ---- modo servidor
-    case "setMode":
-      await setMode(m.mode === "server" ? "server" : "local");
-      return;
 
     case "connectServer":
       await connectServer(typeof m.method === "string" ? m.method : undefined);
@@ -4492,14 +3215,211 @@ async function handleMessage(m) {
       await revokeDevice(String(m.id || ""));
       return;
 
-    case "migrate":
-      await migrateLocalLogins();
-      return;
-
     case "useServerAccount":
       await useServerAccount();
       return;
   }
+}
+
+// ---------------------------------------------------------------- motor antigo (limpeza da 3.0)
+//
+// Até a 2.x havia o modo local, que usava o motor swap-plus (CLI Python instalado
+// pelo uv como o pacote claude-swap, com os comandos claude-swap, cswap e swap-plus).
+// Na 3.0 só o servidor guarda os logins. Na primeira abertura, se o comando swap-plus
+// ainda existir (~/.local/bin ou PATH), o pacote do uv que o traz (`uv tool list`) é
+// desinstalado (`uv tool uninstall <pacote>`, sem sudo e sem pedir senha), com UMA
+// notificação. Se nenhum pacote do uv trouxer o swap-plus, nada é mexido (um
+// claude-swap instalado por outro motivo fica). Se falhar, só fica anotado no
+// histórico, e a próxima tentativa é no mínimo 1 dia depois. A pasta
+// ~/.claude-swap-backup (cópias antigas dos logins, que não servem mais) NÃO é
+// apagada: a notificação diz que ela pode ser apagada.
+
+const ENGINE_CLEANUP_KEY = "swapPlus.engineCleanup"; // globalState: { done, packages? } | { lastTry, error? }
+const ENGINE_RETRY_MS = 24 * 3600e3; // falhou: no máximo uma tentativa por dia
+const ENGINE_CLEANUP_DELAY_MS = 15 * 1000; // depois que a janela assenta
+const ENGINE_EXE = "swap-plus"; // o comando que só o motor do Swap Plus traz
+const IS_WIN = process.platform === "win32";
+let engineCleanupTimer = null;
+let engineCleanupP = null;
+
+const engineLockFile = () => path.join(os.tmpdir(), `swap-plus-engine-cleanup-${localTag()}.lock`);
+
+/** Arquivos com estes nomes nestas pastas (no Windows, também .exe), na ordem e sem repetir. Só confere se existem. */
+function findFiles(names, dirs) {
+  const exts = IS_WIN ? [".exe", ""] : [""];
+  const seen = new Set();
+  const out = [];
+  for (const d of dirs) {
+    if (!d) continue;
+    for (const n of names) {
+      for (const x of exts) {
+        const p = path.join(d, n + x);
+        const k = IS_WIN ? p.toLowerCase() : p;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        try {
+          if (fs.statSync(p).isFile()) out.push(p);
+        } catch {}
+      }
+    }
+  }
+  return out;
+}
+
+const pathDirs = () => String(process.env.PATH || "").split(path.delimiter).filter((d) => d && path.isAbsolute(d)); // nunca pasta relativa
+
+/** Comando swap-plus do motor antigo em ~/.local/bin e no PATH (no Windows, swap-plus.exe). */
+function findOldEngine() {
+  return findFiles([ENGINE_EXE], [path.join(os.homedir(), ".local", "bin"), ...pathDirs()]);
+}
+
+/**
+ * O uv (que instalou o motor): ~/.local/bin, ~/.cargo/bin e PATH (no Windows, uv.exe);
+ * por último, as pastas do Homebrew (VS Code aberto pelo Dock pode vir com PATH curto). null = não tem.
+ */
+function findUv() {
+  const home = os.homedir();
+  const dirs = [path.join(home, ".local", "bin"), path.join(home, ".cargo", "bin"), ...pathDirs()];
+  if (!IS_WIN) dirs.push("/opt/homebrew/bin", "/usr/local/bin");
+  return findFiles(["uv"], dirs)[0] || null;
+}
+
+/**
+ * Pacotes do `uv tool list` cuja lista de executáveis inclui o swap-plus (no Windows,
+ * swap-plus.exe). O motor do Swap Plus é o pacote claude-swap: linha "claude-swap v1.1.0"
+ * seguida de "- claude-swap", "- cswap" e "- swap-plus". Um pacote sem o swap-plus não entra.
+ */
+function enginePackages(listText) {
+  const out = [];
+  let pkg = null;
+  for (const raw of String(listText || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith("- ")) {
+      const exe = line.slice(2).trim().replace(/\.exe$/i, "").toLowerCase();
+      if (pkg && exe === ENGINE_EXE && !out.includes(pkg)) out.push(pkg);
+    } else {
+      const name = line.split(/\s+/)[0];
+      pkg = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) ? name : null;
+    }
+  }
+  return out;
+}
+
+function runUv(uv, args, timeout = 120000) {
+  return new Promise((resolve) => {
+    execFile(
+      uv,
+      args,
+      { timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true, env: { ...process.env, NO_COLOR: "1", UV_NO_PROGRESS: "1" } },
+      (err, stdout, stderr) => {
+        resolve({
+          code: err ? (typeof err.code === "number" ? err.code : -1) : 0,
+          stdout: String(stdout || ""),
+          stderr: String(stderr || ""),
+          error: err ? String(err.message || err) : null,
+        });
+      }
+    );
+  });
+}
+
+/** Trava entre janelas: no máximo uma tentativa por dia neste computador. */
+function claimEngineCleanup(now) {
+  const file = engineLockFile();
+  try {
+    let last = 0;
+    try {
+      last = Number(fs.readFileSync(file, "utf8")) || 0;
+    } catch {}
+    if (now >= last && now - last < ENGINE_RETRY_MS) return false;
+    fs.writeFileSync(file, String(now));
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/** Limpeza da 3.0 (uma de cada vez nesta janela). → { status: "done" | "absent" | "wait" | "removed" | "fail" | "error", ... } */
+function cleanupOldEngine(opts) {
+  if (!engineCleanupP) {
+    engineCleanupP = cleanupOldEngineNow(opts)
+      .catch((e) => {
+        console.error("[swap-plus] motor antigo", safeErr(e));
+        return { status: "error" };
+      })
+      .finally(() => {
+        engineCleanupP = null;
+      });
+  }
+  return engineCleanupP;
+}
+
+async function cleanupOldEngineNow({ now = Date.now() } = {}) {
+  const saved = extContext.globalState.get(ENGINE_CLEANUP_KEY) || {};
+  if (saved.done) return { status: "done" };
+  // Só depois de conectado ao servidor: num computador que nunca conectou, os logins do modo local
+  // (2.x) só existem no motor — removê-lo antes deixaria a pessoa sem eles.
+  if (!(await serverToken()) || !serverMeta().url) return { status: "wait", reason: "not_connected" };
+  const found = findOldEngine();
+  if (!found.length) {
+    // Não está instalado (ou outra janela já removeu): nada a fazer, sem aviso.
+    await extContext.globalState.update(ENGINE_CLEANUP_KEY, { done: now });
+    return { status: "absent" };
+  }
+  if (saved.lastTry && now >= saved.lastTry && now - saved.lastTry < ENGINE_RETRY_MS) return { status: "wait" };
+  if (!claimEngineCleanup(now)) return { status: "wait" }; // outra janela tentou há menos de 1 dia
+  await extContext.globalState.update(ENGINE_CLEANUP_KEY, { lastTry: now });
+  const ts = new Date().toISOString();
+  const fail = async (reason) => {
+    const text = `Não consegui remover o motor antigo (swap-plus): ${reason}. Tento de novo daqui a 1 dia`;
+    console.warn(`[swap-plus] ${text}`);
+    await extContext.globalState.update(ENGINE_CLEANUP_KEY, { lastTry: now, error: reason });
+    await pushHistory([{ ts, kind: "warn", text }]);
+    postState();
+    return { status: "fail", reason };
+  };
+  // Casos que não mudam sozinhos (sem uv, ou motor instalado de outro jeito): registra uma vez e não tenta mais.
+  const skip = async (reason) => {
+    const text = `O motor antigo (swap-plus) continua neste computador: ${reason}. Ele não é mais usado; pode ser removido à mão`;
+    console.warn(`[swap-plus] ${text}`);
+    await extContext.globalState.update(ENGINE_CLEANUP_KEY, { done: now, skipped: reason });
+    await pushHistory([{ ts, kind: "info", text }]);
+    postState();
+    return { status: "skipped", reason };
+  };
+  const uv = findUv();
+  if (!uv) return skip(`o uv não foi encontrado (o motor está em ${found[0]})`);
+  // O nome do pacote vem do `uv tool list` (o motor do Swap Plus é o pacote claude-swap: `uv tool uninstall swap-plus` não funciona).
+  const listed = await runUv(uv, ["tool", "list"], 60000);
+  if (listed.code !== 0) {
+    return fail(`uv tool list falhou: ${lastLine(listed.stderr) || lastLine(listed.stdout) || (listed.error ? safeErr(listed.error) : "") || `código ${listed.code}`}`);
+  }
+  const packages = enginePackages(listed.stdout);
+  // Nenhum pacote do uv traz o swap-plus (instalado de outro jeito): não mexe em nada.
+  if (!packages.length) return skip(`nenhum pacote do uv traz o comando swap-plus (ele está em ${found[0]}); nada foi removido`);
+  const cmd = `uv tool uninstall ${packages.join(" ")}`;
+  const res = await runUv(uv, ["tool", "uninstall", ...packages]);
+  if (res.code !== 0) {
+    return fail(`${cmd} falhou: ${lastLine(res.stderr) || lastLine(res.stdout) || (res.error ? safeErr(res.error) : "") || `código ${res.code}`}`);
+  }
+  const left = findOldEngine();
+  if (left.length) return fail(`depois de ${cmd}, o comando continua em ${left[0]}`);
+  const backup = path.join(os.homedir(), ".claude-swap-backup");
+  let hasBackup = false;
+  try {
+    hasBackup = fs.statSync(backup).isDirectory();
+  } catch {}
+  await extContext.globalState.update(ENGINE_CLEANUP_KEY, { done: Date.now(), packages });
+  await pushHistory([{ ts, kind: "info", text: `Motor antigo (swap-plus) removido deste computador (${cmd}); as contas ficam no servidor` }]);
+  postState();
+  const where = IS_WIN ? backup : "~/.claude-swap-backup";
+  vscode.window.showInformationMessage(
+    `Swap Plus 3.0: o motor antigo (swap-plus) não é mais usado e foi removido deste computador. As contas ficam no servidor.${
+      hasBackup ? ` A pasta ${where} guarda cópias antigas dos logins do modo local: confira no painel se todas as suas contas estão no servidor e, estando, pode apagá-la.` : ""
+    }`
+  );
+  return { status: "removed", packages };
 }
 
 // ---------------------------------------------------------------- ciclo de vida
@@ -4517,12 +3437,8 @@ function activate(context) {
     vscode.commands.registerCommand(`${NS}.openSettings`, openSettings),
     vscode.commands.registerCommand(`${NS}.toggleAuto`, toggleAuto),
     vscode.commands.registerCommand(`${NS}.toggleEnabled`, toggleEnabled),
-    vscode.commands.registerCommand(`${NS}.addAccount`, addAccount),
     vscode.commands.registerCommand(`${NS}.refreshStatus`, refresh),
     vscode.commands.registerCommand(`${NS}.switchBest`, switchBest),
-    vscode.commands.registerCommand(`${NS}.exportOther`, () => exportAccounts("other")),
-    vscode.commands.registerCommand(`${NS}.exportMe`, () => exportAccounts("me")),
-    vscode.commands.registerCommand(`${NS}.importAccounts`, importAccounts),
     vscode.commands.registerCommand(`${NS}.checkUpdates`, () => updater && updater.runCheck({ reason: "manual" })),
     vscode.commands.registerCommand(`${NS}.connectServer`, connectServer),
     vscode.commands.registerCommand(`${NS}.disconnectServer`, disconnectServer)
@@ -4532,14 +3448,14 @@ function activate(context) {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (!e.affectsConfiguration(NS)) return;
       const onOff = e.affectsConfiguration(`${NS}.enabled`);
-      const modeChange = e.affectsConfiguration(`${NS}.mode`) || e.affectsConfiguration(`${NS}.server.url`);
-      if (modeChange) onServerModeChanged();
+      const urlChange = e.affectsConfiguration(`${NS}.server.url`);
+      if (urlChange) onServerUrlChanged();
       else if (onOff && !swapOn()) releaseOwner();
-      // Tela de login do Claude Code: desligada só enquanto o modo servidor está ligado (e conectado).
-      if (onOff || modeChange) syncLoginPrompt();
-      if (onOff || modeChange || e.affectsConfiguration(`${NS}.pollIntervalMinutes`) || e.affectsConfiguration(`${NS}.executablePath`)) setupPolling();
-      if (onOff || modeChange || e.affectsConfiguration(`${NS}.autoSwitch.enabled`) || e.affectsConfiguration(`${NS}.rules.intervalSeconds`)) setupAuto();
-      if ((onOff || modeChange) && swapOn() && !serverMode()) syncMotorLines().catch(() => {});
+      if (onOff || urlChange) {
+        // Tela de login do Claude Code: desligada só enquanto está conectado (e ligado).
+        syncLoginPrompt();
+        setupPolling();
+      }
       render();
       postState();
     })
@@ -4552,42 +3468,85 @@ function activate(context) {
         if (e.key !== SERVER_TOKEN_KEY) return;
         resetServerConnection();
         syncLoginPrompt();
-        if (serverMode()) refreshFresh();
+        refreshFresh();
       })
     );
   }
 
   setupPolling();
-  setupAuto();
   setupOwnerTimer();
   // Lê do cofre do VS Code se este computador está conectado a um servidor (para a tela e a barra).
   serverToken()
     .then(() => {
       syncLoginPrompt();
-      return serverMode() ? finishSync() : postState();
+      finishSync();
     })
     .catch(() => {});
 
-  // Modo servidor: o atualizador não consulta nem oferece o motor (swap-plus), que não é usado.
-  updater = createUpdater({ context, cfg, cliVersion, engineWanted: () => !serverMode(), onCliUpdated: refresh, pushHistory, postState });
+  updater = createUpdater({ context, cfg, pushHistory, postState });
   updater.start();
 
   setupLimitWatch();
-  watchAccounts();
-  setTimeout(() => syncMotorLines().catch(() => {}), 8000);
+
+  // 3.0: remove o motor antigo (swap-plus), uma vez, depois que a janela assenta.
+  engineCleanupTimer = setTimeout(() => {
+    engineCleanupTimer = null;
+    cleanupOldEngine().catch(() => {});
+  }, ENGINE_CLEANUP_DELAY_MS);
+  if (engineCleanupTimer.unref) engineCleanupTimer.unref();
 }
 
 function deactivate() {
-  autoGen++;
   if (pollTimer) clearInterval(pollTimer);
-  if (autoTimer) clearTimeout(autoTimer);
   if (limitTimer) clearInterval(limitTimer);
   if (ownerTimer) clearInterval(ownerTimer);
-  releaseOwner(); // outra janela assume o batimento logo (a configuração de login do Claude Code fica: o modo servidor continua)
+  if (engineCleanupTimer) clearTimeout(engineCleanupTimer);
+  engineCleanupTimer = null;
+  releaseOwner(); // outra janela assume o batimento logo (a configuração de login do Claude Code fica: a conexão continua)
   if (updater) {
     updater.stop();
     return updater.onClose().catch(() => {}); // verificação ao fechar o VS Code
   }
 }
 
-module.exports = { activate, deactivate, _test: { serverMode, serverStatus, refreshFresh, safeErr, loginKey, syncCredential, historyPayload, applyStateResponse, buildPayload, serverSwitch, syncLoginPrompt, ownerFile, uploadLockDir, srv, addAccount, saveLiveLogin, liveIdentity, loginDead, swapOn, newerInstalledVersion, scanLimitErrors, checkLimitErrors, limitLabel, syncMotorLines, waitMotorSync, nearLine, setLimitRoot: (r) => (limitRoot = r), claudeCodeStatus, prepareClaudeCode, orderForDisplay, readExportFile, copyFileAny, writeFileAny, removeFileAny, shellFile, decide, pickerTexts, windows, linesFor, level, watchedModels, modelLabel, detectModels, getUpdater: () => updater } };
+module.exports = {
+  activate,
+  deactivate,
+  _test: {
+    resetServerConnection,
+    serverStatus,
+    refreshFresh,
+    safeErr,
+    loginKey,
+    syncCredential,
+    historyPayload,
+    applyStateResponse,
+    buildPayload,
+    serverSwitch,
+    syncLoginPrompt,
+    ownerFile,
+    uploadLockDir,
+    srv,
+    swapOn,
+    newerInstalledVersion,
+    scanLimitErrors,
+    checkLimitErrors,
+    limitLabel,
+    setLimitRoot: (r) => (limitRoot = r),
+    claudeCodeStatus,
+    prepareClaudeCode,
+    orderForDisplay,
+    pickerTexts,
+    detectModels,
+    cleanupOldEngine,
+    findOldEngine,
+    findUv,
+    enginePackages,
+    engineLockFile,
+    cancelEngineCleanup: () => {
+      if (engineCleanupTimer) clearTimeout(engineCleanupTimer);
+      engineCleanupTimer = null;
+    },
+    getUpdater: () => updater,
+  },
+};

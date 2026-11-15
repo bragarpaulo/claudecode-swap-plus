@@ -364,6 +364,12 @@ até 5 s; `BUSY` = outro dono da trava, não insiste) e sai; saída forçada em 
 
 ## Cliente (extensão, `plus/`)
 
+> **3.0 (15/11/2026): a extensão é só modo servidor.** O que esta seção diz sobre `swapPlus.mode`, modo local,
+> `executablePath`, motor `swap-plus`, envio dos logins guardados pelo motor ("Enviar os logins deste computador") e
+> oferta de regras locais não vale mais: tudo isso saiu. Continuam valendo o batimento, a aplicação da credencial, o
+> envio do login atual (só computadores do administrador, `canUploadLogins`), `tokenOrigin` e o resto do contrato. O
+> `POST /v1/logins` usa 90 s de tempo máximo no cliente.
+
 Configurações: `swapPlus.mode` (`"local"` | `"server"`, padrão `"local"`), `swapPlus.server.url`. As duas, e também `swapPlus.enabled`
 e `swapPlus.executablePath`, têm `"scope": "machine"` (só valem nas configurações do usuário: o `settings.json` de um projeto aberto não
 escolhe servidor, modo nem executável). A extensão declara `capabilities.untrustedWorkspaces.supported: false` (não roda em pasta não confiável).

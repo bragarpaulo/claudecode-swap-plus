@@ -1,5 +1,7 @@
 # Novidades do Swap Plus 2.0
 
+> **Há uma versão mais nova:** veja as [novidades da 3.0](NOVIDADES-3.0.md).
+
 O que mudou da versão 1.8 para a 2.0. Passo a passo completo no [MANUAL](MANUAL.md).
 
 ## Versão 2.0 — o servidor

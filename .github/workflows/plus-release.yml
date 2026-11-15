@@ -1,11 +1,13 @@
 # Swap Plus: publica a extensão quando uma tag plus-vX.Y.Z é enviada.
-# A extensão instalada em cada máquina baixa o .vsix desta release.
+# A extensão instalada em cada máquina baixa o .vsix desta release. Desde a 3.0 o Swap Plus é só
+# a extensão + o servidor (server/): nada aqui depende do motor antigo (swap-plus).
 #
 # Fluxo:
 #   1. testes-linux   (Ubuntu, Node 22): a tag bate com a versão, sintaxe de todos os .js de
-#                     plus/ e server/src/, testes da extensão (smoke, clientlibs, servermode)
-#                     e do servidor (server/test).
-#   2. testes-windows (Windows, Node 22): clientlibs (o caminho do Windows do claudeAuth) e smoke.
+#                     plus/ e server/src/, testes da extensão (plus/test: smoke --unit se existir,
+#                     e todos os *.test.js, como clientlibs e servermode) e do servidor (server/test).
+#   2. testes-windows (Windows, Node 22): clientlibs (o caminho do Windows do claudeAuth) e smoke --unit
+#                     (se existir).
 #   3. publicar: só roda se os dois passarem. Empacota numa cópia limpa do repositório
 #                (nada que os testes gravaram entra), confere o conteúdo do .vsix e cria a release.
 # Depois, "Swap Plus — testar a instalação" instala a release nova num Mac e num Windows limpos.
@@ -59,15 +61,21 @@ jobs:
           echo "$n arquivo(s) conferido(s)."
           exit "$falhou"
 
-      - name: Testes da extensão — regra de troca, textos e atualizador (smoke --unit)
-        run: node plus/test/smoke.js --unit
+      - name: Testes da extensão — regra de troca, textos e atualizador (smoke --unit, se existir)
+        run: |
+          if [ -f plus/test/smoke.js ]; then
+            node plus/test/smoke.js --unit
+          else
+            echo "plus/test/smoke.js não existe: pulado."
+          fi
 
-      - name: Testes da extensão — claudeAuth e cliente do servidor (clientlibs)
-        run: node --test plus/test/clientlibs.test.js
-
-      - name: Testes da extensão — modo servidor (servermode)
-        # Só Linux/macOS: o motor swap-plus é simulado e o teste confere os caminhos do temporário.
-        run: node --test plus/test/servermode.test.js
+      - name: Testes da extensão — todos os plus/test/*.test.js (clientlibs, servermode…)
+        # Só aqui (Linux) para o servermode, que confere caminhos do temporário no estilo Unix.
+        # failglob: sem nenhum arquivo de teste, falha em vez de passar com 0 testes.
+        run: |
+          shopt -s failglob
+          ls -1 plus/test/*.test.js
+          node --test plus/test/*.test.js
 
       - name: Testes do servidor (server/test)
         # No Node 22 o `node --test` não aceita uma pasta (tenta rodá-la como arquivo):
@@ -103,11 +111,16 @@ jobs:
           TMP: ${{ runner.temp }}
         run: node --test plus/test/clientlibs.test.js
 
-      - name: Testes da extensão — regra de troca, textos e atualizador (smoke --unit)
+      - name: Testes da extensão — regra de troca, textos e atualizador (smoke --unit, se existir)
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
-        run: node plus/test/smoke.js --unit
+        run: |
+          if [ -f plus/test/smoke.js ]; then
+            node plus/test/smoke.js --unit
+          else
+            echo "plus/test/smoke.js não existe: pulado."
+          fi
 
   publicar:
     name: Empacotar e publicar
@@ -138,7 +151,7 @@ jobs:
           echo "Conteúdo do .vsix:"
           cat "$LISTA"
 
-          # Proibido: a pasta do servidor, testes e exportações de contas (.cswap levam os logins).
+          # Proibido: a pasta do servidor, testes e exportações antigas de contas (.cswap levam os logins).
           PROIBIDOS=$(grep -Ei '(^|/)(server|test|tests)/|\.test\.js$|\.cswap$' "$LISTA" || true)
           if [ -n "$PROIBIDOS" ]; then
             echo "::error::o .vsix tem arquivos que não podem ir para as máquinas (confira o plus/.vscodeignore):"
@@ -165,6 +178,8 @@ jobs:
             --title "Swap Plus — extensão ${VER}" \
             --notes "Extensão Swap Plus ${VER} para o VS Code. As instalações existentes se atualizam sozinhas ao abrir ou fechar o VS Code.
 
-          Instalar numa máquina nova (motor + extensão) — passo a passo no [MANUAL](https://github.com/${GITHUB_REPOSITORY}/blob/main/MANUAL.md):
+          Instalar numa máquina nova (só a extensão; as contas ficam no servidor) — passo a passo no [MANUAL](https://github.com/${GITHUB_REPOSITORY}/blob/main/MANUAL.md):
           - Mac: \`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/plus/scripts/install.sh | bash\`
-          - Windows (PowerShell): \`irm https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/plus/scripts/install.ps1 | iex\`"
+          - Windows (PowerShell): \`irm https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/plus/scripts/install.ps1 | iex\`
+
+          Depois, no VS Code: clique no Swap Plus na barra de baixo → Configurações… → Entrar com Google."

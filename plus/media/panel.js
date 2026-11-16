@@ -36,6 +36,7 @@
     error: "Erro",
     warn: "Aviso",
     alert: "Alerta de uso",
+    model: "Modelo padrão",
     info: "Info",
     // eventos do servidor
     assign: "Atribuição",
@@ -195,7 +196,7 @@
         noSwitch
           ? null
           : sliderRow({
-              label: "Trocar de conta quando chegar em",
+              label: (extra && extra.switchLabel) || "Trocar de conta quando chegar em",
               value: draft[switchKey],
               min: 50, max: 100, step: 1, suffix: "%",
               hint: (extra && extra.hint) || switchHint,
@@ -234,31 +235,48 @@
           }),
           h("div", null, h("div", { class: "name", text: label }), h("div", { class: "desc", text: desc }))
         );
-      const cc = S.claudeCode || {};
-      const ccBox = same
+      // Modelo padrão do Claude Code: passa para o Opus 5.5 quando o Fable acaba (e volta sozinho).
+      const am = S.autoModel || {};
+      const fb = am.fallbackLabel || "Opus 5.5";
+      const isFable = /fable/i.test(name);
+      const amOn = isFable && !!am.enabled;
+      const amNow = am.error
+        ? `Não consegui ler as configurações do Claude Code: ${am.error}`
+        : am.switched
+          ? `Modelo padrão agora: ${fb}, trocado pelo Swap Plus${am.since ? ` (${am.since})` : ""}. Volta para ${am.backLabel || name} quando o ${name} voltar.`
+          : `Modelo padrão agora: ${am.label || "?"}.` +
+            (am.byHand
+              ? ` Escolhido à mão depois da troca: o Swap Plus só mexe de novo quando o ${name} renovar.`
+              : !am.isFable && !am.isOpus
+                ? ` Não é o ${name}: o Swap Plus não mexe nele.`
+                : "");
+      const ccBox = isFable
         ? h(
             "div",
-            { class: "ccbox" + (cc.ready ? " ok" : "") },
-            cc.error
-              ? h("span", { text: `Não consegui ler as configurações do Claude Code: ${cc.error}` })
-              : cc.ready
-                ? h("span", null, h("b", { class: "ontext", text: "Claude Code pronto: " }), `quando o ${name} acabar, ele oferece o Opus 5.5${cc.opusEffort ? `, no esforço ${cc.opusEffort} (o mesmo do ${name})` : ""}.`)
-                : h(
-                    "span",
-                    null,
-                    `O Claude Code ainda não está preparado: hoje ele ofereceria ${cc.opusDefault ? "o Opus" : `o modelo padrão (${cc.model || "o do plano"})`}${cc.opusEffort ? ` no esforço ${cc.opusEffort}` : ""}. `,
-                    h("button", { class: "secondary", text: "Deixar pronto", onclick: () => send({ type: "prepareClaudeCode" }) })
-                  ),
+            { class: "ccbox" + (amOn && !am.error ? " ok" : "") },
+            h(
+              "label",
+              { class: "check" },
+              h("input", { type: "checkbox", checked: !!am.enabled, onchange: (e) => send({ type: "setAutoModel", enabled: e.target.checked }) }),
+              h("b", { text: `Trocar o modelo sozinho: quando o ${name} acabar, o modelo padrão do Claude Code passa para o ${fb}` })
+            ),
+            h("div", { class: "small", text: amNow }),
             h("div", {
               class: "muted small",
-              text: `O Swap Plus não consegue trocar o modelo de uma conversa aberta (o Claude Code não deixa). Quando o ${name} acabar, ele pergunta “Switch models?”: escolha “Switch to Opus 5.5”. Vale para a conversa, na mesma conta. O Swap Plus avisa antes, na linha de aviso acima.`,
+              text:
+                (same
+                  ? `Toda conversa nova já abre no ${fb}, na mesma conta. `
+                  : `Vale quando nenhuma outra conta tem ${name}: aí toda conversa nova abre no ${fb}. `) +
+                `Quando o ${name} volta (renovou, ou este computador foi para uma conta que tem), o padrão volta sozinho. ` +
+                `Conversa já aberta: o Claude Code não deixa trocar o modelo por fora. Se ela parar com “You've hit your ${name} limit”, escolha ${fb} no seletor de modelo e mande “continue”. Vale para este computador.`,
             })
           )
         : null;
       box.append(
         group(`Limite semanal do ${name}`, sc, "usado", "modelPct", "modelEnabled", "modelPct", null, {
           badge: h("span", { class: "tag" + (watching ? " on" : ""), text: watching ? "em uso agora" : "não está em uso" }),
-          noSwitch: same,
+          noSwitch: same && !amOn,
+          switchLabel: same ? `Passar o modelo padrão para o ${fb} quando chegar em` : null,
           before: h(
             "div",
             { class: "onlimit" },
@@ -266,14 +284,16 @@
             h(
               "div",
               { class: "strategies two" },
-              choice("sameAccount", "Seguir na mesma conta com o Opus 5.5", `A conta não muda. O Claude Code pergunta e você troca para o Opus 5.5 na mesma conversa. Prioriza o ${name} enquanto houver.`),
-              choice("switchAccount", `Trocar de conta para continuar no ${name}`, `O Swap Plus troca para outra conta que ainda tem ${name}, na linha de troca abaixo.`)
+              choice("sameAccount", "Seguir na mesma conta com o Opus 5.5", `A conta não muda. Na linha abaixo, as conversas novas passam a abrir no Opus 5.5; a conversa aberta segue no ${name} até ele acabar. Prioriza o ${name} enquanto houver.`),
+              choice("switchAccount", `Trocar de conta para continuar no ${name}`, `O Swap Plus troca para outra conta que ainda tem ${name}, na linha de troca abaixo: as conversas abertas nem param. Sem conta com ${name}, as novas abrem no Opus 5.5.`)
             ),
             ccBox
           ),
-          hint: watching
-            ? `O ${name} está em uso: esta linha vale agora.` + (autoOn ? "" : " (Só troca com a “Troca automática” ligada.)")
-            : `Vale quando o ${name} estiver em uso. Agora ele não está, então só a sessão e o semanal decidem.`,
+          hint: same
+            ? `Nesta linha o modelo padrão do Claude Code passa para o ${fb} em cada computador (vale mesmo com a “Troca automática” de conta desligada).`
+            : watching
+              ? `O ${name} está em uso: esta linha vale agora.` + (autoOn ? "" : " (Só troca com a “Troca automática” ligada.)")
+              : `Vale quando o ${name} estiver em uso. Agora ele não está, então só a sessão e o semanal decidem.`,
           after: prefer,
         })
       );
@@ -963,7 +983,7 @@
       ? ""
       : r.onModelLimit === "switchAccount"
         ? `, ${S.modelNames.join("/")} ≥ ${fmt(r.modelPct)}% (quando em uso)`
-        : ` · quando o ${S.modelNames.join("/")} acaba, segue na mesma conta com o Opus 5.5`;
+        : ` · ${S.modelNames.join("/")} ≥ ${fmt(r.modelPct)}%: segue na mesma conta e as conversas novas abrem no Opus 5.5`;
     $("autoStatus").replaceChildren(
       h("span", { class: "dot" + (S.auto.enabled ? " on" : "") }),
       S.auto.enabled ? h("b", { class: "ontext", text: "Ligada" }) : h("b", { text: "Desligada" }),

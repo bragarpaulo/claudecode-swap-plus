@@ -89,11 +89,24 @@ Daqui para baixo: detalhes técnicos, para quem mexe no código.
 - **Troca automática**: quem decide é o servidor, com a regra de `rules.js` (`decide()`), a mesma que a extensão usa
   para mostrar a fila. Regras padrão (`RULE_DEFAULTS`): sessão de 5h em **90%**, semanal em **80%**, Fable em
   **95%**, estratégia **aproveitar ao máximo** e, quando o Fable acaba, **seguir na mesma conta com o Opus**
-  (`onModelLimit: "sameAccount"`). O botão **Deixar pronto** grava em `~/.claude/settings.json` o padrão `opus` e o
-  Opus no mesmo esforço do Fable (`modelSettings`): o Claude Code lê modelo e esforço só ao começar a sessão.
+  (`onModelLimit: "sameAccount"`).
+- **Troca automática de modelo** (3.1, `swapPlus.autoModel.enabled`, ligada por padrão; regra em `modelSwitch.js`):
+  quando o Fable da conta em uso acaba (erro "You've hit your Fable limit" visto na conversa) ou chega na linha do
+  modelo, o **modelo padrão** do Claude Code neste computador (`model` em `~/.claude/settings.json`) passa para o
+  **Opus 5.5**: toda conversa nova já abre nele, na mesma conta. Quando o Fable volta (renovou, ou o computador foi
+  para uma conta que tem), o padrão volta ao que era. Só mexe quando o padrão é o Fable (ou o do plano) e só desfaz o
+  que ele mesmo trocou; padrão escolhido à mão depois da troca fica como a pessoa deixou. Na regra **Trocar de
+  conta**, o erro de limite do Fable vai primeiro ao servidor (que procura uma conta com Fable); o modelo só muda se
+  não houver conta com Fable.
+  **Limite do Claude Code (conferido no 2.1.325):** outra extensão não consegue trocar o modelo de uma conversa já
+  aberta. Ela só lê o modelo padrão ao começar, o "modelo reserva" (`fallbackModel`) não vale para limite de uso, e
+  não há comando para isso. A conversa que parou continua assim: escolha **Opus 5.5** no seletor de modelo e mande
+  "continue" (o aviso do Swap Plus diz isso na hora). Para as conversas abertas nem pararem, use a regra **Trocar de
+  conta**: enquanto alguma conta tiver Fable, o Swap Plus troca a conta antes do limite e a conversa segue.
 - **Limite batido antes da troca**: a extensão lê as transcrições do Claude Code (`~/.claude/projects/*/*.jsonl`)
   procurando o erro de limite ("You've hit your limit", `rate_limit`) e avisa o servidor, que decide a troca na hora.
-  O Claude Code pode ficar esperando; uma mensagem ("continue") faz ele seguir na conta nova.
+  O Claude Code pode ficar esperando; uma mensagem ("continue") faz ele seguir na conta nova. O erro passageiro
+  "Server is temporarily limiting requests (not your usage limit)" não é limite da conta e não dispara troca.
 
 ## Como a extensão fala com o servidor
 
@@ -181,6 +194,7 @@ devolve a tela de login do Claude Code ao que era. Pelo painel: **Computadores �
 | --- | --- |
 | `plus/extension.js` | a extensão (barra de status, avisos, conexão com o servidor, gravação do login) |
 | `plus/rules.js` | a regra de troca (`decide()`), usada pela extensão e pelo servidor |
+| `plus/modelSwitch.js` | o modelo padrão do Claude Code quando o Fable acaba (Opus 5.5 e a volta ao Fable) |
 | `plus/claudeAuth.js` | ler e gravar o login do Claude Code (Keychain no Mac, `.credentials.json` nos outros), com as travas dele |
 | `plus/serverClient.js` | falar com o servidor (HTTPS, com a impressão digital do certificado quando ele é próprio; `User-Agent: SwapPlus-VSCode/<versão>` em tudo, por causa da Cloudflare), ler o código de conexão, parear e entrar com Google (`loginStart`/`loginPoll`) |
 | `plus/updater.js` | as atualizações da extensão |

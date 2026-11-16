@@ -265,7 +265,7 @@ summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
 .history li:last-child { border-bottom: none; }
 .history .when { color: var(--soft); white-space: nowrap; min-width: 120px; font-variant-numeric: tabular-nums; }
 .history .kind { min-width: 110px; font-size: 0.85em; font-weight: 600; }
-.kind.switch, .kind.manual { color: var(--vscode-textLink-foreground); }
+.kind.switch, .kind.manual, .kind.model { color: var(--vscode-textLink-foreground); }
 .kind.blocked, .kind.error { color: var(--bad); }
 .kind.warn, .kind.alert { color: var(--warn); }
 .history .empty { color: var(--soft); }

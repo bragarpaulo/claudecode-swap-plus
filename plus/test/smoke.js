@@ -7,7 +7,7 @@
 //   A. regra de troca do rules.js (a mesma que o servidor usa) e textos da lista
 //   V. versão mais nova já instalada (pede para recarregar)
 //   L. erro de limite nas transcrições do Claude Code
-//   C. preparar o Claude Code para quando o Fable acabar
+//   C. modelo padrão do Claude Code: passa para o Opus 5.5 quando o Fable acaba e volta sozinho
 //   E. motor antigo: leitura do `uv tool list` (qual pacote desinstalar)
 //   U. atualizador (dados simulados)
 //   G. atualizador contra o GitHub de verdade (nada é instalado de fato)
@@ -72,6 +72,7 @@ Module._load = function (request) {
 const ext = require(path.join(root, manifest.main));
 const T = ext._test;
 const R = require(path.join(root, "rules.js"));
+const M = require(path.join(root, "modelSwitch.js"));
 let failed = 0;
 function check(name, cond, extra) {
   if (!cond) failed++;
@@ -181,6 +182,8 @@ function partA() {
   ).map((a) => a.number);
   check("ordem: participantes por renovação, depois os de fora", ord.join(",") === "2,4,5,1,3,6", ord.join(","));
   check("rótulos do erro de limite", T.limitLabel("You've hit your 5-hour limit · resets 10:20pm") === "limite da sessão de 5h" && T.limitLabel("You've hit your weekly limit") === "limite semanal" && T.limitLabel("You've reached your Fable limit for this week") === null);
+  check("rótulo: “session limit” (texto atual do Claude Code)", T.limitLabel("You've hit your session limit · resets 1am (America/Sao_Paulo)") === "limite da sessão de 5h");
+  check("erro passageiro do servidor não é limite da conta", T.limitLabel("API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited") === null);
   const a = acct(9, { s: 20, w: 71, f: 57, wReset: 6 });
   const pt = T.pickerTexts(a, R.windows(a), false);
   console.log("     ao lado do nome: " + pt.description);
@@ -217,6 +220,11 @@ async function partL() {
   fs.writeFileSync(sub, apiErr(now - 1000, "You've hit your weekly limit") + "\n");
   hit = await T.scanLimitErrors(now - 60000, dir);
   check("erro num subagente também é detectado", !!hit && hit.file === sub && T.limitLabel(hit.text) === "limite semanal");
+  const reset = Math.floor((now + 2 * 24 * 3600e3) / 1000);
+  const fableErr = JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", apiErrorStatus: 429, timestamp: iso(now - 500), quotaLimits: { status: "rejected", resetsAt: reset, rateLimitType: "seven_day_overage_included" }, message: { model: "<synthetic>", content: [{ type: "text", text: "You've hit your Fable limit · resets Nov 18, 12pm (America/Sao_Paulo). Switch to another model to continue." }] } });
+  fs.appendFileSync(f, fableErr + "\n");
+  hit = await T.scanLimitErrors(now - 60000, dir);
+  check("limite do Fable: lê o tipo e a renovação gravados pelo Claude Code", !!hit && hit.rateLimitType === "seven_day_overage_included" && hit.resetsAt === reset * 1000 && T.limitLabel(hit.text) === null && M.limitModel(hit.text, hit.rateLimitType) === "Fable");
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
@@ -233,33 +241,128 @@ function partV() {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-// ------------------------------------------------------------ parte C: preparar o Claude Code
+// ------------------------------------------------------------ parte C: modelo padrão do Claude Code (modelSwitch.js)
 function partC() {
-  console.log("\n# C. Preparar o Claude Code para quando o Fable acabar (arquivos temporários)");
+  console.log("\n# C. Modelo padrão do Claude Code: Fable → Opus 5.5 e volta (arquivos temporários)");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-cc-"));
   const f = (n) => path.join(dir, n, "settings.json");
-  // 1) sem arquivo
-  let r = T.prepareClaudeCode(f("a"));
-  let d = JSON.parse(fs.readFileSync(f("a"), "utf8"));
-  check("sem arquivo: cria com Opus de padrão e esforço do Opus", r.ok && d.model === "opus" && d.modelSettings["claude-opus-5-5"].effortLevel === "xhigh");
-  // 2) padrão no Fable, outras chaves que não podem sumir
-  fs.mkdirSync(path.join(dir, "b"));
-  fs.writeFileSync(f("b"), JSON.stringify({ model: "claude-fable-5-2", effortLevel: "high", permissions: { allow: ["Bash(ls)"] }, modelSettings: { "claude-fable-5-2": { effortLevel: "high" }, "claude-opus-5-5": { autoCompactWindow: 200000 } } }));
-  check("antes: não está pronto", T.claudeCodeStatus(f("b")).ready === false);
-  r = T.prepareClaudeCode(f("b"));
-  d = JSON.parse(fs.readFileSync(f("b"), "utf8"));
-  check("Fable de padrão → Opus de padrão, Opus no mesmo esforço do Fable", r.ok && d.model === "opus" && d.modelSettings["claude-opus-5-5"].effortLevel === "high", r.changes.join("; "));
-  check("mantém o resto do arquivo", d.permissions.allow[0] === "Bash(ls)" && d.modelSettings["claude-opus-5-5"].autoCompactWindow === 200000 && d.effortLevel === "high");
-  check("depois: pronto", T.claudeCodeStatus(f("b")).ready === true);
-  // 3) já pronto: não mexe
-  const before = fs.readFileSync(f("b"), "utf8");
-  r = T.prepareClaudeCode(f("b"));
-  check("já pronto: não muda nada", r.ok && r.changes.length === 0 && fs.readFileSync(f("b"), "utf8") === before);
-  // 4) arquivo corrompido: não grava
-  fs.mkdirSync(path.join(dir, "c"));
-  fs.writeFileSync(f("c"), "{ isto não é json");
-  r = T.prepareClaudeCode(f("c"));
-  check("arquivo corrompido: não grava e explica", !r.ok && fs.readFileSync(f("c"), "utf8") === "{ isto não é json", r.error || "");
+  const mk = (n) => path.join(dir, n, "dados", "modelo-padrao.json");
+  const ler = (n) => JSON.parse(fs.readFileSync(f(n), "utf8"));
+  const gravar = (n, obj) => {
+    fs.mkdirSync(path.join(dir, n), { recursive: true });
+    fs.writeFileSync(f(n), typeof obj === "string" ? obj : JSON.stringify(obj));
+  };
+  const now = Date.now();
+
+  // --- de qual limite é o erro
+  const FABLE_MSG = "You've hit your Fable limit · resets Nov 18, 12pm (America/Sao_Paulo). Switch to another model to continue.";
+  check("erro do print: é o limite do Fable", M.limitModel(FABLE_MSG) === "Fable");
+  check("tipo gravado pelo Claude Code vale mais que o texto", M.limitModel("You've hit your limit", "seven_day_overage_included") === "Fable" && M.limitModel(FABLE_MSG, "five_hour") === null);
+  check("limite da sessão e semanal não são de modelo", M.limitModel("You've hit your session limit · resets 1am") === null && M.limitModel("You've hit your weekly limit") === null);
+  check("erro passageiro do servidor não é limite", M.limitModel("API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited") === null);
+  check("padrão é o Fable: fable, id completo, sem chave, default", M.isFableDefault("fable") && M.isFableDefault("claude-fable-5-2") && M.isFableDefault(undefined) && M.isFableDefault("default") && !M.isFableDefault("opus") && !M.isFableDefault("sonnet"));
+  check("padrão do plano: sem chave ou default; fable escolhido não é “do plano”", M.isPlanDefault(undefined) && M.isPlanDefault("default") && !M.isPlanDefault("fable"));
+
+  // --- decisão pelo uso (função pura)
+  const R1 = { ...RULES, onModelLimit: "sameAccount" };
+  const plano = (accounts, o = {}) => M.plan({ list: { activeAccountNumber: o.active || 1, accounts }, records: o.records || {}, r: { ...R1, ...(o.r || {}) }, marker: o.marker || null, now });
+  let p = plano([acct(1, { f: 94 })]);
+  check("“mesma conta”: Fable em 94% (linha 95%) → nada", p.want === null, p.why);
+  p = plano([acct(1, { f: 95 })]);
+  check("“mesma conta”: Fable na linha → Opus 5.5", p.want === "fallback" && p.account === 1 && p.line === 95);
+  p = plano([acct(1, { f: 97 })], { r: { onModelLimit: "switchAccount" } });
+  check("“trocar de conta”: na linha quem age é o servidor (97% → nada)", p.want === null, p.why);
+  p = plano([acct(1, { f: 100 })], { r: { onModelLimit: "switchAccount" } });
+  check("“trocar de conta”: Fable em 100% e continua na conta → Opus 5.5", p.want === "fallback" && p.line === 100);
+  p = plano([acct(1, { f: 80 })], { records: { 1: { modelThreshold: 75 } } });
+  check("linha própria da conta vale", p.want === "fallback" && p.line === 75);
+  p = plano([acct(1, { f: 99, age: 3600 })]);
+  check("uso desatualizado: não decide", p.want === null, p.why);
+  p = plano([{ ...acct(1), usage: { sevenDay: { pct: 10, resetsAt: new Date(now + HOUR).toISOString() } } }]);
+  check("conta sem o limite do Fable informado: não decide", p.want === null, p.why);
+  const feito = { v: 1, state: "fallback", from: "fable", to: "opus", account: 1, at: now - HOUR, holdUntil: null, cycleEnd: now + 48 * HOUR };
+  p = plano([acct(1, { f: 92 })], { marker: feito });
+  check("depois da troca, perto da linha (92%): espera a folga", p.want === null, p.why);
+  p = plano([acct(1, { f: 90 })], { marker: feito });
+  check("Fable com folga (90%): volta ao Fable", p.want === "preferred");
+  p = plano([acct(1, { f: 40 })], { marker: { ...feito, holdUntil: now + HOUR } });
+  check("limite visto na conversa: não volta só pelo dado de uso (pode estar atrasado)", p.want === null, p.why);
+  p = plano([acct(1, { f: 100 }), acct(2, { f: 10 })], { active: 2, marker: { ...feito, holdUntil: now + HOUR } });
+  check("foi para outra conta com Fable: volta ao Fable (a trava era da conta 1)", p.want === "preferred" && p.account === 2);
+  p = plano([acct(1, { f: 99 })], { marker: { v: 1, state: "user", account: 1, at: now - HOUR, cycleEnd: now + 48 * HOUR } });
+  check("padrão escolhido à mão depois da troca: não troca de novo pelo uso", p.want === null && !p.forget, p.why);
+  p = plano([acct(1, { f: 99 }), acct(2, { f: 99 })], { active: 2, marker: { v: 1, state: "user", account: 1, at: now - HOUR, cycleEnd: now + 48 * HOUR } });
+  check("…mas em outra conta a regra volta a valer", p.want === "fallback" && p.forget === true);
+
+  // --- trocar: padrão no Fable, com outras chaves que não podem sumir
+  gravar("a", { model: "fable", effortLevel: "high", permissions: { allow: ["Bash(ls)"] }, hooks: { Stop: [] }, modelSettings: { "claude-fable-5-2": { effortLevel: "xhigh" }, "claude-opus-5-5": { autoCompactWindow: 200000 } } });
+  let r = M.toFallback(f("a"), mk("a"), { account: 7, reason: "limit", now, holdUntil: now + HOUR, cycleEnd: now + 48 * HOUR });
+  let d = ler("a");
+  check("Fable acabou: o padrão passa para o Opus", r.ok && r.changed && r.state === "switched" && r.from === "fable" && d.model === "opus");
+  check("Opus sem esforço próprio recebe o do Fable", d.modelSettings["claude-opus-5-5"].effortLevel === "xhigh" && r.effort === "xhigh");
+  check("mantém o resto do arquivo", d.permissions.allow[0] === "Bash(ls)" && d.modelSettings["claude-opus-5-5"].autoCompactWindow === 200000 && d.effortLevel === "high" && Array.isArray(d.hooks.Stop));
+  let m = M.readMarker(mk("a"));
+  check("marcador guarda o valor de antes, a conta e a trava", !!m && m.state === "fallback" && m.from === "fable" && m.account === 7 && m.holdUntil === now + HOUR);
+  const antes = fs.readFileSync(f("a"), "utf8");
+  r = M.toFallback(f("a"), mk("a"), { account: 7, reason: "line", now });
+  check("de novo: já está no Opus, não mexe", r.ok && !r.changed && r.state === "already" && fs.readFileSync(f("a"), "utf8") === antes);
+  // a pessoa escolhe "Opus 5.5" no seletor (o Claude Code grava o padrão): continua sendo a troca do Swap Plus
+  m = M.noteUserChoice(f("a"), mk("a"), now);
+  check("escolher o Opus no seletor não desfaz o marcador", m.state === "fallback");
+  r = M.toPreferred(f("a"), mk("a"));
+  d = ler("a");
+  check("Fable voltou: o padrão volta a ser o de antes e o marcador some", r.ok && r.changed && r.state === "restored" && d.model === "fable" && M.readMarker(mk("a")) === null);
+  check("…e o resto do arquivo continua lá", d.permissions.allow[0] === "Bash(ls)" && d.modelSettings["claude-opus-5-5"].effortLevel === "xhigh");
+  r = M.toPreferred(f("a"), mk("a"));
+  check("sem marcador: não desfaz nada", r.ok && !r.changed && r.state === "none" && ler("a").model === "fable");
+
+  // --- sem a chave `model` (vale o modelo do plano): troca e, ao voltar, tira a chave
+  gravar("b", { effortLevel: "xhigh" });
+  r = M.toFallback(f("b"), mk("b"), { account: 3, reason: "line", now });
+  check("sem modelo escolhido e sem sinal de Fable em uso: não mexe (o padrão do plano pode ser outro)", r.ok && !r.changed && r.state === "plan" && !("model" in ler("b")) && M.readMarker(mk("b")) === null);
+  r = M.toFallback(f("b"), mk("b"), { account: 3, reason: "line", now, fableInUse: true });
+  check("sem modelo escolhido, Fable em uso: passa para o Opus", r.changed && r.from === null && ler("b").model === "opus");
+  r = M.toPreferred(f("b"), mk("b"));
+  check("ao voltar: a chave some de novo", r.changed && !("model" in ler("b")) && ler("b").effortLevel === "xhigh");
+
+  // --- sem arquivo nenhum
+  r = M.toFallback(f("c"), mk("c"), { account: 1, reason: "limit", now, fableInUse: true });
+  check("sem settings.json: cria só com o modelo", r.changed && JSON.stringify(ler("c")) === JSON.stringify({ model: "opus" }));
+
+  // --- o padrão não é o Fable: não mexe
+  gravar("e", { model: "sonnet" });
+  r = M.toFallback(f("e"), mk("e"), { account: 1, reason: "limit", now });
+  check("padrão em outro modelo (Sonnet): não mexe nem anota", r.ok && !r.changed && r.state === "other" && ler("e").model === "sonnet" && M.readMarker(mk("e")) === null);
+  gravar("g", { model: "opus" });
+  r = M.toFallback(f("g"), mk("g"), { account: 1, reason: "limit", now });
+  check("padrão já no Opus (escolha da pessoa): não anota", !r.changed && r.state === "already" && M.readMarker(mk("g")) === null);
+  r = M.toPreferred(f("g"), mk("g"));
+  check("…e depois não é “devolvido” ao Fable", !r.changed && ler("g").model === "opus");
+
+  // --- a pessoa volta o padrão à mão depois da troca
+  gravar("h", { model: "claude-fable-5-2" });
+  M.toFallback(f("h"), mk("h"), { account: 2, reason: "line", now, cycleEnd: now + 48 * HOUR });
+  gravar("h", { model: "claude-fable-5-2" }); // escolheu o Fable de novo no seletor
+  m = M.noteUserChoice(f("h"), mk("h"), now);
+  check("voltou o padrão à mão: vale a escolha dela", m.state === "user" && m.account === 2 && m.from === "claude-fable-5-2");
+  r = M.toPreferred(f("h"), mk("h"));
+  check("…e não há nada para desfazer", !r.changed && ler("h").model === "claude-fable-5-2" && M.readMarker(mk("h")) === null);
+  M.toFallback(f("h"), mk("h"), { account: 2, reason: "line", now });
+  gravar("h", { model: "claude-fable-5-2" });
+  M.noteUserChoice(f("h"), mk("h"), now);
+  r = M.toFallback(f("h"), mk("h"), { account: 2, reason: "limit", now, holdUntil: now + HOUR });
+  check("erro de limite na conversa troca mesmo depois da escolha à mão", r.changed && ler("h").model === "opus" && M.readMarker(mk("h")).state === "fallback");
+  gravar("h", { model: "sonnet" });
+  r = M.toPreferred(f("h"), mk("h"));
+  check("padrão mudado para outro modelo: fica como a pessoa deixou", !r.changed && r.state === "user" && ler("h").model === "sonnet" && M.readMarker(mk("h")) === null);
+
+  // --- arquivo corrompido: não grava
+  gravar("x", "{ isto não é json");
+  r = M.toFallback(f("x"), mk("x"), { account: 1, reason: "limit", now });
+  check("arquivo corrompido: não grava, não anota e explica", !r.ok && fs.readFileSync(f("x"), "utf8") === "{ isto não é json" && M.readMarker(mk("x")) === null, r.error || "");
+  gravar("y", "﻿" + JSON.stringify({ model: "fable" }));
+  r = M.toFallback(f("y"), mk("y"), { account: 1, reason: "limit", now });
+  check("arquivo com BOM (Windows): lê e troca", r.ok && r.changed && ler("y").model === "opus");
   fs.rmSync(dir, { recursive: true, force: true });
 }
 

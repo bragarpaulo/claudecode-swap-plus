@@ -198,7 +198,7 @@
               <label for="rModel">Limite semanal de um modelo (ex.: Fable)</label>
               <input type="range" id="rModel" name="modelPct" min="50" max="100" step="1" aria-describedby="rModelHint">
               <output id="rModelOut" for="rModel"></output>
-              <small class="hint" id="rModelHint">Padrão: <span data-def="modelPct" data-unit="%">95%</span>. Só troca de conta por causa do modelo se, abaixo, estiver escolhido “Trocar de conta”.</small>
+              <small class="hint" id="rModelHint">Padrão: <span data-def="modelPct" data-unit="%">95%</span>. Com “Trocar de conta” (abaixo), é onde o servidor troca a conta; com “Seguir na mesma conta”, é onde as conversas novas passam para o Opus 5.5.</small>
             </div>
           </fieldset>
 
@@ -209,14 +209,14 @@
                 <input type="radio" name="onModelLimit" id="rLimitSame" value="sameAccount">
                 <span>
                   <span class="name">Seguir na mesma conta</span>
-                  <span class="desc">A conta não muda. O Claude Code pergunta se você quer trocar de modelo e você continua na mesma conversa com outro modelo (ex.: Opus).</span>
+                  <span class="desc">A conta não muda. Na linha do modelo, cada computador passa o modelo padrão do Claude Code para o Opus 5.5 (as conversas novas abrem nele) e volta quando o modelo renova. A conversa já aberta para no limite: nela, escolha o Opus 5.5 no seletor de modelo.</span>
                 </span>
               </label>
               <label class="choice" for="rLimitSwitch">
                 <input type="radio" name="onModelLimit" id="rLimitSwitch" value="switchAccount">
                 <span>
                   <span class="name">Trocar de conta</span>
-                  <span class="desc">O servidor passa o computador para outra conta que ainda tem esse modelo, quando o uso dele chegar na linha do modelo acima.</span>
+                  <span class="desc">O servidor passa o computador para outra conta que ainda tem esse modelo, quando o uso dele chegar na linha do modelo acima: as conversas abertas nem param. Sem conta com o modelo, as conversas novas abrem no Opus 5.5.</span>
                 </span>
               </label>
             </div>

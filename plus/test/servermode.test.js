@@ -169,6 +169,8 @@ function criarServidorFalso() {
     f.lastAuthUrl = null;
     f.lastGoogleDevice = null;
     f.history = [{ ts: new Date().toISOString(), kind: "info", text: "Servidor de teste no ar", device: null }];
+    f.fable = {}; // conta → % do limite semanal do Fable (sem a conta: o servidor não informa o Fable)
+    f.rules = {}; // regras do servidor (o que faltar vale o padrão do rules.js)
   };
   f.reset();
   f.since = (mark) => f.calls.slice(mark);
@@ -182,7 +184,11 @@ function criarServidorFalso() {
     plan: { label: "Max" },
     alias: null,
     usageStatus: "ok",
-    usage: { fiveHour: { pct: 10 * n, resetsAt: resets(2) }, sevenDay: { pct: 20, resetsAt: resets(50) } },
+    usage: {
+      fiveHour: { pct: 10 * n, resetsAt: resets(2) },
+      sevenDay: { pct: 20, resetsAt: resets(50) },
+      ...(f.fable[n] === undefined ? {} : { scoped: [{ name: "Fable", pct: f.fable[n], resetsAt: resets(50) }] }),
+    },
     usageAgeSeconds: 30,
     lastGoodUsage: null,
     lastGoodAgeSeconds: null,
@@ -201,7 +207,7 @@ function criarServidorFalso() {
     },
     list: { schemaVersion: 1, activeAccountNumber: f.assigned, accounts: f.accounts.map(publicAccount) },
     records: {},
-    rules: {},
+    rules: f.rules,
     autoSwitch: f.autoSwitch,
     credential: f.assigned ? { number: f.assigned, gen: f.gen, expiresAt: expOf(f.assigned, f.gen) } : null,
     history: f.history,
@@ -611,10 +617,12 @@ const secrets = {
   },
 };
 
+const GLOBAL_STORAGE = path.join(ROOT, "globalStorage");
 const context = {
   subscriptions: [],
   extensionUri: { fsPath: PLUS },
   extensionPath: PLUS,
+  globalStorageUri: { fsPath: GLOBAL_STORAGE },
   extension: { packageJSON: manifest },
   globalState,
   secrets,
@@ -663,6 +671,12 @@ function escreverConta(oauthAccount) {
   fs.writeFileSync(cfgFile(), JSON.stringify({ numStartups: 3, projects: { "/projeto": { allowedTools: [] } }, oauthAccount }, null, 2) + "\n");
 }
 const lerConta = () => JSON.parse(fs.readFileSync(cfgFile(), "utf8"));
+// settings.json do Claude Code (o modelo padrão) e o marcador da troca de modelo.
+const settingsFile = () => path.join(CLAUDE_DIR, "settings.json");
+const escreverSettings = (obj) => fs.writeFileSync(settingsFile(), JSON.stringify(obj, null, 2) + "\n");
+const lerSettings = () => JSON.parse(fs.readFileSync(settingsFile(), "utf8"));
+const lerMarcador = () => (fs.existsSync(T.modelMarkerFile()) ? JSON.parse(fs.readFileSync(T.modelMarkerFile(), "utf8")) : null);
+const LIMITE_FABLE = "You've hit your Fable limit · resets Nov 18, 12pm (America/Sao_Paulo). Switch to another model to continue.";
 
 /** Login novo do Claude Code (entrou pelo navegador: tem refreshToken). */
 function loginNovo(tag, email, org) {
@@ -743,6 +757,9 @@ async function prepararServidor() {
     disconnectedWarned: false,
   });
   fs.rmSync(path.join(CLAUDE_DIR, "projects"), { recursive: true, force: true });
+  fs.rmSync(GLOBAL_STORAGE, { recursive: true, force: true }); // sem troca de modelo anotada
+  fs.rmSync(settingsFile(), { force: true });
+  if (store["swapPlus.autoModel.enabled"] !== undefined) await cfgApi.update("autoModel.enabled", undefined);
   await limparLimite();
   escreverLogin({ accessToken: segredo("oat01-antigo"), expiresAt: Date.now() + 3600e3, scopes: ["user:inference"] });
   escreverConta(oauthAccountOf(1));
@@ -1431,6 +1448,211 @@ test("8. limite nas transcrições → POST /v1/events uma vez e grava a conta e
   }
 });
 
+test("8b. Fable acabou (erro na conversa) → o modelo padrão passa para o Opus 5.5, sem trocar de conta; volta quando o Fable volta", { timeout: T_MAX }, async () => {
+  await prepararServidor();
+  assert.equal(T.modelMarkerFile().startsWith(GLOBAL_STORAGE), true, "o marcador fica na pasta de dados da extensão (temporário do teste)");
+  assert.equal(T.claudeSettingsPath(), settingsFile());
+  escreverSettings({ model: "fable", effortLevel: "xhigh", permissions: { allow: ["Bash(ls)"] } });
+  fake.fable = { 1: 97, 2: 10 }; // o dado de uso ainda não mostra 100%: quem manda é o erro visto na conversa
+  fake.rules = { onModelLimit: "sameAccount", modelPct: 99 };
+  await ciclo();
+  assert.equal(lerSettings().model, "fable", "abaixo da linha (99%): nada muda");
+  await limparLimite();
+  const mark = fake.calls.length;
+  const n0 = notes.length;
+  const tr = escreverTranscricao("fable", "conversa.jsonl", [linhaConversa("claude-fable-5-2"), linhaLimite(LIMITE_FABLE)]);
+  try {
+    const res = await T.checkLimitErrors();
+    assert.ok(res && res.changed, "trocou o modelo padrão");
+    const st = lerSettings();
+    assert.equal(st.model, "opus");
+    assert.deepEqual(st.permissions, { allow: ["Bash(ls)"] }, "o resto do settings.json fica");
+    assert.equal(st.effortLevel, "xhigh");
+    const mk = lerMarcador();
+    assert.equal(mk.state, "fallback");
+    assert.equal(mk.from, "fable");
+    assert.equal(mk.account, 1);
+    assert.ok(mk.holdUntil > Date.now(), "segura a volta até o Fable renovar");
+    await sleep(100);
+    assert.equal(fake.since(mark).filter(isEvents).length, 0, "“mesma conta”: o limite do Fable não vai ao servidor (a conta não muda)");
+    const aviso = notes.slice(n0).filter((n) => /Fable acabou na conta 1/.test(n.message));
+    assert.equal(aviso.length, 1);
+    assert.match(aviso[0].message, /modelo padrão do Claude Code passou para o Opus 5\.5/);
+    assert.match(aviso[0].message, /escolha Opus 5\.5 no seletor de modelo .* e mande “continue”/);
+    assert.equal(await T.checkLimitErrors(), null, "o mesmo erro não dispara de novo");
+    const hist = T.historyPayload().filter((h) => h.kind === "model");
+    assert.equal(hist.length, 1);
+    assert.match(hist[0].text, /passou de Fable para Opus 5\.5/);
+    // a tela mostra o estado
+    const am = T.buildPayload().autoModel;
+    assert.equal(am.enabled, true);
+    assert.equal(am.switched, true);
+    assert.equal(am.account, 1);
+    assert.equal(am.backLabel, "Fable");
+
+    // o dado de uso (97%, atrasado) não devolve o Fable enquanto vale o limite visto na conversa
+    fake.rules = { onModelLimit: "sameAccount", modelPct: 99, marginPct: 1 };
+    await ciclo();
+    await sleep(50);
+    assert.equal(lerSettings().model, "opus");
+
+    // outro erro do Fable logo depois (subagente, outra conversa): não repete o aviso
+    const n1 = notes.length;
+    fs.appendFileSync(tr, linhaLimite(LIMITE_FABLE).replace(/"timestamp":"[^"]+"/, `"timestamp":"${new Date(Date.now() + 5).toISOString()}"`) + "\n");
+    await sleep(20);
+    await T.checkLimitErrors();
+    assert.equal(notes.slice(n1).filter((n) => /Fable acabou/.test(n.message)).length, 0, "erros em sequência: um aviso só");
+
+    // este computador vai para a conta 2, que tem Fable: o padrão volta
+    fake.assigned = 2;
+    const n2 = notes.length;
+    await ciclo();
+    await waitFor(() => lerSettings().model === "fable", 3000, "o modelo padrão voltar para o Fable");
+    assert.equal(lerMarcador(), null, "o marcador some");
+    assert.deepEqual(lerSettings().permissions, { allow: ["Bash(ls)"] });
+    await waitFor(() => notes.slice(n2).some((n) => n.kind === "info" && /Fable voltou na conta 2 .* voltou para o Fable/.test(n.message)), 2000, "aviso da volta ao Fable");
+    assert.equal(T.buildPayload().autoModel.switched, false);
+  } finally {
+    fs.rmSync(tr, { force: true });
+  }
+});
+
+test("8c. Fable na linha (uso) → Opus 5.5; padrão em outro modelo não é mexido; escolha à mão é respeitada; desligar desfaz", { timeout: T_MAX }, async () => {
+  await prepararServidor();
+  fake.rules = { onModelLimit: "sameAccount", modelPct: 95 };
+
+  // a) padrão no Sonnet (escolha da pessoa): não mexe
+  escreverSettings({ model: "sonnet" });
+  fake.fable = { 1: 96, 2: 10 };
+  let n0 = notes.length;
+  await ciclo();
+  await sleep(50);
+  assert.equal(lerSettings().model, "sonnet");
+  assert.equal(lerMarcador(), null);
+  assert.equal(notes.slice(n0).filter((n) => /modelo padrão/.test(n.message)).length, 0);
+
+  // b) padrão no Fable e o uso chega na linha: troca, com um aviso só
+  escreverSettings({ model: "claude-fable-5-2" });
+  n0 = notes.length;
+  await ciclo();
+  await waitFor(() => lerSettings().model === "opus", 3000, "a troca pelo uso");
+  assert.equal(lerMarcador().from, "claude-fable-5-2");
+  await ciclo();
+  await sleep(50);
+  const avisos = notes.slice(n0).filter((n) => /Fable da conta 1 chegou a 96% \(linha 95%\)/.test(n.message));
+  assert.equal(avisos.length, 1, "um aviso só, mesmo com mais ciclos");
+  assert.match(avisos[0].message, /conversas abertas seguem no modelo delas/);
+
+  // c) a pessoa volta ao Fable no seletor (o Claude Code grava o padrão): o Swap Plus não briga
+  escreverSettings({ model: "fable" });
+  await ciclo();
+  await ciclo();
+  await sleep(50);
+  assert.equal(lerSettings().model, "fable", "não troca de novo pelo uso");
+  assert.equal(lerMarcador().state, "user");
+  assert.equal(T.buildPayload().autoModel.byHand, true);
+
+  // d) …mas o erro de limite na conversa troca (o Fable não funciona mesmo)
+  await limparLimite();
+  const tr = escreverTranscricao("fable2", "c.jsonl", [linhaLimite(LIMITE_FABLE)]);
+  try {
+    const res = await T.checkLimitErrors();
+    assert.ok(res && res.changed);
+    assert.equal(lerSettings().model, "opus");
+    assert.equal(lerMarcador().state, "fallback");
+  } finally {
+    fs.rmSync(tr, { force: true });
+  }
+
+  // e) desligar a troca de modelo neste computador: o padrão volta ao que era, e não troca mais
+  n0 = notes.length;
+  await cfgApi.update("autoModel.enabled", false);
+  await waitFor(() => lerSettings().model === "fable", 3000, "desfazer ao desligar");
+  assert.equal(lerMarcador(), null);
+  assert.ok(notes.slice(n0).some((n) => /troca automática do modelo padrão foi desligada/.test(n.message)));
+  assert.equal(T.buildPayload().autoModel.enabled, false);
+  await ciclo();
+  await sleep(50);
+  assert.equal(lerSettings().model, "fable", "desligada: o uso na linha não troca");
+  await limparLimite();
+  const tr2 = escreverTranscricao("fable3", "c.jsonl", [linhaLimite(LIMITE_FABLE)]);
+  try {
+    assert.equal(await T.checkLimitErrors(), null, "desligada: o erro de limite do Fable não troca nem avisa");
+    assert.equal(lerSettings().model, "fable");
+  } finally {
+    fs.rmSync(tr2, { force: true });
+    await cfgApi.update("autoModel.enabled", undefined);
+  }
+});
+
+test("8d. regra “trocar de conta”: o limite do Fable vai ao servidor; se ele troca, o modelo fica; se não troca, Opus 5.5 com um aviso só", { timeout: T_MAX }, async () => {
+  await prepararServidor();
+  escreverSettings({ model: "fable" });
+  fake.fable = { 1: 97, 2: 10 };
+  fake.rules = { onModelLimit: "switchAccount", modelPct: 95 };
+  await ciclo();
+  await sleep(50);
+  assert.equal(lerSettings().model, "fable", "na linha quem age é o servidor (troca de conta), não o modelo");
+
+  // a) o servidor acha uma conta com Fable: troca a conta e o modelo padrão fica no Fable
+  await limparLimite();
+  let mark = fake.calls.length;
+  let tr = escreverTranscricao("fable-sw", "c.jsonl", [linhaConversa("claude-fable-5-2"), linhaLimite(LIMITE_FABLE)]);
+  try {
+    await T.checkLimitErrors();
+    await waitFor(() => lerLogin().claudeAiOauth.accessToken === acessoServidor(2, 1), 5000, "a conta 2 gravada");
+    const ev = fake.since(mark).filter(isEvents);
+    assert.equal(ev.length, 1);
+    assert.deepEqual(ev[0].body, { kind: "limit_hit", label: "limite do Fable" });
+    assert.equal(lerSettings().model, "fable");
+    assert.equal(lerMarcador(), null);
+  } finally {
+    fs.rmSync(tr, { force: true });
+  }
+
+  // b) nenhuma conta com Fable: o servidor não troca → o modelo padrão passa para o Opus 5.5, com UM aviso
+  await prepararServidor();
+  escreverSettings({ model: "fable" });
+  fake.fable = { 1: 97, 2: 99 };
+  fake.rules = { onModelLimit: "switchAccount", modelPct: 95 };
+  fake.handlers["POST /v1/events"] = (call) => ({ status: 200, body: { switched: false, text: "A conta 1 bateu o limite do Fable, mas nenhuma outra conta tem folga", state: fake.stateFor(call.device) } });
+  await ciclo();
+  await limparLimite();
+  mark = fake.calls.length;
+  const n0 = notes.length;
+  tr = escreverTranscricao("fable-sw2", "c.jsonl", [linhaLimite(LIMITE_FABLE)]);
+  try {
+    const res = await T.checkLimitErrors();
+    assert.ok(res && res.changed);
+    assert.equal(fake.since(mark).filter(isEvents).length, 1);
+    assert.equal(lerSettings().model, "opus");
+    assert.equal(lerMarcador().account, 1);
+    const novos = notes.slice(n0).filter((n) => n.kind === "warn" || n.kind === "error");
+    assert.equal(novos.length, 1, `um aviso só: ${novos.map((n) => n.message).join(" | ")}`);
+    assert.match(novos[0].message, /Fable acabou na conta 1.*passou para o Opus 5\.5/);
+  } finally {
+    fs.rmSync(tr, { force: true });
+    delete fake.handlers["POST /v1/events"];
+  }
+});
+
+test("8e. erro passageiro do servidor (“not your usage limit”) não é limite: nada vai ao servidor e o modelo fica", { timeout: T_MAX }, async () => {
+  await prepararServidor();
+  escreverSettings({ model: "fable" });
+  await limparLimite();
+  const mark = fake.calls.length;
+  const tr = escreverTranscricao("passageiro", "c.jsonl", [linhaLimite("API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited")]);
+  try {
+    assert.equal(await T.checkLimitErrors(), null);
+    await sleep(100);
+    assert.equal(fake.since(mark).filter(isEvents).length, 0);
+    assert.equal(lerSettings().model, "fable");
+    assert.equal(lerLogin().claudeAiOauth.accessToken, acessoServidor(1, 1), "a conta não muda");
+  } finally {
+    fs.rmSync(tr, { force: true });
+  }
+});
+
 test("9. nenhum token em notificações, histórico, logs, tela, barra, globalState ou temporários", { timeout: T_MAX }, async () => {
   await prepararServidor();
   // Mais caminhos com token por perto: login aceito, recusado, servidor que devolve o token no erro.
@@ -1479,7 +1701,7 @@ const AVISO_LOGIN = /o login do Claude Code é feito pelo Swap Plus/;
 test("10. o token só vai para o endereço em que foi emitido; scope machine e pasta não confiável no package.json", { timeout: T_MAX }, async () => {
   // a) package.json (3.0: sem modo local, sem motor)
   const props = manifest.contributes.configuration.properties;
-  for (const k of ["swapPlus.server.url", "swapPlus.enabled"]) {
+  for (const k of ["swapPlus.server.url", "swapPlus.enabled", "swapPlus.autoModel.enabled"]) {
     assert.equal(props[k].scope, "machine", `${k} só nas configurações do usuário`);
   }
   for (const k of ["swapPlus.mode", "swapPlus.executablePath", "swapPlus.autoSwitch.enabled", "swapPlus.pollIntervalMinutes"]) assert.equal(k in props, false, `${k} saiu`);

@@ -364,7 +364,10 @@ desliga na hora; as outras regras só mudam quando você clicar em **Salvar regr
 - **Quando trocar de conta:** porcentagem da sessão de 5 horas, do limite semanal e do limite de um modelo
   (por exemplo, Fable).
 - **Quando o limite de um modelo acaba:** **Seguir na mesma conta** (com outro modelo, como o Opus) ou **Trocar de
-  conta**.
+  conta**. Nos dois casos, quando o Fable acaba o Swap Plus muda sozinho o modelo padrão do Claude Code de cada
+  computador para o **Opus 5.5** (as conversas novas já abrem nele) e volta para o Fable quando ele renova. Uma
+  conversa que já estava aberta não muda sozinha: nela, escolha **Opus 5.5** no seletor de modelo e mande
+  "continue". Com **Trocar de conta**, enquanto alguma conta tiver Fable a conversa aberta nem para.
 - **Para qual conta ir (estratégia):** **Aproveitar ao máximo** (o padrão), **Mais folga** ou **Por prioridade**, e o
   **Modelo preferido**.
 - **Ajustes finos:** **Horas para "cota prestes a zerar"**, **Intervalo mínimo entre trocas** e **Margem da conta de

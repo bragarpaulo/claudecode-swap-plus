@@ -34,6 +34,7 @@ const {
   watchedModels,
   RULE_DEFAULTS,
 } = require("./rules");
+const modelSwitch = require("./modelSwitch");
 
 const NS = "swapPlus";
 const HISTORY_KEY = "swapPlus.autoHistory";
@@ -520,6 +521,7 @@ async function checkAlerts() {
   const w = windows(acc);
   if (!w || w.stale) return;
   const a = alertSettings();
+  const l = linesFor(acc, rules(), state.records);
   const checks = [];
   if (a.fiveHourEnabled && !w.session.idle) checks.push({ id: "5h", label: "na sessão de 5h", w: w.session, line: a.fiveHourPct });
   if (a.weeklyEnabled && w.weekly) checks.push({ id: "7d", label: "no limite semanal", w: w.weekly, line: a.weeklyPct });
@@ -538,7 +540,7 @@ async function checkAlerts() {
     const isModel = ch.id.startsWith("m:");
     const tail =
       isModel && rules().onModelLimit === "sameAccount"
-        ? ` Quando ele acabar, o Claude Code pergunta “Switch models?”: escolha “Switch to ${claudeCodeSwitchTarget()}” para seguir na mesma conta e na mesma sessão.`
+        ? modelAlertTail(ch.id.slice(2), l.model)
         : autoEnabled()
           ? " A troca automática assume quando passar da linha de troca."
           : "";
@@ -549,82 +551,189 @@ async function checkAlerts() {
   }
 }
 
-// ---------------------------------------------------------------- Claude Code: modelo da troca
+// ---------------------------------------------------------------- Claude Code: modelo padrão (Fable → Opus 5.5 e volta)
+//
+// As regras e os limites do que dá para fazer estão em modelSwitch.js. Em resumo: o Claude Code
+// não deixa outra extensão trocar o modelo de uma conversa aberta, então o Swap Plus troca o
+// modelo PADRÃO deste computador (o que toda conversa nova usa) e orienta a conversa que parou.
 
-const OPUS_ID = "claude-opus-5-5";
-const FABLE_ID = "claude-fable-5-2";
+const { FALLBACK_LABEL } = modelSwitch;
+const CONTINUE_TIP = `Na conversa que parou, escolha ${FALLBACK_LABEL} no seletor de modelo (embaixo da caixa de mensagem) e mande “continue”.`;
+const OPEN_TIP = `As conversas abertas seguem no modelo delas; para passar uma agora, escolha ${FALLBACK_LABEL} no seletor de modelo.`;
+const MODEL_NOTE_GAP_MS = 2 * 60 * 1000; // erros de limite em sequência (subagentes, várias conversas): um aviso só
+let modelErrShown = null;
+let modelLimitNotedAt = 0;
 
 function claudeSettingsPath() {
-  return path.join(os.homedir(), ".claude", "settings.json");
+  return path.join(claudeConfigDir(), "settings.json");
 }
 
-/** Lê o settings.json do Claude Code. { data, error } — data = {} se o arquivo não existe. */
-function readClaudeSettings(file = claudeSettingsPath()) {
-  try {
-    const text = fs.readFileSync(file, "utf8");
-    const data = text.trim() ? JSON.parse(text) : {};
-    if (!data || typeof data !== "object" || Array.isArray(data)) return { error: "o arquivo não tem o formato esperado" };
-    return { data };
-  } catch (e) {
-    if (e.code === "ENOENT") return { data: {} };
-    return { error: e.message };
-  }
+/** Marcador da troca de modelo: na pasta de dados da extensão (dura entre reinícios e vale para todas as janelas). */
+function modelMarkerFile() {
+  const dir = extContext && extContext.globalStorageUri && extContext.globalStorageUri.fsPath;
+  return dir ? path.join(dir, "modelo-padrao.json") : path.join(os.tmpdir(), `swap-plus-modelo-${localTag()}.json`);
 }
 
-const isOpus = (m) => typeof m === "string" && /^(opus|claude-opus)/i.test(m.trim());
+/** Troca automática do modelo padrão ligada neste computador? */
+function autoModelOn() {
+  return swapOn() && cfg().get("autoModel.enabled") !== false;
+}
+
+/** Para a tela: como está o modelo padrão do Claude Code neste computador. */
+function modelStatus() {
+  const base = { enabled: autoModelOn(), fallbackLabel: FALLBACK_LABEL };
+  const r = modelSwitch.readSettings(claudeSettingsPath());
+  if (r.error) return { ...base, error: safe(r.error) };
+  const marker = modelSwitch.readMarker(modelMarkerFile());
+  const model = r.data.model;
+  const switched = !!marker && marker.state === "fallback" && modelSwitch.isOpus(model);
+  return {
+    ...base,
+    label: modelSwitch.defaultLabel(model),
+    isFable: modelSwitch.isFableDefault(model),
+    isOpus: modelSwitch.isOpus(model),
+    switched, // o Opus de agora foi posto pelo Swap Plus: volta sozinho quando o Fable voltar
+    since: switched && marker.at ? fmtWhen(new Date(marker.at).toISOString()) : null,
+    account: switched && marker.account !== null && marker.account !== undefined ? marker.account : null,
+    backLabel: switched ? modelSwitch.defaultLabel(marker.from) : null,
+    byHand: !!marker && marker.state === "user",
+  };
+}
+
+/** Fim do aviso "o Fable chegou a X%" na regra "mesma conta". */
+function modelAlertTail(name, line) {
+  if (!/fable/i.test(name)) return "";
+  return autoModelOn()
+    ? ` Em ${fmtPct(line)} o Swap Plus passa o modelo padrão do Claude Code para o ${FALLBACK_LABEL} (vale para as conversas novas); a conta não muda.`
+    : ` Quando ele acabar, o Claude Code para a conversa: escolha outro modelo no seletor para seguir na mesma conta.`;
+}
+
+function reportModelError(text) {
+  console.error("[swap-plus] modelo padrão", text);
+  if (modelErrShown === text) return;
+  modelErrShown = text;
+  vscode.window.showWarningMessage(`Swap Plus: não consegui trocar o modelo padrão do Claude Code: ${text}`);
+}
+
+const defaultModelText = (m) => (m === null || m === undefined ? "o modelo do plano" : `o ${modelSwitch.defaultLabel(m)}`);
 
 /**
- * Como o Claude Code está preparado para quando o Fable acabar. Ele oferece trocar
- * para o modelo padrão (`model`); com o padrão em Opus, a troca vai para o Opus 5.5,
- * no esforço definido em modelSettings.
+ * Passa o modelo padrão do Claude Code para o Opus 5.5 (se hoje é o Fable) e avisa.
+ * meta: { reason: "limit" | "line", account, pct, line, resetsAt (ISO), holdUntil (ms), cycleEnd (ms) }
  */
-function claudeCodeStatus(file) {
-  const r = readClaudeSettings(file);
-  if (r.error) return { error: r.error };
-  const d = r.data;
-  const ms = d.modelSettings || {};
-  const fableEffort = (ms[FABLE_ID] && ms[FABLE_ID].effortLevel) || d.effortLevel || null;
-  const opusEffort = (ms[OPUS_ID] && ms[OPUS_ID].effortLevel) || d.effortLevel || null;
-  const opusDefault = isOpus(d.model);
-  return { model: d.model || null, opusDefault, fableEffort, opusEffort, ready: opusDefault && (!fableEffort || opusEffort === fableEffort) };
+async function fallbackToOpus(meta) {
+  if (!autoModelOn()) return null;
+  const res = modelSwitch.toFallback(claudeSettingsPath(), modelMarkerFile(), {
+    account: meta.account === undefined ? null : meta.account,
+    reason: meta.reason,
+    now: Date.now(),
+    holdUntil: meta.holdUntil || null,
+    cycleEnd: meta.cycleEnd || null,
+    // Erro de limite do Fable: ele estava em uso. Pela linha: só se foi usado neste computador há pouco.
+    fableInUse: meta.reason === "limit" || state.models.some((m) => /fable/i.test(m.id)),
+  });
+  if (!res.ok) {
+    reportModelError(safe(res.error));
+    return res;
+  }
+  modelErrShown = null;
+  const limit = meta.reason === "limit";
+  const acc = meta.account === null || meta.account === undefined ? "" : ` na conta ${meta.account}`;
+  const when = meta.resetsAt && fmtWhen(meta.resetsAt) ? ` (renova ${fmtWhen(meta.resetsAt)})` : "";
+  const what = limit ? `o Fable acabou${acc}${when}` : `o Fable${acc.replace(" na ", " da ")} chegou a ${fmtPct(meta.pct)} (linha ${fmtPct(meta.line)})`;
+  const settings = (c) => c && openSettings();
+  const noted = limit && Date.now() - modelLimitNotedAt < MODEL_NOTE_GAP_MS;
+  if (limit) modelLimitNotedAt = Date.now();
+  if (res.changed) {
+    await pushHistory([{ ts: new Date().toISOString(), kind: "model", text: `${cap(what)}: o modelo padrão do Claude Code passou de ${defaultModelText(res.from).replace(/^o /, "")} para ${FALLBACK_LABEL}` }]);
+    postState();
+    vscode.window
+      .showWarningMessage(
+        `Swap Plus: ${what}. O modelo padrão do Claude Code passou para o ${FALLBACK_LABEL}: toda conversa nova já abre nele, na mesma conta. ${limit ? CONTINUE_TIP : OPEN_TIP}`,
+        "Configurações"
+      )
+      .then(settings);
+  } else if (limit && !noted) {
+    // O padrão já não era o Fable (ou a troca já tinha sido feita): só orienta a conversa que parou.
+    const cur = res.state === "already" ? `O modelo padrão do Claude Code já é o ${FALLBACK_LABEL}.` : `O modelo padrão do Claude Code (${modelSwitch.defaultLabel(res.model)}) não é o Fable e não foi mexido.`;
+    await pushHistory([{ ts: new Date().toISOString(), kind: "alert", text: cap(what) }]);
+    postState();
+    vscode.window.showWarningMessage(`Swap Plus: ${what}. ${cur} ${CONTINUE_TIP}`, "Configurações").then(settings);
+  }
+  return res;
 }
 
-function claudeCodeSwitchTarget() {
-  const st = claudeCodeStatus();
-  return st && st.opusDefault ? "Opus 5.5" : "outro modelo";
+/** Desfaz a troca do Swap Plus: o modelo padrão volta ao de antes. `what` = o motivo, para o aviso. */
+async function backToPreferred(what) {
+  const res = modelSwitch.toPreferred(claudeSettingsPath(), modelMarkerFile());
+  if (!res.ok) {
+    reportModelError(safe(res.error));
+    return res;
+  }
+  modelErrShown = null;
+  if (res.changed) {
+    const to = defaultModelText(res.model);
+    await pushHistory([{ ts: new Date().toISOString(), kind: "model", text: `${cap(what)}: o modelo padrão do Claude Code voltou para ${to.replace(/^o /, "")}` }]);
+    postState();
+    vscode.window.showInformationMessage(`Swap Plus: ${what}. O modelo padrão do Claude Code voltou para ${to}: as conversas novas abrem nele.`);
+  }
+  return res;
 }
 
-/**
- * Deixa o Claude Code pronto: modelo padrão Opus (o que ele oferece quando o Fable
- * acaba) e o Opus 5.5 no mesmo esforço do Fable. Mexe só nessas chaves e mantém o
- * resto do arquivo. Vale para as próximas sessões (o Claude Code lê isso ao começar).
- */
-function prepareClaudeCode(file = claudeSettingsPath()) {
-  const r = readClaudeSettings(file);
-  if (r.error) return { ok: false, error: `não consegui ler ${file}: ${r.error}` };
-  const d = r.data;
-  const changes = [];
-  if (!isOpus(d.model)) {
-    changes.push(`modelo padrão: ${d.model || "(nenhum)"} → opus`);
-    d.model = "opus";
+/** Recurso desligado (ou Swap Plus desligado, ou computador desconectado): não deixa o padrão trocado para trás. */
+async function undoModelSwitch(what) {
+  const marker = modelSwitch.readMarker(modelMarkerFile());
+  if (!marker) return null;
+  if (marker.state !== "fallback") {
+    modelSwitch.clearMarker(modelMarkerFile());
+    return null;
   }
-  const ms = (d.modelSettings = d.modelSettings && typeof d.modelSettings === "object" ? d.modelSettings : {});
-  const fableEffort = (ms[FABLE_ID] && ms[FABLE_ID].effortLevel) || d.effortLevel || "xhigh";
-  const cur = ms[OPUS_ID] && ms[OPUS_ID].effortLevel;
-  if (cur !== fableEffort) {
-    ms[OPUS_ID] = { ...(ms[OPUS_ID] || {}), effortLevel: fableEffort };
-    changes.push(`esforço do Opus 5.5: ${cur || "(padrão)"} → ${fableEffort}`);
+  return backToPreferred(what);
+}
+
+/** A cada ciclo, na janela dona: o uso do Fable na conta em uso decide o modelo padrão. */
+async function checkModelSwitch() {
+  if (!extContext || !swapOn() || !isOwnerNow()) return null;
+  // Desligada com o VS Code fechado (ou em outra janela): não deixa o padrão trocado para trás.
+  if (!autoModelOn()) return undoModelSwitch("a troca automática do modelo padrão está desligada");
+  const list = state.list;
+  if (!list) return null;
+  const file = claudeSettingsPath();
+  const mk = modelMarkerFile();
+  const now = Date.now();
+  const marker = modelSwitch.noteUserChoice(file, mk, now);
+  const p = modelSwitch.plan({ list, records: state.records, r: rules(), marker, now });
+  if (p.forget) modelSwitch.clearMarker(mk);
+  if (p.want === "fallback") return fallbackToOpus(p);
+  if (p.want === "preferred") return backToPreferred(`o Fable voltou na conta ${p.account} (${fmtPct(p.pct)} usado)`);
+  return null;
+}
+
+/** O limite de um modelo acabou na conta em uso (erro visto na conversa). Só o Fable tem troca para o Opus 5.5. */
+async function modelLimitHit(model, hit) {
+  if (model !== "Fable") return null;
+  // Sem conexão com o servidor o Swap Plus não mexe em nada (nem saberia quando o Fable volta).
+  if (!srv.token || serverMeta().revokedAt) return null;
+  const now = Date.now();
+  const list = state.list;
+  const active = list ? list.accounts.find((a) => a.number === list.activeAccountNumber) : null;
+  const w = active ? windows(active) : null;
+  const fable = w ? w.models.find((m) => /fable/i.test(m.name)) : null;
+  // Quando o Fable renova: o que o Claude Code gravou junto do erro; senão o que o servidor informa.
+  const fromUsage = fable ? Date.parse(fable.resetsAt || "") : NaN;
+  const resetMs = hit && hit.resetsAt > now ? hit.resetsAt : fromUsage > now ? fromUsage : null;
+  if (rules().onModelLimit === "switchAccount") {
+    // Regra "trocar de conta": primeiro o servidor procura uma conta que ainda tem Fable.
+    const res = await serverLimitHit("limite do Fable", { quiet: autoModelOn() });
+    if (res && res.kind === "switch") return res;
   }
-  if (!changes.length) return { ok: true, changes };
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.swap-plus-${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(d, null, 2) + "\n");
-    fs.renameSync(tmp, file);
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-  return { ok: true, changes };
+  return fallbackToOpus({
+    reason: "limit",
+    account: active ? active.number : null,
+    resetsAt: resetMs ? new Date(resetMs).toISOString() : null,
+    holdUntil: resetMs || now + modelSwitch.HOLD_MS,
+    cycleEnd: resetMs,
+  });
 }
 
 // ---------------------------------------------------------------- troca automática (decidida pelo servidor)
@@ -653,9 +762,11 @@ let limitRoot = path.join(os.homedir(), ".claude", "projects");
 
 function limitLabel(text) {
   const t = String(text || "");
+  // "Server is temporarily limiting requests (not your usage limit)": passageiro, a conta não bateu limite nenhum.
+  if (modelSwitch.TRANSIENT_LIMIT_RE.test(t)) return null;
   if (/5-hour|five.?hour|session/i.test(t)) return "limite da sessão de 5h";
   if (/weekly|week|seven.?day/i.test(t)) return /fable|opus|sonnet/i.test(t) ? null : "limite semanal";
-  if (/fable|opus|sonnet/i.test(t)) return null; // limite de um modelo: quem resolve é a pergunta do Claude Code
+  if (/fable|opus|sonnet/i.test(t)) return null; // limite de um modelo: ver modelLimitHit
   return "limite de uso";
 }
 
@@ -719,7 +830,11 @@ async function scanLimitErrors(sinceMs, root = limitRoot) {
       if (ts <= sinceMs) continue;
       const c = d.message && d.message.content;
       const text = Array.isArray(c) ? c.map((x) => (x && x.text) || "").join(" ") : String(c || "");
-      if (!latest || ts > latest.ts) latest = { ts, text, file: f };
+      // Quando o Claude Code grava: qual limite foi (five_hour, seven_day, seven_day_overage_included = Fable…) e quando renova.
+      const q = d.quotaLimits || (d.apiErrorParams && d.apiErrorParams.rate_limit_info) || null;
+      const rateLimitType = q && typeof q.rateLimitType === "string" ? q.rateLimitType : null;
+      const resetsAt = q && Number(q.resetsAt) > 0 ? Number(q.resetsAt) * 1000 : null;
+      if (!latest || ts > latest.ts) latest = { ts, text, file: f, rateLimitType, resetsAt };
     }
   }
   return latest;
@@ -747,9 +862,11 @@ async function checkLimitErrors() {
   const hit = await scanLimitErrors(since);
   if (!hit) return null;
   await extContext.globalState.update(LIMIT_KEY, hit.ts);
-  const label = limitLabel(hit.text);
-  if (!label || !claimLimit(hit.ts)) return null;
-  return serverLimitHit(label); // quem decide a troca é o servidor
+  const model = modelSwitch.limitModel(hit.text, hit.rateLimitType);
+  const label = model ? null : limitLabel(hit.text);
+  if ((!model && !label) || !claimLimit(hit.ts)) return null;
+  if (model) return modelLimitHit(model, hit); // limite de um modelo: o modelo padrão passa para o Opus 5.5
+  return serverLimitHit(label); // limite da conta: quem decide a troca é o servidor
 }
 
 function setupLimitWatch() {
@@ -2054,6 +2171,7 @@ async function serverSync() {
     if (!applyStateResponse(resp)) return serverFailed(new Error("a resposta do servidor veio sem a lista de contas"), "estado");
     finishSync();
     checkAlerts().catch((e) => console.error("[swap-plus] alerts", safeErr(e)));
+    checkModelSwitch().catch((e) => console.error("[swap-plus] modelo padrão", safeErr(e)));
     checkNewerInstalled();
     return;
   }
@@ -2096,6 +2214,7 @@ async function serverSync() {
   if (up && up.kind === "sent") notifyLoginSent(up, res);
   finishSync();
   checkAlerts().catch((e) => console.error("[swap-plus] alerts", safeErr(e)));
+  checkModelSwitch().catch((e) => console.error("[swap-plus] modelo padrão", safeErr(e)));
   checkNewerInstalled();
 }
 
@@ -2191,12 +2310,13 @@ async function serverSwitchNow(num) {
 }
 
 /** Limite batido (visto na transcrição): avisa o servidor, que decide a troca. */
-async function serverLimitHit(label) {
+async function serverLimitHit(label, opts) {
   if (!swapOn()) return null;
-  return srvQueue(() => serverLimitHitNow(label));
+  return srvQueue(() => serverLimitHitNow(label, opts));
 }
 
-async function serverLimitHitNow(label) {
+/** quiet: sem o aviso de "não trocou" (quem chamou avisa do jeito dele). */
+async function serverLimitHitNow(label, { quiet = false } = {}) {
   if (!swapOn()) return null;
   let client = null;
   try {
@@ -2209,7 +2329,7 @@ async function serverLimitHitNow(label) {
     res = await client.request("POST", "/v1/events", { kind: "limit_hit", label });
   } catch (e) {
     await serverFailed(e, "limite");
-    vscode.window.showWarningMessage(`Swap Plus: a conta em uso bateu o ${label}, mas não consegui avisar o servidor: ${srvErrText(e)}.`);
+    if (!quiet) vscode.window.showWarningMessage(`Swap Plus: a conta em uso bateu o ${label}, mas não consegui avisar o servidor: ${srvErrText(e)}.`);
     return null;
   }
   const st = res && res.state;
@@ -2226,7 +2346,7 @@ async function serverLimitHitNow(label) {
     else if (w.status === "fail" && w.shown) {
       // o erro de gravação já foi mostrado
     } else vscode.window.showWarningMessage(`Swap Plus: o servidor trocou a conta deste computador (${text.replace(/^./, (c) => c.toLowerCase())}), mas não gravei a conta nova aqui: ${w.reason || "falhou"}.`);
-  } else {
+  } else if (!quiet) {
     vscode.window
       .showWarningMessage(`Swap Plus: ${text}.${autoEnabled() ? "" : " A troca automática está desligada no servidor."}`, "Trocar para a melhor conta")
       .then((c) => c && switchBest());
@@ -2851,6 +2971,8 @@ async function forgetServer() {
   srv.discard = null;
   srv.storeWarnings = [];
   state = { ...state, list: null, records: {}, error: null };
+  // Sem servidor não há mais como saber do Fable: o modelo padrão volta ao que era.
+  await undoModelSwitch("este computador foi desconectado do servidor").catch((e) => console.error("[swap-plus] modelo padrão", safeErr(e)));
 }
 
 /** Comando "Desconectar do servidor": revoga este computador no servidor e apaga o acesso guardado. */
@@ -3087,7 +3209,7 @@ function buildPayload() {
       history: historyPayload(),
     },
     privacy: priv,
-    claudeCode: claudeCodeStatus(),
+    autoModel: modelStatus(),
     updates: updater ? (() => { const u = updater.summary(); if (u.last) u.last.when = fmtWhen(u.last.ts); return u; })() : null,
     ui: {
       showAccountNumber: !!cfg().get("statusBar.showAccountNumber"),
@@ -3185,13 +3307,9 @@ async function handleMessage(m) {
       return;
     }
 
-    case "prepareClaudeCode": {
-      const res = prepareClaudeCode();
-      postState();
-      if (!res.ok) post({ type: "toast", kind: "error", text: `Claude Code: ${res.error}` });
-      else post({ type: "toast", kind: "info", text: res.changes.length ? `Claude Code pronto: ${res.changes.join("; ")}. Vale para as próximas conversas.` : "O Claude Code já estava pronto." });
+    case "setAutoModel":
+      await cfg().update("autoModel.enabled", !!m.enabled, vscode.ConfigurationTarget.Global);
       return;
-    }
 
     case "checkUpdates": {
       post({ type: "busy", on: true, text: "Verificando atualizações..." });
@@ -3456,6 +3574,10 @@ function activate(context) {
         syncLoginPrompt();
         setupPolling();
       }
+      // Troca do modelo padrão desligada (ou o Swap Plus inteiro): o padrão volta ao que era.
+      if ((onOff || e.affectsConfiguration(`${NS}.autoModel.enabled`)) && !autoModelOn()) {
+        undoModelSwitch(swapOn() ? "a troca automática do modelo padrão foi desligada" : "o Swap Plus foi desligado").catch((err) => console.error("[swap-plus] modelo padrão", safeErr(err)));
+      }
       render();
       postState();
     })
@@ -3533,8 +3655,11 @@ module.exports = {
     checkLimitErrors,
     limitLabel,
     setLimitRoot: (r) => (limitRoot = r),
-    claudeCodeStatus,
-    prepareClaudeCode,
+    modelStatus,
+    checkModelSwitch,
+    modelLimitHit,
+    modelMarkerFile,
+    claudeSettingsPath,
     orderForDisplay,
     pickerTexts,
     detectModels,

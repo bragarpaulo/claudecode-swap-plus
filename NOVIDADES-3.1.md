@@ -44,6 +44,13 @@ troca a conta antes do limite e a conversa segue no Fable.
 - **Servidor 2.4.1:** com "dar preferência a contas com Fable", a estratégia "Aproveitar ao máximo" não tira mais você
   de uma conta com Fable para uma sem.
 
+## 3.1.2
+
+- **Fim do "servidor fora do ar" falso.** No Mac, 1 em cada 4 pedidos falhava em meio segundo (o Node desistia de
+  cada endereço da Cloudflare depois de 250 ms, e a conexão às vezes leva 300–500 ms). Agora cada tentativa tem 6 s
+  (0 falhas em 40 pedidos medidos no Mac), e o batimento tenta de novo uma vez, 2 s depois, antes de mostrar
+  "fora do ar".
+
 ## Como atualizar
 
 Nada a fazer: a extensão se atualiza sozinha ao abrir ou fechar o VS Code. Para usar na hora, rode o comando de

@@ -2133,6 +2133,25 @@ async function syncCredentialSafe(client, resp, opts) {
   }
 }
 
+const RETRY_NET_MS = 2000;
+/**
+ * Pedido que pode repetir sem efeito colateral (batimento, leitura do estado): uma falha de rede antes de
+ * qualquer resposta (Wi-Fi que perdeu um pacote) tenta de novo uma vez, 2 s depois, antes de virar
+ * "servidor fora do ar". Nunca usar para enviar login (o refresh token só vale uma vez).
+ */
+async function retryOnce(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    const k = e && e.code;
+    if (k !== "network" && k !== "timeout") throw e;
+    console.error("[swap-plus] servidor: falha de rede, tentando de novo em 2 s:", safeErr(e));
+    await new Promise((r) => setTimeout(r, RETRY_NET_MS));
+    if (!swapOn()) throw e;
+    return fn();
+  }
+}
+
 /**
  * Um ciclo. Janela dona: envia login novo (se houver), batimento,
  * grava a conta escolhida. Outras janelas: só leem o estado.
@@ -2163,7 +2182,7 @@ async function serverSync() {
     // Outra janela do VS Code cuida do batimento e do login deste computador: esta só lê o estado.
     let resp;
     try {
-      resp = await client.request("GET", "/v1/state");
+      resp = await retryOnce(() => client.request("GET", "/v1/state"));
     } catch (e) {
       return serverFailed(e, "estado");
     }
@@ -2199,10 +2218,10 @@ async function serverSync() {
   } else if (!live.unreadable && !(live.oauth && live.oauth.refreshToken)) {
     srv.rejected = null;
   }
-  // 2) batimento
+  // 2) batimento (pode repetir: só avisa que este computador está vivo)
   let resp;
   try {
-    resp = await client.request("POST", "/v1/heartbeat", { models: models.map((m) => m.id), live: liveSummary(live) });
+    resp = await retryOnce(() => client.request("POST", "/v1/heartbeat", { models: models.map((m) => m.id), live: liveSummary(live) }));
   } catch (e) {
     return serverFailed(e, "batimento");
   }

@@ -45,6 +45,12 @@ const net = require("net");
 const tls = require("tls");
 
 const TIMEOUT_MS = 15000;
+// Node tenta cada endereço (IPv6 e IPv4 da Cloudflare, intercalados) por só 250 ms e desiste com ETIMEDOUT
+// se nenhum conectar nesse tempo. Em rede com 300–500 ms até a Cloudflare (medido no Mac do Paulo em 18/11:
+// 1 em cada 4 pedidos falhava em ~0,5 s), isso virava "servidor fora do ar" com o servidor no ar. Com 2,5 s
+// ainda falhava 1 em 30 (pacote perdido no Wi-Fi: o macOS reenvia a abertura da conexão depois de 1 s e de 3 s).
+// 6 s por endereço cobre isso; IPv6 sem rota falha na hora, então o pior caso real fica dentro dos 15 s.
+const ATTEMPT_MS = 6000;
 const MAX_BODY = 4 * 1024 * 1024;
 const CONNECT_PREFIX = "swapplus1:";
 
@@ -251,7 +257,7 @@ function createServerClient({ url, token = null, fp = null, tokenOrigin = null, 
 
       const send = (socket) => {
         // Sempre o host:porta de `url` (o http/https do Node não segue redirecionamento).
-        const options = { method, host, port, path: prefix + rel, headers };
+        const options = { method, host, port, path: prefix + rel, headers, autoSelectFamilyAttemptTimeout: ATTEMPT_MS };
         if (socket) options.createConnection = () => socket; // socket já conferido; sem agente
         else options.agent = false;
         try {
@@ -271,6 +277,7 @@ function createServerClient({ url, token = null, fp = null, tokenOrigin = null, 
         sock = tls.connect({
           host,
           port,
+          autoSelectFamilyAttemptTimeout: ATTEMPT_MS,
           servername: net.isIP(host) ? undefined : host,
           rejectUnauthorized: false, // a cadeia não importa: vale a impressão digital
           checkServerIdentity: (_h, cert) =>

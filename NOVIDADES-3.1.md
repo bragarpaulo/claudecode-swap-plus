@@ -12,8 +12,9 @@ sozinho.
 - **Aviso:** aparece um aviso na hora, e a troca fica no **Histórico** da tela de Configurações ("Modelo padrão").
 - **O que ele não mexe:** se o seu modelo padrão já é outro (por exemplo, Sonnet), o Swap Plus não muda nada. Se você
   voltar o modelo à mão depois da troca, ele respeita a sua escolha até o Fable renovar.
-- **Ligar e desligar:** na tela de Configurações, no bloco do Fable, caixa **Trocar o modelo sozinho** (ligada por
-  padrão). Vale para aquele computador. Desligando, o modelo padrão volta ao que era.
+- **Faz parte das duas regras** de "Quando o Fable acabar" (não é uma opção à parte). A tela mostra em que modelo as
+  conversas novas estão abrindo. Para o Swap Plus nunca mexer no modelo, desligue `swapPlus.autoModel.enabled` nas
+  configurações do VS Code (vale para aquele computador; o modelo volta ao que era).
 - **Com a regra Trocar de conta:** o Swap Plus primeiro tenta passar o computador para uma conta que ainda tem Fable.
   O modelo só muda para o Opus 5.5 se nenhuma conta tiver Fable.
 
@@ -31,6 +32,17 @@ troca a conta antes do limite e a conversa segue no Fable.
 - O erro passageiro "Server is temporarily limiting requests (not your usage limit)" não é mais tratado como limite
   da conta (antes podia disparar uma troca de conta sem necessidade).
 - Saiu o botão **Deixar pronto**: o Swap Plus agora cuida do modelo padrão sozinho.
+
+## 3.1.1 e servidor 2.4.2
+
+- **Tela mais simples:** saiu a caixa "Trocar o modelo sozinho". As duas opções de "Quando o Fable acabar" já dizem
+  tudo: **Seguir na mesma conta com o Opus 5.5** ou **Trocar de conta para continuar no Fable** (e, sem nenhuma conta
+  com Fable, as conversas novas vão para o Opus 5.5).
+- **Trocar de conta para continuar no Fable** agora vale mesmo com a conversa já no Opus 5.5 (antes só valia com o
+  Fable "em uso", e depois de passar para o Opus ele nunca voltava a procurar uma conta com Fable). Se a sessão ou o
+  semanal estourarem e nenhuma conta tiver Fable, troca mesmo assim.
+- **Servidor 2.4.1:** com "dar preferência a contas com Fable", a estratégia "Aproveitar ao máximo" não tira mais você
+  de uma conta com Fable para uma sem.
 
 ## Como atualizar
 

@@ -2200,17 +2200,15 @@ test("computadores juntos: os ativos ficam na mesma conta (a do topo da fila) e 
   await engine.tick();
   assert.deepEqual([d1.assigned, d2.assigned], [1, 1], "estável");
 
-  // Limite de um modelo ("Trocar de conta"): vale o modelo em uso em QUALQUER computador do grupo (união).
+  // Limite de um modelo ("Trocar de conta para continuar no Fable"): vale mesmo com ninguém no Fable agora
+  // (a conversa pode ter ido para o Opus porque o Fable acabou; a ideia é voltar para ele). O grupo troca junto.
   setUsage(engine, 2, { weeklyResetIn: 2 * DAY });
   store.state.accounts["1"].usage.scoped = [{ name: "Fable", pct: 97, resetsAt: null }];
   await engine.setRules({ rules: { onModelLimit: "switchAccount" } });
   d1.models = ["claude-opus-4-5"];
   d2.models = [];
   await engine.tick();
-  assert.deepEqual([d1.assigned, d2.assigned], [1, 1], "ninguém usa o Fable: fica");
-  d2.models = ["claude-fable-5"];
-  await engine.tick();
-  assert.deepEqual([d1.assigned, d2.assigned], [2, 2], "o d2 usa o Fable: o grupo inteiro troca");
+  assert.deepEqual([d1.assigned, d2.assigned], [2, 2], "Fable na linha: o grupo inteiro troca, mesmo com os dois no Opus");
   assert.equal(store.state.history[0].text, "Computadores trocados juntos para a conta 2: Fable em 97% (linha 95%) — PC d1 e PC d2");
 });
 

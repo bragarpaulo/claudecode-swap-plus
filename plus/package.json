@@ -2,7 +2,7 @@
   "name": "swap-plus",
   "displayName": "Swap Plus",
   "description": "Uso do Claude Code na barra de status (ícone de e-mail, 5h, semanal e Fable) e tela de regras para avisos e troca automática de conta. Um servidor Swap Plus guarda os logins, renova e decide as trocas; este computador recebe só o acesso da conta escolhida para ele (entrar com Google). Fork pessoal de smith89k/claude-swap-status (MIT).",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "publisher": "paulo-local",
   "license": "MIT",
   "icon": "icon.png",
@@ -129,7 +129,7 @@
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "description": "Trocar o modelo sozinho: quando o Fable da conta em uso acaba (ou chega na linha do modelo), o modelo padrão do Claude Code neste computador passa para o Opus 5.5, e toda conversa nova já abre nele. Quando o Fable volta, o padrão volta ao que era. Só mexe se o padrão for o Fable (ou o do plano). Conversa já aberta não muda: o Claude Code só deixa trocar o modelo por dentro dela."
+          "description": "Quando não há Fable (acabou na conta em uso e, na regra “trocar de conta”, também nas outras), o modelo padrão do Claude Code neste computador passa para o Opus 5.5, e toda conversa nova já abre nele; quando o Fable volta, volta ao que era. Faz parte das duas regras de “Quando o Fable acabar”; desligue aqui só se não quiser que o Swap Plus mexa no modelo. Só mexe se o padrão for o Fable (ou o do plano). Conversa já aberta não muda: o Claude Code só deixa trocar o modelo por dentro dela."
         },
         "swapPlus.privacy.hideEmails": {
           "type": "boolean",

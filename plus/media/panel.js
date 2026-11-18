@@ -210,7 +210,6 @@
     box.append(group("Limite semanal (todos os modelos)", act && act.weekly, "usado", "weeklyPct", "weeklyEnabled", "weeklyPct"));
 
     for (const name of S.modelNames) {
-      const watching = (S.watch || []).includes(name);
       const sc = act ? act.models.find((m) => m.name === name) : null;
       const prefer = h(
         "label",
@@ -235,48 +234,38 @@
           }),
           h("div", null, h("div", { class: "name", text: label }), h("div", { class: "desc", text: desc }))
         );
-      // Modelo padrão do Claude Code: passa para o Opus 5.5 quando o Fable acaba (e volta sozinho).
+      // Opus 5.5 quando não há Fable: faz parte das duas opções (não é uma escolha à parte). Aqui só o estado.
       const am = S.autoModel || {};
       const fb = am.fallbackLabel || "Opus 5.5";
       const isFable = /fable/i.test(name);
-      const amOn = isFable && !!am.enabled;
-      const amNow = am.error
-        ? `Não consegui ler as configurações do Claude Code: ${am.error}`
-        : am.switched
-          ? `Modelo padrão agora: ${fb}, trocado pelo Swap Plus${am.since ? ` (${am.since})` : ""}. Volta para ${am.backLabel || name} quando o ${name} voltar.`
-          : `Modelo padrão agora: ${am.label || "?"}.` +
-            (am.byHand
-              ? ` Escolhido à mão depois da troca: o Swap Plus só mexe de novo quando o ${name} renovar.`
-              : !am.isFable && !am.isOpus
-                ? ` Não é o ${name}: o Swap Plus não mexe nele.`
-                : "");
+      const lbl = !am.label || am.label === "o do plano" ? "modelo do plano" : am.label;
+      const amNow = !isFable
+        ? null
+        : am.error
+          ? `Não consegui ler as configurações do Claude Code: ${am.error}`
+          : !am.enabled
+            ? `A troca para o ${fb} está desligada neste computador (configuração swapPlus.autoModel.enabled do VS Code).`
+            : am.switched
+              ? `Agora, neste computador: as conversas novas abrem no ${fb} (desde ${am.since || "há pouco"}) e voltam para o ${am.backLabel || name} quando ele voltar.`
+              : am.byHand
+                ? `Agora, neste computador: as conversas novas abrem no ${lbl}, que você escolheu depois da troca. O Swap Plus só mexe de novo quando o ${name} renovar.`
+                : !am.isFable && !am.isOpus
+                  ? `Agora, neste computador: as conversas novas abrem no ${lbl}. Não é o ${name}, então o Swap Plus não mexe.`
+                  : `Agora, neste computador: as conversas novas abrem no ${lbl}.`;
       const ccBox = isFable
         ? h(
             "div",
-            { class: "ccbox" + (amOn && !am.error ? " ok" : "") },
-            h(
-              "label",
-              { class: "check" },
-              h("input", { type: "checkbox", checked: !!am.enabled, onchange: (e) => send({ type: "setAutoModel", enabled: e.target.checked }) }),
-              h("b", { text: `Trocar o modelo sozinho: quando o ${name} acabar, o modelo padrão do Claude Code passa para o ${fb}` })
-            ),
-            h("div", { class: "small", text: amNow }),
+            { class: "muted small onlimit-note" },
+            h("div", { text: amNow }),
             h("div", {
-              class: "muted small",
-              text:
-                (same
-                  ? `Toda conversa nova já abre no ${fb}, na mesma conta. `
-                  : `Vale quando nenhuma outra conta tem ${name}: aí toda conversa nova abre no ${fb}. `) +
-                `Quando o ${name} volta (renovou, ou este computador foi para uma conta que tem), o padrão volta sozinho. ` +
-                `Conversa já aberta: o Claude Code não deixa trocar o modelo por fora. Se ela parar com “You've hit your ${name} limit”, escolha ${fb} no seletor de modelo e mande “continue”. Vale para este computador.`,
+              text: `Conversa já aberta que parar com “You've hit your ${name} limit”: escolha ${fb} no seletor de modelo e mande “continue”. O Claude Code não deixa trocar o modelo dela por fora.`,
             })
           )
         : null;
       box.append(
         group(`Limite semanal do ${name}`, sc, "usado", "modelPct", "modelEnabled", "modelPct", null, {
-          badge: h("span", { class: "tag" + (watching ? " on" : ""), text: watching ? "em uso agora" : "não está em uso" }),
-          noSwitch: same && !amOn,
-          switchLabel: same ? `Passar o modelo padrão para o ${fb} quando chegar em` : null,
+          noSwitch: same && !(isFable && am.enabled),
+          switchLabel: same ? `Passar as conversas novas para o ${fb} quando chegar em` : null,
           before: h(
             "div",
             { class: "onlimit" },
@@ -284,16 +273,14 @@
             h(
               "div",
               { class: "strategies two" },
-              choice("sameAccount", "Seguir na mesma conta com o Opus 5.5", `A conta não muda. Na linha abaixo, as conversas novas passam a abrir no Opus 5.5; a conversa aberta segue no ${name} até ele acabar. Prioriza o ${name} enquanto houver.`),
-              choice("switchAccount", `Trocar de conta para continuar no ${name}`, `O Swap Plus troca para outra conta que ainda tem ${name}, na linha de troca abaixo: as conversas abertas nem param. Sem conta com ${name}, as novas abrem no Opus 5.5.`)
+              choice("sameAccount", `Seguir na mesma conta com o ${fb}`, `A conta não muda. Na linha abaixo, as conversas novas passam a abrir no ${fb}; quando o ${name} renova, voltam para ele sozinhas.`),
+              choice("switchAccount", `Trocar de conta para continuar no ${name}`, `Na linha abaixo, troca para outra conta que ainda tem ${name}, e a conversa aberta nem para. Se nenhuma tiver, as conversas novas passam a abrir no ${fb} até o ${name} voltar.`)
             ),
             ccBox
           ),
           hint: same
-            ? `Nesta linha o modelo padrão do Claude Code passa para o ${fb} em cada computador (vale mesmo com a “Troca automática” de conta desligada).`
-            : watching
-              ? `O ${name} está em uso: esta linha vale agora.` + (autoOn ? "" : " (Só troca com a “Troca automática” ligada.)")
-              : `Vale quando o ${name} estiver em uso. Agora ele não está, então só a sessão e o semanal decidem.`,
+            ? `Vale em cada computador, mesmo com a “Troca automática” de conta desligada.`
+            : `Vale mesmo com a conversa já no ${fb}: a ideia é voltar para o ${name}.` + (autoOn ? "" : " (Só troca com a “Troca automática” ligada.)"),
           after: prefer,
         })
       );

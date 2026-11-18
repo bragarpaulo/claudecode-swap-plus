@@ -3307,9 +3307,6 @@ async function handleMessage(m) {
       return;
     }
 
-    case "setAutoModel":
-      await cfg().update("autoModel.enabled", !!m.enabled, vscode.ConfigurationTarget.Global);
-      return;
 
     case "checkUpdates": {
       post({ type: "busy", on: true, text: "Verificando atualizações..." });

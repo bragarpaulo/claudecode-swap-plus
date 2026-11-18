@@ -126,8 +126,9 @@ function watchedModels(modelIds, names) {
 
 /**
  * Decide se troca de conta e para qual. Função pura (testável).
- *   - Gatilho: a conta ativa chegou na linha da sessão, do semanal, ou do
- *     limite de um modelo que está em uso agora.
+ *   - Gatilho: a conta ativa chegou na linha da sessão, do semanal ou, na regra
+ *     "trocar de conta para continuar no modelo", do limite do modelo (vale mesmo
+ *     com a conversa em outro modelo: a ideia é voltar para ele).
  *   - Destino: conta na rotação, com dados de uso recentes e abaixo de todas
  *     as linhas que importam (com a folga mínima). Contas com o modelo
  *     preferido (Fable) disponível vêm primeiro; depois vale a estratégia.
@@ -141,8 +142,10 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
   const active = list.accounts.find((a) => a.number === list.activeAccountNumber);
   if (!active) return { action: "none", kind: "idle", text: "nenhuma conta ativa" };
   const names = scopedNames(list);
-  // "Mesma conta": o limite do modelo não troca de conta; o Claude Code pergunta e troca o modelo.
-  const watch = r.onModelLimit === "switchAccount" ? watchedModels(modelIds, names) : [];
+  // "Mesma conta": o limite do modelo não troca de conta (a extensão passa o modelo para o Opus 5.5).
+  // "Trocar de conta": os limites por modelo (Fable) contam sempre, mesmo com a conversa já no Opus.
+  const watch = r.onModelLimit === "switchAccount" ? names : [];
+  const isModelRow = (x) => watch.some((n) => String(x.label).includes(n));
   const pref = r.preferModel && names.includes(r.preferModel) ? r.preferModel : null;
 
   const aw = windows(active);
@@ -179,6 +182,7 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
     if (!w || (tooOld && !limitHit)) continue;
     const l = linesFor(acc, r, records);
     const rows = rowsOf(w, l);
+    const base = rows.filter((x) => !isModelRow(x)); // só sessão e semanal
     let prefOk = true;
     if (pref) {
       const s = w.models.find((m) => m.name === pref);
@@ -188,6 +192,8 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
       acc,
       strictOk: rows.every((x) => x.pct <= x.line - r.marginPct),
       looseOk: rows.every((x) => x.pct < x.line),
+      strictBase: base.every((x) => x.pct <= x.line - r.marginPct),
+      looseBase: base.every((x) => x.pct < x.line),
       headroom: Math.min(...rows.map((x) => x.line - x.pct)),
       prefOk,
       resetTs: w.weekly && w.weekly.resetsAt ? Date.parse(w.weekly.resetsAt) : Infinity,
@@ -204,12 +210,16 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
   };
   const rank = (arr) =>
     [...arr].sort((x, y) => Number(y.prefOk) - Number(x.prefOk) || byStrategy[r.strategy](x, y) || x.acc.number - y.acc.number);
-  const pick = () => {
+  // baseOnly: ignora os limites por modelo (só sessão e semanal) — para a troca obrigatória quando
+  // nenhuma conta tem o modelo: sair da sessão/semanal estourada vem antes de continuar no modelo.
+  const pick = (baseOnly = false) => {
+    const strictKey = baseOnly ? "strictBase" : "strictOk";
+    const looseKey = baseOnly ? "looseBase" : "looseOk";
     // Dados recentes primeiro; com o limite estourado, vale também conta com dado antigo.
     for (const pool of [cands.filter((c) => !c.stale), cands.filter((c) => c.stale)]) {
-      const strict = rank(pool.filter((c) => c.strictOk));
+      const strict = rank(pool.filter((c) => c[strictKey]));
       if (strict.length) return strict[0];
-      const loose = rank(pool.filter((c) => c.looseOk))[0];
+      const loose = rank(pool.filter((c) => c[looseKey]))[0];
       if (loose) return loose;
     }
     return undefined;
@@ -218,7 +228,9 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
 
   if (over.length) {
     const reason = limitHit ? `a conta ${active.number} bateu o ${limitHit}` : over.map((o) => `${o.label} em ${fmtPct(o.pct)} (linha ${fmtPct(o.line)})`).join(", ");
-    const t = pick();
+    let t = pick();
+    // Sessão ou semanal estourados e nenhuma conta com o modelo: troca mesmo assim (sem o modelo).
+    if (!t && over.some((o) => !isModelRow(o))) t = pick(true);
     if (!t) return { action: "none", kind: "blocked", text: limitHit ? `${reason}, mas nenhuma outra conta tem folga` : `conta ${active.number} com ${reason}, mas nenhuma outra conta tem folga` };
     return { ...go(t, reason), atLimit: !!limitHit || over.some((o) => o.pct >= 100) };
   }

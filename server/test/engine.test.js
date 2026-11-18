@@ -2110,6 +2110,55 @@ test("storeFreshLogin: refresh token já gasto → stale_login; cofre sem gravar
 
 // ------------------------------------------------------------------ regra "Computadores" (devicePlacement)
 
+test("modelo preferido (Fable): “aproveitar ao máximo” não troca uma conta com Fable por uma sem (caso de 18/11 00:29–00:34)", async (t) => {
+  const { engine, fake, store, clock } = setup(t);
+  await engine.addLogin(fake.login("sete@x.com")); // conta 1 = a “conta 7” do caso: semanal zera logo, Fable esgotado
+  await engine.addLogin(fake.login("nove@x.com")); // conta 2 = a “conta 9”: semanal zera depois, Fable com folga
+  const usar = () => {
+    setUsage(engine, 1, { session: 7, weekly: 77, weeklyResetIn: 11 * HOUR });
+    setUsage(engine, 2, { session: 0, weekly: 16, weeklyResetIn: 4 * DAY });
+    store.state.accounts["1"].usage.scoped = [{ name: "Fable", pct: 100, resetsAt: new Date(engine.now() + 11 * HOUR).toISOString() }];
+    store.state.accounts["2"].usage.scoped = [{ name: "Fable", pct: 15, resetsAt: new Date(engine.now() + 4 * DAY).toISOString() }];
+  };
+  usar();
+  await engine.setRules({ rules: { strategy: "max", expiringHours: 168, preferModel: "Fable", onModelLimit: "sameAccount", devicePlacement: "together", cooldownMin: 5, sessionPct: 90, weeklyPct: 96, modelPct: 95 } }); // as regras dele
+  addDevice(engine, "mac", { models: ["claude-opus-5-5"] });
+  addDevice(engine, "win", { models: ["claude-fable-5-2"] });
+  await engine.heartbeat("mac", { models: ["claude-opus-5-5"] });
+  await engine.heartbeat("win", { models: ["claude-fable-5-2"] });
+  const mac = store.state.devices.mac;
+  const win = store.state.devices.win;
+  assert.deepEqual([mac.assigned, win.assigned], [2, 2], "conta nova: a que tem Fable vem primeiro (mesmo zerando o semanal depois)");
+  // Os dois computadores dão sinal a cada minuto (de verdade, a cada 30 s).
+  const passar = async (min) => {
+    for (let i = 0; i < min; i++) {
+      clock.t += 60000;
+      usar();
+      await engine.heartbeat("mac", { models: ["claude-opus-5-5"] });
+      await engine.heartbeat("win", { models: ["claude-fable-5-2"] });
+    }
+    await engine.tick();
+  };
+
+  // Troca manual para a conta sem Fable e de volta para a com Fable (como no Windows às 00:29).
+  await engine.switchDevice("win", 1, "manual");
+  await passar(6);
+  await engine.switchDevice("win", 2, "manual");
+  assert.deepEqual([mac.assigned, win.assigned], [2, 2]);
+  // Passa o intervalo mínimo (5 min) e bem mais: o servidor não volta para a conta sem Fable.
+  await passar(20);
+  assert.deepEqual([mac.assigned, win.assigned], [2, 2], `fica na conta com Fable — histórico: ${store.state.history.slice(0, 8).map((h) => h.text).join(" | ")}`);
+  assert.equal(store.state.history.some((h) => /para a conta 1: a cota semanal dela zera/.test(h.text)), false);
+  assert.equal(engine.bestAccountFor(null), 2);
+
+  // Sem o modelo preferido marcado, “aproveitar ao máximo” vai para a que zera antes (como sempre).
+  await engine.setRules({ rules: { preferModel: "" } });
+  await passar(1);
+  assert.deepEqual([mac.assigned, win.assigned], [1, 1]);
+  assert.match(store.state.history[0].text, /para a conta 1: a cota semanal dela zera .* com 23% sobrando/);
+  assert.equal(engine.bestAccountFor(null), 1);
+});
+
 test("computadores juntos: os ativos ficam na mesma conta (a do topo da fila) e trocam juntos pela linha (modelos de todos)", async (t) => {
   const { engine, fake, store } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));

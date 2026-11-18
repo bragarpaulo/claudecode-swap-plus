@@ -133,6 +133,9 @@ function watchedModels(modelIds, names) {
  *     preferido (Fable) disponível vêm primeiro; depois vale a estratégia.
  *   - "Aproveitar ao máximo" também troca antes da linha, para uma conta cuja
  *     cota semanal zera logo e ainda está sobrando.
+ *   - Modelo preferido (Fable): troca voluntária (antecipar, "melhor conta") nunca
+ *     sai de uma conta que ainda tem o modelo para uma que não tem. Só a troca
+ *     obrigatória (conta na linha ou limite estourado) pode, se não houver outra.
  */
 function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, limitHit = null }) {
   const active = list.accounts.find((a) => a.number === list.activeAccountNumber);
@@ -156,7 +159,11 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
     return rows;
   };
 
-  const activeRows = aw ? rowsOf(aw, linesFor(active, r, records)) : [];
+  const activeLines = aw ? linesFor(active, r, records) : null;
+  const activeRows = aw ? rowsOf(aw, activeLines) : [];
+  // O modelo preferido ainda tem folga na conta em uso? Então troca voluntária só para conta que também tem.
+  const activePref = pref && aw ? aw.models.find((m) => m.name === pref) : null;
+  const activePrefOk = !!activePref && activePref.pct < activeLines.model;
   const over = limitHit ? [{ label: limitHit, pct: 100, line: 100, hit: true }] : activeRows.filter((x) => x.pct >= x.line);
   const activeReset = aw && aw.weekly && aw.weekly.resetsAt ? Date.parse(aw.weekly.resetsAt) : Infinity;
   const activeHeadroom = activeRows.length ? Math.min(...activeRows.map((x) => x.line - x.pct)) : -Infinity;
@@ -218,6 +225,7 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
 
   if (force) {
     const t = pick();
+    if (t && activePrefOk && !t.prefOk) return { action: "none", kind: "idle", text: `a conta atual é a melhor: ainda tem ${pref} (as outras com folga não têm)` };
     if (!t || t.headroom <= activeHeadroom) return { action: "none", kind: "idle", text: "a conta atual já é a que tem mais folga" };
     return go(t, "troca pedida pela melhor conta");
   }
@@ -230,7 +238,8 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
           c.resetTs > now &&
           c.resetTs - now <= r.expiringHours * 3600000 &&
           c.resetTs < activeReset - 3600000 &&
-          c.unused >= 20
+          c.unused >= 20 &&
+          (!activePrefOk || c.prefOk) // não troca uma conta com o modelo preferido por uma sem ele
       )
     );
     if (soon.length) {

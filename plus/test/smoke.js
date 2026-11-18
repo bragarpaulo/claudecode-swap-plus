@@ -174,6 +174,22 @@ function partA() {
   check("limite do Fable reconhecido pelo id do modelo", R.watchedModels(["claude-fable-5-2"], ["Fable"]).join() === "Fable");
   check("Opus não liga o limite do Fable", R.watchedModels(["claude-opus-5-5"], ["Fable"]).length === 0);
 
+  // Caso de 18/11: na conta 9 (Fable 15%, semanal zera em 4 dias), a conta 7 (Fable 100%, semanal 77%, zera em 11 h).
+  const caso = [acct(9, { s: 0, w: 16, f: 15, wReset: 96 }), acct(7, { s: 7, w: 77, f: 100, wReset: 11 })];
+  const MAXR = { strategy: "max", expiringHours: 168, onModelLimit: "sameAccount", weeklyPct: 96 }; // as regras dele
+  d = run(caso, 9, { r: MAXR, models: OPUS });
+  check("preferir Fable: “aproveitar ao máximo” não sai da conta com Fable para uma sem", d.action === "none", d.text);
+  d = run(caso, 9, { r: { ...MAXR, preferModel: "" }, models: OPUS });
+  check("sem preferir Fable: antecipa para a que zera antes (como antes)", d.action === "switch" && d.to === 7, d.text);
+  d = run([acct(9, { s: 0, w: 16, f: 100, wReset: 96 }), acct(7, { s: 7, w: 77, f: 100, wReset: 11 })], 9, { r: MAXR, models: OPUS });
+  check("conta em uso também sem Fable: antecipa normalmente", d.action === "switch" && d.to === 7, d.text);
+  d = run([acct(9, { s: 0, w: 16, f: 15, wReset: 96 }), acct(7, { s: 7, w: 77, f: 10, wReset: 11 })], 9, { r: MAXR, models: OPUS });
+  check("as duas com Fable: antecipa normalmente", d.action === "switch" && d.to === 7, d.text);
+  d = run([acct(9, { s: 0, w: 16, f: 15, wReset: 96 }), acct(7, { s: 0, w: 10, f: 100, wReset: 96 })], 9, { r: { ...RULES, onModelLimit: "sameAccount" }, models: OPUS, force: true });
+  check("“melhor conta” não troca a conta com Fable por uma sem (mesmo com mais folga)", d.action === "none" && /ainda tem Fable/.test(d.text), d.text);
+  d = run([acct(9, { s: 95, w: 16, f: 15, wReset: 96 }), acct(7, { s: 7, w: 77, f: 100, wReset: 11 })], 9, { r: MAXR, models: OPUS });
+  check("na linha da sessão troca mesmo assim (só sobrou conta sem Fable)", d.action === "switch" && d.to === 7, d.text);
+
   console.log("\n# A2. Lista de contas da barra (extensão)");
   // Ordem: quem participa primeiro, por renovação do semanal; quem não participa no fim, também por renovação.
   const ord = T.orderForDisplay(

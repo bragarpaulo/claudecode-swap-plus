@@ -30,7 +30,7 @@ const crypto = require("crypto");
 const { RULE_DEFAULTS, STRATEGY_LABELS, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.4.0";
+const VERSION = "2.4.1";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
 const POLL_ACTIVE_MS = 3 * 60 * 1000; // conta de dispositivo ativo: uso a cada 3 min
@@ -1524,6 +1524,7 @@ class Engine {
   bestAccountFor(dev, { freeOnly = false, requireOk = false, records = null } = {}) {
     const t = this.now();
     const r = this.rulesEffective();
+    const pref = str(r.preferModel) || null; // modelo preferido (Fable): contas com ele vêm primeiro
     const recs = records || this.recordsFor(dev);
     const others = r.devicePlacement === "together" ? new Set() : this.othersAccounts(dev ? dev.id : null, t);
     const list = this.publicList(dev ? dev.id : null);
@@ -1542,8 +1543,10 @@ class Engine {
         const rows = [{ pct: Number(w.session.pct) || 0, line: l.session }];
         if (w.weekly) rows.push({ pct: Number(w.weekly.pct) || 0, line: l.weekly });
         const reset = w.weekly && w.weekly.resetsAt ? Date.parse(w.weekly.resetsAt) : NaN;
+        const ps = pref ? w.models.find((m) => m.name === pref) : null;
         known.push({
           n: p.number,
+          prefOk: !!ps && Number(ps.pct) <= l.model - r.marginPct,
           ok: rows.every((x) => x.pct <= x.line - r.marginPct),
           headroom: Math.min(...rows.map((x) => x.line - x.pct)),
           resetTs: Number.isFinite(reset) ? reset : Infinity,
@@ -1554,13 +1557,17 @@ class Engine {
       unknown.sort((a, b) => a - b);
       return { known, unknown };
     };
-    const order =
+    const byStrategy =
       r.strategy === "priority"
         ? (a, b) => b.priority - a.priority || b.headroom - a.headroom || a.n - b.n
         : (a, b) => b.headroom - a.headroom || a.n - b.n;
+    const order = (a, b) => Number(b.prefOk) - Number(a.prefOk) || byStrategy(a, b);
     const pickOk = (pool) => {
-      const ok = score(pool).known.filter((k) => k.ok);
-      if (!ok.length) return null;
+      const all = score(pool).known.filter((k) => k.ok);
+      if (!all.length) return null;
+      // Com o modelo preferido: só entre as que têm ele, se houver alguma (mesma ideia do decide()).
+      const withPref = all.filter((k) => k.prefOk);
+      const ok = withPref.length ? withPref : all;
       if (r.strategy === "max") {
         const soon = ok
           .filter((k) => k.unused >= 20 && k.resetTs !== Infinity && k.resetTs > t)

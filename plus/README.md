@@ -39,14 +39,14 @@ Passo a passo completo, para quem usa: **[MANUAL](../MANUAL.md)**. O que mudou n
 
 Passo a passo completo, com Mac e Windows: **[MANUAL](../MANUAL.md)**.
 
-- Mac (ou Linux): `curl -fsSL https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.sh | bash`
-- Windows (PowerShell): `irm https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.ps1 | iex`
+- Mac (ou Linux): `curl -fsSL https://raw.githubusercontent.com/bragarpaulo/claudecode-swap-plus/main/plus/scripts/install.sh | bash`
+- Windows (PowerShell): `irm https://raw.githubusercontent.com/bragarpaulo/claudecode-swap-plus/main/plus/scripts/install.ps1 | iex`
 
 Depois: abrir o VS Code (ou fechar e abrir) → clicar na barra do Swap Plus → **Entrar com Google**, no aviso que
 aparece. O mesmo comando também atualiza.
 
 Os scripts instalam **só a extensão**: baixam o `.vsix` da release mais nova
-[daqui](https://github.com/bragarpaulo/swap-plus-vscode/releases) (achada pelo redirecionamento de `/releases/latest`,
+[daqui](https://github.com/bragarpaulo/claudecode-swap-plus/releases) (achada pelo redirecionamento de `/releases/latest`,
 sem a API do GitHub, que fica só de reserva) e rodam `code --install-extension --force`. Também removem a extensão
 original (`smith89k.claude-swap-status`), se estiver instalada, e o **motor antigo**, se estiver instalado pelo `uv`:
 acham o pacote que traz o comando `swap-plus` (o pacote se chama `claude-swap`) e rodam `uv tool uninstall`. Sem

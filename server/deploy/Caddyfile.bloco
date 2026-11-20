@@ -3,7 +3,7 @@
 # no VS Code, modo servidor): o servidor guarda os logins das contas Claude e entrega a cada computador só o acesso da
 # conta escolhida. O container responde na rede própria swap-plus pelo nome swap-plus:8443, em HTTP puro (TLS_MODE=off):
 # o TLS é este Caddy, e na frente dele a Cloudflare (registro proxied). Instalação em server/deploy/LEIA-ME.md do
-# repositório swap-plus-vscode.
+# repositório claudecode-swap-plus.
 # O servidor confia no X-Forwarded-For (TRUST_PROXY=1) para o limite de tentativas por IP: por isso este bloco manda só
 # o IP real ({client_ip}, tirado do CF-Connecting-IP de um par da Cloudflare) e, igual ao bloco do Stafy, derruba quem
 # não vem das faixas da Cloudflare.

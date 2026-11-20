@@ -1,7 +1,7 @@
 # Instala a extensão Swap Plus no VS Code deste Windows, a partir da release mais nova
 # do GitHub. Não precisa clonar nada nem abrir o PowerShell como administrador.
 #
-#   irm https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/bragarpaulo/claudecode-swap-plus/main/plus/scripts/install.ps1 | iex
 #
 # Rodar de novo reinstala a versão mais nova. Depois de instalada, a própria extensão
 # se atualiza ao abrir e ao fechar o VS Code.
@@ -17,7 +17,7 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # downloads bem mais rápidos no Windows PowerShell 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-$ExtRepo = "bragarpaulo/swap-plus-vscode"
+$ExtRepo = "bragarpaulo/claudecode-swap-plus"
 $DryRun = $env:SWAP_PLUS_DRY_RUN -eq "1"
 $Headers = @{ "User-Agent" = "swap-plus-install"; "Accept" = "application/vnd.github+json" }
 

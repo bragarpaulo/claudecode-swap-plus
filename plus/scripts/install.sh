@@ -2,7 +2,7 @@
 # Instala a extensão Swap Plus no VS Code (Mac ou Linux), a partir da release mais nova
 # do GitHub. Não precisa clonar nada.
 #
-#   curl -fsSL https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bragarpaulo/claudecode-swap-plus/main/plus/scripts/install.sh | bash
 #
 # No Windows, use install.ps1 (veja o MANUAL.md).
 #
@@ -17,7 +17,7 @@
 #               (pelo curl: ... | bash -s -- --dry-run)
 set -euo pipefail
 
-EXT_REPO="bragarpaulo/swap-plus-vscode"
+EXT_REPO="bragarpaulo/claudecode-swap-plus"
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 DRY=""

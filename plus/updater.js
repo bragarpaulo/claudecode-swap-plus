@@ -5,7 +5,7 @@
 // Tudo roda dentro do VS Code: ao fechar, só verifica e anota; a instalação
 // acontece na próxima abertura. Nada fica rodando depois que ele fecha.
 //
-//   extensão  → releases "plus-vX.Y.Z" de bragarpaulo/swap-plus-vscode (.vsix)
+//   extensão  → releases "plus-vX.Y.Z" de bragarpaulo/claudecode-swap-plus (.vsix)
 //   original  → tags "vX.Y.Z" de smith89k/claude-swap-status (só para avisar no histórico)
 //
 // 3.0: o motor antigo (CLI swap-plus) não é mais usado; o atualizador não o
@@ -18,12 +18,12 @@ const os = require("os");
 const path = require("path");
 
 const REPOS = {
-  ext: "bragarpaulo/swap-plus-vscode",
+  ext: "bragarpaulo/claudecode-swap-plus",
   upstreamExt: "smith89k/claude-swap-status",
 };
 const STATE_KEY = "swapPlus.updates";
 const PERIOD_MS = 48 * 3600e3; // a cada 2 dias
-const UA = "swap-plus-vscode";
+const UA = "claudecode-swap-plus";
 
 // ---------------------------------------------------------------- versões
 

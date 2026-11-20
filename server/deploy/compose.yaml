@@ -4,7 +4,7 @@
 # (extensão Swap Plus no VS Code, modo servidor) recebem só o acesso da conta que o servidor escolheu para cada um. O
 # refresh token é de uso único: dois lugares renovando a mesma conta derrubam o login um do outro, e é por isso que ele
 # mora aqui. Funcionamento em server/SPEC.md; instalação e operação em server/deploy/LEIA-ME.md (repositório
-# swap-plus-vscode, copiado em /opt/swap-plus/app).
+# claudecode-swap-plus, copiado em /opt/swap-plus/app).
 #
 # Como os outros grupos do servidor:
 #  · projeto, container e rede próprios (`swap-plus`, 172.26.0.0/24): só o Swap Plus e o Caddy do servidor

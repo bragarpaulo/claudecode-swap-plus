@@ -56,7 +56,7 @@ Ele começa com um envelope: `│ ✉ …`. O que acontece ao clicar nele:
 2. Cole este comando e aperte Enter:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/bragarpaulo/claudecode-swap-plus/main/plus/scripts/install.sh | bash
    ```
 
 3. Espere aparecer **`==> Pronto.`**
@@ -68,7 +68,7 @@ Ele começa com um envelope: `│ ✉ …`. O que acontece ao clicar nele:
 2. Cole este comando e aperte Enter:
 
    ```powershell
-   irm https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.ps1 | iex
+   irm https://raw.githubusercontent.com/bragarpaulo/claudecode-swap-plus/main/plus/scripts/install.ps1 | iex
    ```
 
 3. Espere aparecer **`==> Pronto.`**

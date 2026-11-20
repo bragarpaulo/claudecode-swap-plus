@@ -23,13 +23,13 @@ O passo a passo completo está no **[MANUAL](MANUAL.md)**. Em resumo, um comando
 - **Mac** (Terminal):
 
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/bragarpaulo/claudecode-swap-plus/main/plus/scripts/install.sh | bash
   ```
 
 - **Windows** (PowerShell):
 
   ```powershell
-  irm https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.ps1 | iex
+  irm https://raw.githubusercontent.com/bragarpaulo/claudecode-swap-plus/main/plus/scripts/install.ps1 | iex
   ```
 
 Depois, abra o VS Code, clique no Swap Plus na barra de baixo e, no aviso que aparece, em **Entrar com Google**.
@@ -43,8 +43,7 @@ Depois, abra o VS Code, clique no Swap Plus na barra de baixo e, no aviso que ap
 | [`.github/workflows/`](.github/workflows/) | `plus-release.yml` (testa e publica a extensão), `plus-install-test.yml` (instala num Mac e num Windows limpos) e `server-ci.yml` (testes e imagem do servidor) |
 
 **O motor foi aposentado.** Até a 2.x existia também o motor, o comando `swap-plus` (CLI Python, fork do
-[claude-swap](https://github.com/realiti4/claude-swap)), no repositório
-[bragarpaulo/swap-plus](https://github.com/bragarpaulo/swap-plus), hoje **arquivado**. A 3.0 não usa mais o motor
+[claude-swap](https://github.com/realiti4/claude-swap)), num repositório próprio, que foi **apagado**. A 3.0 não usa mais o motor
 nem o modo local: o instalador e a própria extensão removem o motor antigo dos computadores.
 
 A extensão começou do [claude-swap-status](https://github.com/smith89k/claude-swap-status) e foi reescrita em

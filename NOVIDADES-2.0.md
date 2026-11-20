@@ -62,13 +62,13 @@ O que mudou da versão 1.8 para a 2.0. Passo a passo completo no [MANUAL](MANUAL
    - Mac (Terminal):
 
      ```bash
-     curl -fsSL https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.sh | bash
+     curl -fsSL https://raw.githubusercontent.com/bragarpaulo/claudecode-swap-plus/main/plus/scripts/install.sh | bash
      ```
 
    - Windows (PowerShell):
 
      ```powershell
-     irm https://raw.githubusercontent.com/bragarpaulo/swap-plus-vscode/main/plus/scripts/install.ps1 | iex
+     irm https://raw.githubusercontent.com/bragarpaulo/claudecode-swap-plus/main/plus/scripts/install.ps1 | iex
      ```
 
 2. Feche e abra o VS Code.

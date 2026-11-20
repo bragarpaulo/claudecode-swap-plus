@@ -55,13 +55,13 @@ passo à mão como `[feito]` ou `[falta]`.
 **1. Código no servidor** (só `.dockerignore`, `plus/rules.js` e `server/` entram na imagem):
 
 ```sh
-git clone https://github.com/bragarpaulo/swap-plus-vscode.git /opt/swap-plus/app
+git clone https://github.com/bragarpaulo/claudecode-swap-plus.git /opt/swap-plus/app
 ```
 
 Sem acesso do servidor ao GitHub, mande do Mac:
 
 ```sh
-cd ~/Documents/ClaudeCode/swap-plus-vscode
+cd ~/Documents/ClaudeCode/claudecode-swap-plus
 COPYFILE_DISABLE=1 tar -czf - .dockerignore plus/rules.js server \
   | ssh root@<servidor> 'mkdir -p /opt/swap-plus/app && tar -C /opt/swap-plus/app --no-same-owner -xzf -'
 ```

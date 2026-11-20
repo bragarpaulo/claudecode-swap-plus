@@ -51,6 +51,14 @@ troca a conta antes do limite e a conversa segue no Fable.
   (0 falhas em 40 pedidos medidos no Mac), e o batimento tenta de novo uma vez, 2 s depois, antes de mostrar
   "fora do ar".
 
+## 3.1.3
+
+- **O repositório mudou de nome: agora é `claudecode-swap-plus`.** A extensão passa a procurar as versões novas no
+  nome novo. Quem está na 3.1.2 ou anterior **não recebe esta versão sozinho** (procura no nome antigo e não acha
+  nada, sem mostrar erro): rode uma vez, em cada computador, o comando de instalação do [MANUAL](MANUAL.md).
+- **Trocar o nome do repositório não deixa mais a extensão sem atualizações:** o atualizador segue o
+  redirecionamento do GitHub para o nome novo.
+
 ## Como atualizar
 
 Nada a fazer: a extensão se atualiza sozinha ao abrir ou fechar o VS Code. Para usar na hora, rode o comando de

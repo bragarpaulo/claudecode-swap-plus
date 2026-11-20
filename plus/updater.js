@@ -85,7 +85,7 @@ function request(url, { timeout = 10000, json = true, dest = null, redirects = 5
       (res) => {
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
           res.resume();
-          resolve(request(new URL(res.headers.location, url).toString(), { timeout, json, dest, redirects: redirects - 1 }));
+          resolve(request(new URL(res.headers.location, url).toString(), { timeout, json, dest, redirects: redirects - 1, etag, withMeta }));
           return;
         }
         if (res.statusCode === 304 && etag) {
@@ -145,11 +145,23 @@ function headLocation(url, timeout = 10000) {
  * Tag da release mais nova pelo link /releases/latest do site do GitHub, que
  * redireciona para ela. Não usa a API, então não gasta o limite de 60
  * consultas por hora (que vale para a rede inteira, sem login).
+ *
+ * Um repositório renomeado responde primeiro com o /releases/latest do nome
+ * novo (medido em 20/11/2026, no rename para claudecode-swap-plus: 301 para o
+ * nome novo, depois 302 para a tag); por isso segue esse salto.
  */
 async function latestReleaseTag(repo, timeout) {
-  const loc = await headLocation(`https://github.com/${repo}/releases/latest`, timeout);
-  const m = loc && loc.match(/\/releases\/tag\/([^/?#]+)$/);
-  return m ? decodeURIComponent(m[1]) : null;
+  let url = `https://github.com/${repo}/releases/latest`;
+  for (let hop = 0; hop < 3; hop++) {
+    const loc = await headLocation(url, timeout);
+    if (!loc) return null;
+    const m = loc.match(/\/releases\/tag\/([^/?#]+)$/);
+    if (m) return decodeURIComponent(m[1]);
+    const next = new URL(loc, url);
+    if (next.host !== "github.com" || !/\/releases\/latest$/.test(next.pathname)) return null;
+    url = next.toString();
+  }
+  return null;
 }
 
 /** Release plus-vX.Y.Z montada a partir da tag; os arquivos têm endereço previsível. */

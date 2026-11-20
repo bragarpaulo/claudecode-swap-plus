@@ -418,6 +418,56 @@ function partU() {
   check("o atualizador não tem mais nada do motor", !("cli" in U.REPOS) && !("upstreamCli" in U.REPOS) && !("findBin" in U));
 }
 
+// ------------------------------------------------------------ parte R: repositório renomeado (GitHub simulado)
+async function partR() {
+  console.log("\n# R. Atualizador com o repositório renomeado (GitHub simulado)");
+  const U = require(path.join(root, "updater.js"));
+  const https = require("https");
+  const { EventEmitter } = require("events");
+  // Respostas por endereço: { status, headers, body }. Quem não está na lista responde 404.
+  const fake = (routes) => (url, opts, cb) => {
+    const r = routes[String(url)] || { status: 404 };
+    const res = new EventEmitter();
+    res.statusCode = r.status;
+    res.headers = r.headers || {};
+    res.resume = () => {};
+    const req = new EventEmitter();
+    req.end = () => {};
+    req.destroy = () => {};
+    setImmediate(() => {
+      cb(res);
+      if (r.body !== undefined) res.emit("data", Buffer.from(r.body));
+      res.emit("end");
+    });
+    return req;
+  };
+  const origGet = https.get;
+  const origReq = https.request;
+  try {
+    https.request = fake({
+      "https://github.com/dono/antigo/releases/latest": { status: 301, headers: { location: "https://github.com/dono/novo/releases/latest" } },
+      "https://github.com/dono/novo/releases/latest": { status: 302, headers: { location: "https://github.com/dono/novo/releases/tag/plus-v9.9.9" } },
+      "https://github.com/dono/volta/releases/latest": { status: 301, headers: { location: "https://github.com/dono/volta/releases/latest" } },
+      "https://github.com/dono/fora/releases/latest": { status: 302, headers: { location: "https://example.com/releases/latest" } },
+    });
+    check("nome antigo: segue o salto para o nome novo e acha a tag", (await U.latestReleaseTag("dono/antigo", 1000)) === "plus-v9.9.9");
+    check("nome novo: acha a tag direto", (await U.latestReleaseTag("dono/novo", 1000)) === "plus-v9.9.9");
+    check("redirecionamento em círculo: desiste sem travar", (await U.latestReleaseTag("dono/volta", 1000)) === null);
+    check("redirecionamento para fora do GitHub: não segue", (await U.latestReleaseTag("dono/fora", 1000)) === null);
+    check("sem redirecionamento: nada", (await U.latestReleaseTag("dono/nenhum", 1000)) === null);
+
+    https.get = fake({
+      "https://api.github.com/repos/dono/antigo/releases": { status: 301, headers: { location: "https://api.github.com/repositories/1/releases" } },
+      "https://api.github.com/repositories/1/releases": { status: 200, headers: { etag: '"abc"' }, body: '[{"tag_name":"plus-v9.9.9"}]' },
+    });
+    const r = await U.request("https://api.github.com/repos/dono/antigo/releases", { timeout: 1000, withMeta: true });
+    check("API pelo nome antigo: a resposta chega inteira depois do redirecionamento", !!r && r.etag === '"abc"' && Array.isArray(r.body) && r.body[0].tag_name === "plus-v9.9.9");
+  } finally {
+    https.get = origGet;
+    https.request = origReq;
+  }
+}
+
 // ------------------------------------------------------------ parte G: atualizador contra o GitHub
 async function partG() {
   console.log("\n# G. Atualizações da extensão (GitHub de verdade; nada é instalado de fato)");
@@ -509,6 +559,7 @@ async function partG() {
   partC();
   partE();
   partU();
+  await partR();
   if (!UNIT) await partG();
   console.log(failed ? `\n${failed} verificação(ões) falharam.` : "\nTudo certo.");
   process.exit(failed ? 1 : 0);

@@ -118,9 +118,14 @@ também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `he
 - **Visto ao vivo às 15:53:19:** as contas 1, 4 e 7 renovaram e a conta 6, em uso, foi adiada (`[renovação] conta 6:
   adiada, NoteWin, Câmeras da casa (servidor), Hermes (servidor) e Stafy (servidor) estão com o acesso dela`). Nenhuma
   conversa do NoteWin teve erro de login. É a mesma situação das 09:53, agora sem queda.
-- **Ainda não visto ao vivo** (até 15:58): a segunda metade da 2.5.5 (faltando menos de 1 h, a troca "o login da conta
-  N vai ser renovado" e a renovação logo depois; para a conta 6 isso é às 16:53, se os serviços ainda estiverem nela) e
-  um limite de verdade com o gancho de retomada no ar (o registro dele fica em `~/.swap-plus/retomar.log`).
+- **Visto ao vivo às 16:53–16:58 (a segunda metade):** às 16:53:20, faltando 1 h para o acesso da conta 6 vencer, o
+  servidor trocou os serviços para a conta 23 ("Serviços trocados juntos para a conta 23: o login da conta 6 vai ser
+  renovado — NoteWin, Câmeras da casa (servidor) e Stafy (servidor)"; o Hermes, parado, saiu sozinho). Às 16:58:20 a
+  conta 6 renovou (5 min depois: o tempo de todos buscarem a conta nova mais os 3 min de tolerância) e, no mesmo
+  instante, a regra "aproveitar ao máximo" levou os serviços de volta para ela. Nenhuma conversa do NoteWin teve erro
+  de login nem de limite. Custo: duas trocas em 5 minutos, sem queda.
+- **Ainda não visto ao vivo** (até 17:02): um limite de verdade com o gancho de retomada no ar (o registro dele fica
+  em `~/.swap-plus/retomar.log`).
 - **Voltar atrás:** servidor, a variável `SWAP_PLUS_VERSAO` com `2.5.4` (as imagens continuam lá); retomada, a opção
   na tela da extensão (ou `"enabled": false` em `~/.swap-plus/retomar.json`, que vale na hora).
 

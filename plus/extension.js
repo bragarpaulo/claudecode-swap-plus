@@ -972,7 +972,7 @@ async function switchAccount() {
     };
   });
   const menu = [
-    { label: "$(gear) Configurações...", description: "regras de aviso e de troca automática", accountNum: -2 },
+    { label: "$(gear) Configurações...", description: "deste VS Code: conexão, conta em uso e avisos", accountNum: -2 },
     { label: "Contas", kind: vscode.QuickPickItemKind.Separator },
     ...items,
     { label: "", kind: vscode.QuickPickItemKind.Separator },
@@ -3033,7 +3033,7 @@ async function disconnectServer() {
   vscode.window.showInformationMessage(
     c === OFF
       ? "Swap Plus: desconectado do servidor e desligado. O Claude Code fica normal."
-      : "Swap Plus: desconectado do servidor. Para voltar a usar as contas do servidor, entre com Google de novo (Configurações → Sua conta)."
+      : "Swap Plus: desconectado do servidor. Para voltar a usar as contas do servidor, entre com Google de novo (Configurações → Conexão)."
   );
 }
 
@@ -3252,7 +3252,7 @@ function openSettings() {
     return;
   }
   const media = vscode.Uri.joinPath(extContext.extensionUri, "media");
-  panel = vscode.window.createWebviewPanel(`${NS}.settings`, "Swap Plus", vscode.ViewColumn.One, {
+  panel = vscode.window.createWebviewPanel(`${NS}.settings`, "Swap Plus — Configurações", vscode.ViewColumn.One, {
     enableScripts: true,
     retainContextWhenHidden: true,
     localResourceRoots: [media],
@@ -3308,6 +3308,13 @@ async function handleMessage(m) {
     case "saveRules":
       return saveServerRules(m);
 
+    // Avisos ("avisar em X%") deste VS Code: só as configurações locais, nenhum pedido ao servidor.
+    case "saveAlerts":
+      if (!m.alerts || typeof m.alerts !== "object") return;
+      await saveAlerts(m.alerts);
+      post({ type: "toast", kind: "info", text: "Avisos salvos neste VS Code." });
+      return;
+
     case "account":
       return serverAccountOp(m);
 
@@ -3352,6 +3359,17 @@ async function handleMessage(m) {
     case "useServerAccount":
       await useServerAccount();
       return;
+
+    // Painel do Swap no navegador: sempre o endereço guardado na conexão deste VS Code, nunca um endereço vindo da tela.
+    case "openPanel": {
+      const link = (await serverToken()) && serverMeta().url ? serverUrl() : "";
+      if (!urlOrigin(link)) {
+        post({ type: "toast", kind: "error", text: "Este VS Code não está conectado ao servidor: entre primeiro (cartão “Conexão”) para abrir o painel." });
+        return;
+      }
+      if (!(await openInBrowser(link))) post({ type: "toast", kind: "error", text: `Não consegui abrir o navegador. O painel fica em ${link}` });
+      return;
+    }
   }
 }
 

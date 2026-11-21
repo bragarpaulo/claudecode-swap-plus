@@ -2334,6 +2334,318 @@ test("22. 403 not_admin: para de enviar (como canUploadLogins false), com o mesm
   delete fake.handlers["POST /v1/logins"];
 });
 
+// ================================================================ tela nova da 3.2 (só o que é deste VS Code)
+
+/** Avisos (toasts) mandados para a tela desde a posição `desde` de panelMessages. */
+const avisosDaTela = (desde) => panelMessages.slice(desde).map((s) => JSON.parse(s)).filter((m) => m.type === "toast");
+const chamadas = (mark) => fake.since(mark).map((c) => `${c.method} ${c.path}`).join(", ");
+
+test("22b. tela: saveAlerts grava os avisos nas configurações deste VS Code, sem nenhum pedido ao servidor", { timeout: T_MAX }, async () => {
+  await prepararServidor();
+  const PADRAO = { fiveHourEnabled: true, fiveHourPct: 80, weeklyEnabled: true, weeklyPct: 70, modelEnabled: true, modelPct: 85 };
+  const gravados = () => Object.keys(store).filter((k) => k.startsWith("swapPlus.alerts.")).sort();
+  assert.deepEqual(T.buildPayload().alerts, PADRAO, "começa nos padrões do package.json");
+  assert.deepEqual(gravados(), []);
+  try {
+    const mark = fake.calls.length;
+    const p0 = panelMessages.length;
+    const n0 = notes.length;
+
+    // a) a tela manda só o que mudou: as outras configurações ficam como estavam
+    await tela({ type: "saveAlerts", alerts: { fiveHourPct: 65 } });
+    assert.equal(store["swapPlus.alerts.fiveHourPct"], 65);
+    assert.deepEqual(gravados(), ["swapPlus.alerts.fiveHourPct"]);
+    await tela({ type: "saveAlerts", alerts: { weeklyEnabled: false } });
+    assert.equal(store["swapPlus.alerts.weeklyEnabled"], false);
+
+    // b) várias de uma vez: percentual fora da faixa é cortado (1 a 100) e o que não é aviso é ignorado
+    await tela({ type: "saveAlerts", alerts: { modelEnabled: false, modelPct: 250, weeklyPct: 0.2, enabled: false, "server.url": "https://outro.exemplo", autoSwitch: false } });
+    assert.deepEqual(T.buildPayload().alerts, { fiveHourEnabled: true, fiveHourPct: 65, weeklyEnabled: false, weeklyPct: 1, modelEnabled: false, modelPct: 100 });
+    assert.deepEqual(gravados(), ["fiveHourPct", "modelEnabled", "modelPct", "weeklyEnabled", "weeklyPct"].map((k) => `swapPlus.alerts.${k}`));
+    assert.equal(store["swapPlus.enabled"], true, "não mexe no liga/desliga");
+    assert.equal(store["swapPlus.server.url"], fake.url, "nem no endereço do servidor");
+
+    // c) resposta para a tela: o aviso de salvo (um por mensagem) e o estado com os valores novos
+    const novas = panelMessages.slice(p0).map((s) => JSON.parse(s));
+    assert.deepEqual(avisosDaTela(p0), Array(3).fill({ type: "toast", kind: "info", text: "Avisos salvos neste VS Code." }));
+    assert.ok(novas.some((m) => m.type === "state" && m.alerts.modelPct === 100 && m.alerts.weeklyEnabled === false), "o estado novo vai para a tela");
+    assert.equal(notes.length, n0, "nenhuma notificação do VS Code");
+
+    // d) nenhum pedido ao servidor — nem o PUT /v1/rules que o “Salvar regras” fazia junto
+    assert.equal(fake.since(mark).length, 0, `pedidos ao servidor: ${chamadas(mark)}`);
+    assert.equal(T.serverStatus(), "online");
+
+    // e) mensagem sem os avisos (ou com outra coisa no lugar): nada gravado, nenhum aviso, nenhum erro
+    const antes = JSON.stringify(store);
+    const p1 = panelMessages.length;
+    for (const m of [{ type: "saveAlerts" }, { type: "saveAlerts", alerts: null }, { type: "saveAlerts", alerts: "tudo" }, { type: "saveAlerts", alerts: 5 }, { type: "saveAlerts", alerts: [] }, { type: "saveAlerts", alerts: {} }]) await tela(m);
+    assert.equal(JSON.stringify(store), antes);
+    assert.deepEqual(avisosDaTela(p1).filter((m) => m.kind === "error"), []);
+    assert.equal(fake.since(mark).length, 0);
+
+    // f) os avisos são deste VS Code: salvam igual com o servidor fora do ar e com o Swap Plus desligado
+    fake.fail["PUT /v1/rules"] = { status: 503 };
+    fake.fail["POST /v1/heartbeat"] = { status: 503 };
+    await ciclo();
+    assert.equal(T.serverStatus(), "offline");
+    let p2 = panelMessages.length;
+    await tela({ type: "saveAlerts", alerts: { fiveHourEnabled: false } });
+    assert.equal(store["swapPlus.alerts.fiveHourEnabled"], false);
+    assert.deepEqual(avisosDaTela(p2), [{ type: "toast", kind: "info", text: "Avisos salvos neste VS Code." }], "sem erro de servidor: o salvamento não depende dele");
+    assert.equal(fake.since(mark).filter(isRules).length, 0);
+    await cfgApi.update("enabled", false);
+    await ciclo();
+    const m2 = fake.calls.length;
+    p2 = panelMessages.length;
+    await tela({ type: "saveAlerts", alerts: { fiveHourPct: 90 } });
+    assert.equal(store["swapPlus.alerts.fiveHourPct"], 90);
+    assert.deepEqual(avisosDaTela(p2), [{ type: "toast", kind: "info", text: "Avisos salvos neste VS Code." }]);
+    assert.equal(fake.since(m2).length, 0);
+  } finally {
+    fake.fail = {};
+    for (const k of gravados()) await cfgApi.update(k.slice("swapPlus.".length), undefined);
+    await cfgApi.update("enabled", true);
+    await ciclo();
+  }
+  assert.deepEqual(T.buildPayload().alerts, PADRAO, "o teste devolve os avisos ao padrão");
+});
+
+test("22c. tela: openPanel abre no navegador o endereço guardado na conexão — nunca um endereço vindo da tela; sem conexão não abre nada", { timeout: T_MAX }, async () => {
+  await prepararServidor();
+  const MALDOSO = "https://malicioso.exemplo/painel";
+  let mark = fake.calls.length;
+  let o0 = opened.length;
+  let p0 = panelMessages.length;
+  let n0 = notes.length;
+
+  // a) conectado: abre o endereço da conexão, e só ele; o que vier na mensagem é ignorado
+  await tela({ type: "openPanel", url: MALDOSO, link: MALDOSO, address: MALDOSO, href: MALDOSO, server: { url: MALDOSO } });
+  assert.deepEqual(opened.slice(o0), [fake.url]);
+  assert.equal(globalState.get(META_KEY).url, fake.url, "é o endereço em que este VS Code foi conectado");
+  assert.deepEqual(avisosDaTela(p0), [], "abriu: sem aviso");
+  assert.equal(notes.length, n0, "sem notificação");
+  assert.equal(fake.since(mark).length, 0, `abrir o painel não faz pedido nenhum ao servidor: ${chamadas(mark)}`);
+  assert.ok(!opened.slice(o0).some((u) => u.includes(DEVICE_TOKEN)), "o acesso deste VS Code não vai no endereço");
+
+  // b) endereço das configurações apontando para outro servidor: o painel continua sendo o da conexão
+  const outro = criarServidorFalso();
+  await outro.iniciar();
+  try {
+    await cfgApi.update("server.url", outro.url);
+    await ciclo();
+    assert.equal(T.buildPayload().server.addressChanged, true);
+    o0 = opened.length;
+    await tela({ type: "openPanel", url: MALDOSO });
+    assert.deepEqual(opened.slice(o0), [fake.url], "nem o endereço das configurações, nem o da mensagem");
+    assert.equal(outro.calls.length, 0);
+  } finally {
+    await cfgApi.update("server.url", fake.url);
+    await outro.parar();
+    await ciclo();
+  }
+  assert.equal(T.serverStatus(), "online");
+
+  // c) o navegador não abriu: a tela recebe um aviso com o endereço, para abrir à mão
+  const abrir = vscodeMock.env.openExternal;
+  vscodeMock.env.openExternal = async () => false;
+  try {
+    p0 = panelMessages.length;
+    await tela({ type: "openPanel" });
+    assert.deepEqual(avisosDaTela(p0), [{ type: "toast", kind: "error", text: `Não consegui abrir o navegador. O painel fica em ${fake.url}` }]);
+  } finally {
+    vscodeMock.env.openExternal = abrir;
+  }
+
+  // d) Swap Plus desligado, mas conectado: é só abrir o navegador, continua valendo (e nada vai ao servidor)
+  await cfgApi.update("enabled", false);
+  await ciclo();
+  mark = fake.calls.length;
+  o0 = opened.length;
+  await tela({ type: "openPanel" });
+  assert.deepEqual(opened.slice(o0), [fake.url]);
+  assert.equal(fake.since(mark).length, 0);
+  await cfgApi.update("enabled", true);
+  await ciclo();
+
+  // e) sem conexão: não abre nada (nem o endereço padrão, nem o da mensagem), explica na tela e não faz pedido nenhum
+  await desconectar();
+  assert.equal(T.serverStatus(), "disconnected");
+  mark = fake.calls.length;
+  o0 = opened.length;
+  p0 = panelMessages.length;
+  n0 = notes.length;
+  await tela({ type: "openPanel", url: MALDOSO, server: { url: MALDOSO } });
+  assert.deepEqual(opened.slice(o0), []);
+  const avisos = avisosDaTela(p0);
+  assert.equal(avisos.length, 1);
+  assert.equal(avisos[0].kind, "error");
+  assert.match(avisos[0].text, /^Este VS Code não está conectado ao servidor: entre primeiro \(cartão “Conexão”\) para abrir o painel\.$/);
+  assert.equal(fake.since(mark).length, 0, `sem conexão: ${chamadas(mark)}`);
+  assert.equal(notes.length, n0, "nenhuma notificação, nenhum erro");
+  assert.equal(await secrets.get(TOKEN_KEY), undefined, "continua sem conexão");
+  assert.equal(globalState.get(META_KEY), undefined);
+});
+
+test("22d. tela de verdade × extensão de verdade: o estado desenha e cada clique chega ao tratamento certo", { timeout: T_MAX }, async () => {
+  // A tela de verdade (plus/media/panel.html + panel.js) num DOM de mentira: ver tela-falsa.js.
+  const { abrirTela, inteira } = require("./tela-falsa");
+  /** Entrega à extensão o que a tela mandou (como o VS Code faz) e devolve as mensagens. */
+  const repassar = async (visor) => {
+    const msgs = visor.levar();
+    for (const m of msgs) await tela(m);
+    return msgs;
+  };
+
+  await prepararServidor();
+  // 4 contas: 1 em uso (com Fable), 2 fora da troca, 3 com login morto, 4 livre; regra “serviços juntos”
+  fake.accounts = [1, 2, 3, 4];
+  fake.fable = { 1: 40, 4: 10 };
+  fake.rules = { devicePlacement: "together" };
+  const comSituacoes = (call) => {
+    const st = fake.stateFor(call.device);
+    st.records = { 2: { disabled: true } };
+    Object.assign(st.list.accounts.find((a) => a.number === 3), { usageStatus: "relogin_required", usage: null, dead: true });
+    return { status: 200, body: st };
+  };
+  fake.handlers["POST /v1/heartbeat"] = comSituacoes;
+  fake.handlers["GET /v1/state"] = comSituacoes;
+  try {
+    await ciclo();
+    const visor = abrirTela();
+    assert.deepEqual(visor.levar(), [{ type: "ready" }]);
+
+    // a) o estado que a extensão manda tem o que a tela lê, com os tipos que ela espera
+    let p = T.buildPayload();
+    assert.equal(p.type, "state");
+    for (const k of ["swapOn", "privacy"]) assert.equal(typeof p[k], "boolean", k);
+    assert.equal(typeof p.fetchedAt, "number");
+    assert.equal(typeof p.auto.enabled, "boolean");
+    assert.equal(p.rules.devicePlacement, "together");
+    assert.deepEqual(Object.keys(p.alerts).sort(), ["fiveHourEnabled", "fiveHourPct", "modelEnabled", "modelPct", "weeklyEnabled", "weeklyPct"]);
+    assert.deepEqual(Object.keys(p.ui).sort(), ["showAccountNumber", "showModelWeekly"]);
+    for (const k of ["status", "statusText", "host", "deviceName", "lastOkWhen"]) assert.equal(typeof p.server[k], "string", `server.${k}`);
+    for (const k of ["connected", "connecting", "canUploadLogins", "addressChanged", "storeBlocked", "loginPromptOff", "otherWindow"]) assert.equal(typeof p.server[k], "boolean", `server.${k}`);
+    assert.ok(Array.isArray(p.server.storeWarnings) && Array.isArray(p.server.devices) && Array.isArray(p.modelNames));
+    assert.equal(p.accounts.length, 4);
+    for (const a of p.accounts) {
+      assert.equal(typeof a.number, "number");
+      for (const k of ["active", "loginDead", "stale", "disabled"]) assert.equal(typeof a[k], "boolean", `conta ${a.number}: ${k}`);
+      assert.ok(Array.isArray(a.models) && Array.isArray(a.devices));
+    }
+    for (const w of [p.accounts[0].session, p.accounts[0].weekly, p.accounts[0].models[0]]) {
+      assert.equal(typeof w.pct, "number");
+      assert.equal(typeof w.in, "string");
+      assert.equal(typeof w.when, "string");
+      assert.equal(typeof w.resetTs, "number");
+    }
+
+    // b) conectado: a tela mostra a conexão, a conta em uso com os medidores e as outras contas com a situação de cada uma
+    visor.entregar(p);
+    inteira(visor, "conectado");
+    assert.equal(visor.texto(visor.$("masterState")), "Ligado");
+    assert.equal(visor.texto(visor.$("connStatus")), `Conectado a 127.0.0.1:${fake.port}`);
+    assert.match(visor.texto(visor.$("connFacts")), /^Este serviço: PC de teste entrou com código de conexão último contato: \S+ \d\d:\d\d$/);
+    assert.match(visor.texto(visor.$("acctNow")), /^Conta 1 conta1@exemplo\.com Max · Org 1 Sessão 5h 10% renova em \S+ · .+ Semanal 20% renova em \S+ · .+ Fable 40% renova em \S+ · .+ Troca automática: ligada — muda-se no painel do Swap$/);
+    assert.equal(visor.texto(visor.$("switchNotes")), "Neste Swap os serviços andam juntos: trocar aqui troca também nos outros que estão em uso.");
+    assert.deepEqual(visor.$("acctList").children.map((li) => Number(li.getAttribute("data-n"))), [4, 2, 3], "primeiro a que dá para usar; depois a fora da troca e a de login morto");
+    assert.match(visor.texto(visor.linha(4)), /^Conta 4 conta4@exemplo\.com 5h 40% semana 20% Fable 10% Usar esta conta$/);
+    assert.equal(visor.botaoDaConta(2).disabled, true);
+    assert.match(visor.texto(visor.linha(2)), /Fora da troca: com a troca automática ligada/);
+    assert.equal(visor.botaoDaConta(3).disabled, true);
+    assert.match(visor.texto(visor.linha(3)), /Login morto: é preciso entrar de novo com esta conta/);
+    for (const n of [2, 3]) {
+      visor.clicar(visor.botaoDaConta(n));
+      visor.forcar(visor.botaoDaConta(n));
+    }
+    assert.deepEqual(visor.levar(), [], "conta que não dá para usar não manda nada");
+
+    // c) “Usar esta conta” → a extensão pede a troca ao servidor e grava o acesso da conta nova
+    let mark = fake.calls.length;
+    visor.clicar(visor.botaoDaConta(4));
+    assert.deepEqual(await repassar(visor), [{ type: "switch", number: 4 }]);
+    assert.deepEqual(fake.since(mark).filter(isSwitch).map((c) => c.body), [{ number: 4 }]);
+    assert.deepEqual(lerLogin().claudeAiOauth, credOf(4, 1));
+    await ciclo();
+    visor.entregar(T.buildPayload());
+    assert.match(visor.texto(visor.$("acctNow")), /^Conta 4 conta4@exemplo\.com /);
+    assert.equal(visor.texto(visor.botaoDaConta(1)), "Usar esta conta");
+    inteira(visor, "depois da troca");
+
+    // d) avisos, exibição e painel: cada controle chega ao tratamento dele; os avisos não vão ao servidor
+    mark = fake.calls.length;
+    visor.clicar(visor.$("alWeekOn"));
+    assert.deepEqual(await repassar(visor), [{ type: "saveAlerts", alerts: { weeklyEnabled: false } }]);
+    assert.equal(store["swapPlus.alerts.weeklyEnabled"], false);
+    visor.mover(visor.$("alFivePct"), 66);
+    visor.avancar(400);
+    assert.deepEqual(await repassar(visor), [{ type: "saveAlerts", alerts: { fiveHourPct: 66 } }]);
+    assert.equal(store["swapPlus.alerts.fiveHourPct"], 66);
+    visor.clicar(visor.$("uiAcctNumber"));
+    assert.deepEqual(await repassar(visor), [{ type: "ui", key: "statusBar.showAccountNumber", value: true }]);
+    assert.equal(store["swapPlus.statusBar.showAccountNumber"], true);
+    const o0 = opened.length;
+    visor.clicar(visor.$("btnPanel"));
+    assert.deepEqual(await repassar(visor), [{ type: "openPanel" }]);
+    assert.deepEqual(opened.slice(o0), [fake.url]);
+    assert.equal(fake.since(mark).length, 0, `avisos, exibição e painel não fazem pedido ao servidor: ${chamadas(mark)}`);
+    p = T.buildPayload();
+    visor.entregar(p);
+    assert.deepEqual([visor.$("alWeekOn").checked, visor.$("alFivePct").value, visor.$("uiAcctNumber").checked], [false, "66", true], "a tela mostra o que a extensão gravou");
+
+    // e) desligar pelo interruptor: a extensão desliga e a tela mostra “Desligado”
+    visor.clicar(visor.$("masterToggle"));
+    assert.deepEqual(await repassar(visor), [{ type: "setEnabled", enabled: false }]);
+    assert.equal(T.serverStatus(), "off");
+    visor.entregar(T.buildPayload());
+    assert.equal(visor.texto(visor.$("masterState")), "Desligado");
+    assert.equal(visor.texto(visor.$("connStatus")), "Desligado");
+    assert.match(visor.texto(visor.$("acctNow")), /O Swap Plus está desligado neste VS Code/);
+    visor.clicar(visor.$("masterToggle"));
+    assert.deepEqual(await repassar(visor), [{ type: "setEnabled", enabled: true }]);
+    await ciclo();
+    visor.entregar(T.buildPayload());
+    assert.equal(visor.texto(visor.$("connStatus")), `Conectado a 127.0.0.1:${fake.port}`);
+    inteira(visor, "ligado de novo");
+
+    // f) “Sair” → a extensão pergunta, desconecta, e a tela passa a oferecer os botões de entrar
+    ui.warn = (_m, b) => (b.includes("Desconectar") ? "Desconectar" : undefined);
+    visor.clicar(visor.botao("Sair"));
+    assert.deepEqual(await repassar(visor), [{ type: "disconnectServer" }]);
+    resetUi();
+    await ciclo();
+    assert.equal(T.serverStatus(), "disconnected");
+    visor.entregar(T.buildPayload());
+    inteira(visor, "sem conexão");
+    assert.equal(visor.texto(visor.$("connStatus")), "Não conectado");
+    assert.match(visor.texto(visor.$("connBox")), new RegExp(`^Este VS Code ainda não está conectado a 127\\.0\\.0\\.1:${fake.port}\\. Entre com Google`));
+    assert.match(visor.texto(visor.$("acctNow")), /Entre no cartão “Conexão”/);
+    assert.equal(visor.$("btnPanel").disabled, true);
+    assert.ok(visor.botao("Entrar com Google") && visor.botao("Outro endereço…") && !visor.botao("Sair"));
+
+    // g) “Colar código” → a extensão faz a conexão de sempre, e a tela volta a mostrar “Conectado”
+    fake.pairCodes.set("TELANOVA01", { id: "dev-tela" });
+    ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC da tela nova" : codigoConexao("TELANOVA01"));
+    visor.clicar(visor.botao("Colar código"));
+    assert.deepEqual(await repassar(visor), [{ type: "connectServer", method: "code" }]);
+    resetUi();
+    assert.equal(T.serverStatus(), "online");
+    assert.equal(await secrets.get(TOKEN_KEY), fake.devices.get("dev-tela").token);
+    await ciclo();
+    visor.entregar(T.buildPayload());
+    assert.equal(visor.texto(visor.$("connStatus")), `Conectado a 127.0.0.1:${fake.port}`);
+    assert.match(visor.texto(visor.$("connFacts")), /^Este serviço: PC da tela nova entrou com código de conexão/);
+    assert.equal(visor.$("btnPanel").disabled, false);
+    inteira(visor, "conectado de novo");
+    assert.deepEqual(visor.levar(), [], "desenhar não manda nada");
+  } finally {
+    resetUi();
+    fake.handlers = {};
+    for (const k of ["alerts.weeklyEnabled", "alerts.fiveHourPct", "statusBar.showAccountNumber"]) await cfgApi.update(k, undefined);
+    if (store["swapPlus.enabled"] === false) await cfgApi.update("enabled", true);
+    await ciclo();
+  }
+});
+
 test("23. de novo, depois dos cenários novos: nenhum token em lugar nenhum; todo cliente com token leva tokenOrigin", { timeout: T_MAX }, async () => {
   const comToken = clientes.filter((c) => c.comToken);
   assert.ok(comToken.length > 0);

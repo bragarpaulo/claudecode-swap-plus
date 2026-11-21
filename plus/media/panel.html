@@ -5,124 +5,95 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{csp}}; img-src {{csp}} data:; script-src 'nonce-{{nonce}}';">
 <link rel="stylesheet" href="{{css}}">
-<title>Swap Plus</title>
+<title>Swap Plus — Configurações</title>
 </head>
 <body>
 <header class="top">
-  <div>
-    <h1>Swap Plus</h1>
-    <p class="muted">Regras de aviso e de troca automática entre as contas</p>
+  <div class="toptext">
+    <h1>Swap Plus neste VS Code</h1>
+    <p id="lead" class="lead">Desligado, este VS Code para de falar com o servidor e de trocar de conta. Os outros serviços não mudam.</p>
   </div>
-  <div class="row gap">
-    <span id="busy" class="busy hidden"></span>
-    <button id="btnRefresh" class="secondary">Atualizar</button>
+  <div class="topctl">
+    <span id="busy" class="busy hidden" role="status"></span>
+    <span id="masterState" class="masterstate" aria-hidden="true"></span>
+    <label class="onoff" title="Ligar ou desligar o Swap Plus neste VS Code">
+      <input type="checkbox" id="masterToggle" role="switch" aria-label="Swap Plus ligado neste VS Code" aria-describedby="lead" disabled>
+      <span class="slider"></span>
+    </label>
   </div>
 </header>
 
-<div id="errorBox" class="errorbox hidden"></div>
+<div id="renderError" class="errorbox hidden" role="alert"></div>
 
-<section class="card" id="masterCard">
-  <div class="row between start">
-    <div>
-      <h2>Swap Plus</h2>
-      <p id="masterStatus" class="muted"></p>
+<main>
+<section class="card" id="connCard" aria-labelledby="connTitle">
+  <div class="cardhead">
+    <h2 id="connTitle">Conexão</h2>
+    <div class="btnrow" id="connTop"></div>
+  </div>
+  <p id="connStatus" class="status"><span class="muted">Carregando…</span></p>
+  <p id="connFacts" class="facts hidden"></p>
+  <div id="connBox"></div>
+</section>
+
+<section class="card" id="acctCard" aria-labelledby="acctTitle">
+  <h2 id="acctTitle">Conta em uso aqui</h2>
+  <div id="acctNow" tabindex="-1"><p class="muted">Carregando…</p></div>
+  <div id="switchWrap" class="switchwrap hidden">
+    <h3 id="switchTitle">Trocar de conta</h3>
+    <div id="switchNotes"></div>
+    <ul id="acctList" class="rows" aria-labelledby="switchTitle"></ul>
+  </div>
+</section>
+
+<details class="card more" id="more">
+  <summary>Mais opções deste VS Code</summary>
+
+  <section class="opt" aria-labelledby="alertsTitle">
+    <h3 id="alertsTitle">Avisar quando chegar em</h3>
+    <div class="alertrow">
+      <label class="check" for="alFiveOn"><input type="checkbox" id="alFiveOn" disabled><span>Sessão de 5 horas</span></label>
+      <input type="range" id="alFivePct" min="30" max="99" step="1" value="80" aria-label="Sessão de 5 horas: avisar em quantos por cento" disabled>
+      <span id="alFiveVal" class="val" aria-hidden="true">—</span>
     </div>
-    <label class="onoff" title="Ligar/desligar o Swap Plus inteiro">
-      <input type="checkbox" id="masterToggle">
-      <span class="slider"></span>
-    </label>
-  </div>
-  <div id="sessionBox" class="session"></div>
-  <p class="note" id="masterNote">Desligado, o Swap Plus não fala com o servidor e não mexe no login: o Claude Code fica com o acesso que tem agora. Ligado, ele recebe do servidor a conta escolhida para este computador e envia ao servidor todo login novo que você fizer no Claude Code (só nos computadores do administrador).</p>
-</section>
-
-<section class="card" id="serverCard">
-  <div class="row between start">
-    <div>
-      <h2>Servidor</h2>
-      <p id="serverStatus" class="muted"></p>
+    <div class="alertrow">
+      <label class="check" for="alWeekOn"><input type="checkbox" id="alWeekOn" disabled><span>Limite semanal</span></label>
+      <input type="range" id="alWeekPct" min="30" max="99" step="1" value="70" aria-label="Limite semanal: avisar em quantos por cento" disabled>
+      <span id="alWeekVal" class="val" aria-hidden="true">—</span>
     </div>
-    <div class="row gap" id="serverBtns"></div>
-  </div>
-  <div id="serverBox"></div>
-  <p class="note">O login de cada conta só vale para quem renovou por último. Por isso só o servidor guarda e renova os logins, e cada computador recebe apenas o acesso da conta que o servidor escolheu para ele. As regras de troca e os ajustes de cada conta ficam no servidor e valem para todos; os avisos e a exibição continuam sendo de cada computador.</p>
-</section>
-
-<section class="card" id="autoCard">
-  <div class="row between start">
-    <div>
-      <h2>Troca automática</h2>
-      <p id="autoStatus" class="muted"></p>
-      <p id="autoLast" class="last"></p>
+    <div class="alertrow">
+      <label class="check" for="alModelOn"><input type="checkbox" id="alModelOn" disabled><span id="alModelLabel">Limite semanal por modelo (ex.: Fable)</span></label>
+      <input type="range" id="alModelPct" min="30" max="99" step="1" value="85" aria-label="Limite semanal por modelo: avisar em quantos por cento" disabled>
+      <span id="alModelVal" class="val" aria-hidden="true">—</span>
     </div>
-    <label class="onoff" title="Ligar/desligar troca automática">
-      <input type="checkbox" id="autoToggle">
-      <span class="slider"></span>
-    </label>
-  </div>
-  <div class="row gap wrap">
-    <button id="btnCheck">Consultar o servidor agora</button>
-  </div>
-  <p class="note" id="autoNote">Quem decide é o servidor, olhando o uso de todas as contas e quais computadores estão usando cada uma. Este computador recebe a conta nova em até 30 s e o Claude Code aberto passa a usá-la sozinho. Ligar ou desligar aqui vale para todos os computadores conectados.</p>
-</section>
+    <p class="muted small">O aviso aparece neste VS Code quando a conta em uso aqui passa do percentual. Ele só avisa: quem troca de conta sozinho é o servidor, pelas regras do painel do Swap.</p>
+  </section>
 
-<section class="card">
-  <div class="row between">
-    <h2>Regras</h2>
-    <span id="rulesDirty" class="dirty hidden">Alterações não salvas</span>
-  </div>
-  <p class="muted small">Para cada limite: quando a conta ativa chegar em X%, avisar e/ou trocar de conta. A barrinha mostra o uso atual da conta ativa e onde estão as linhas. As regras valem depois de clicar em “Salvar regras”.</p>
-  <p id="rulesWhere" class="srvnote">As linhas de troca e a estratégia ficam no servidor e valem para todos os computadores conectados. As linhas de aviso são só deste computador.</p>
-  <div id="rules"></div>
+  <section class="opt" aria-labelledby="uiTitle">
+    <h3 id="uiTitle">Exibição</h3>
+    <label class="check" for="uiPrivacy"><input type="checkbox" id="uiPrivacy" disabled><span>Modo privado: mostrar só “Conta N”, sem e-mail</span></label>
+    <p class="muted small indent">Vale para a barra de baixo, a lista de contas, esta tela e os avisos do Swap Plus. Não é uma trava: o próprio Claude Code continua mostrando o e-mail da conta.</p>
+    <label class="check" for="uiAcctNumber"><input type="checkbox" id="uiAcctNumber" disabled><span>Mostrar o número da conta na barra de baixo, ao lado do ícone de e-mail</span></label>
+    <label class="check" for="uiModelWeekly"><input type="checkbox" id="uiModelWeekly" disabled><span>Mostrar o semanal por modelo (ex.: Fable) na barra de baixo</span></label>
+  </section>
 
-  <h3>Quando trocar, ir para qual conta</h3>
-  <div id="strategies" class="strategies"></div>
-  <div id="maxOptions"></div>
+  <section class="opt" aria-labelledby="updTitle">
+    <div class="cardhead">
+      <h3 id="updTitle">Atualizações da extensão</h3>
+      <button id="btnUpdates" class="secondary" type="button">Verificar agora</button>
+    </div>
+    <div id="updBox"></div>
+  </section>
+</details>
+</main>
 
-  <details id="adv">
-    <summary>Avançado</summary>
-    <div id="advanced"></div>
-  </details>
+<footer class="foot">
+  <p class="foottext">Contas, regras de troca, usuários e os outros serviços ficam no painel do Swap.</p>
+  <button id="btnPanel" class="secondary" type="button" disabled>Abrir o painel</button>
+  <p id="footNote" class="muted small footnote">Só o administrador entra no painel.</p>
+</footer>
 
-  <div class="row gap end">
-    <button id="btnUndo" class="secondary">Desfazer</button>
-    <button id="btnSave">Salvar regras</button>
-  </div>
-</section>
-
-<section class="card">
-  <div class="row between">
-    <h2>Contas</h2>
-    <button id="btnAdd" class="secondary">+ Adicionar conta</button>
-  </div>
-  <p class="muted small">Mudanças aqui valem na hora, no servidor, para todos os computadores. <b>Usar regra padrão</b>: desmarque para dar à conta linhas de troca só dela — sessão de 5h, semanal e modelo (ex.: 70% na sessão para guardar folga). <b>Prioridade</b> só vale na estratégia “Por prioridade”.</p>
-  <div id="accounts" class="accounts"></div>
-</section>
-
-<section class="card">
-  <h2>Exibição</h2>
-  <div id="uiBox"></div>
-</section>
-
-<section class="card">
-  <div class="row between">
-    <h2>Atualizações da extensão</h2>
-    <button id="btnUpdates" class="secondary">Verificar agora</button>
-  </div>
-  <div id="updBox"></div>
-</section>
-
-<section class="card">
-  <h2>Histórico</h2>
-  <ul id="history" class="history"></ul>
-  <div id="histPager" class="pager hidden">
-    <button id="histPrev" class="secondary small">‹ Anteriores</button>
-    <span id="histPage" class="muted"></span>
-    <button id="histNext" class="secondary small">Próximas ›</button>
-  </div>
-</section>
-
-<div id="toast" class="toast hidden"></div>
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 <script nonce="{{nonce}}" src="{{js}}"></script>
 </body>
 </html>

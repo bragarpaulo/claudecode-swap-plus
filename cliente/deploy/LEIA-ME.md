@@ -28,9 +28,14 @@ Code, com raciocínio alto. Feito pelo mesmo caminho do painel (Modelos → Main
 `high`. Para só as conversas mudarem, as 20 tarefas auxiliares que estavam em `auto` (seguiam o modelo principal)
 ficaram presas a `openai-codex` / `gpt-6.1-sol`, e `fallback_providers` ganhou o Codex como reserva. Não mudaram: a
 transcrição (`stt`: OpenAI `gpt-4o-transcribe`), os subagentes (`delegation`), a compressão e o padrão das rotinas
-(`cron.model`), todos no GPT. Das rotinas, só "Paulo — despesas, metas e auditoria — dia 10" foi para o Fable (das 86
-ativas, 65 são só script e não usam modelo nenhum). Cópias de antes: `/opt/data/config.yaml.antes-fable-20261120` e
-`/opt/data/cron/jobs.json.antes-fable-20261120`. Para voltar: no painel, Modelos → Main model → Change → OpenAI Codex
+(`cron.model`), todos no GPT. **Rotinas (22:17, também a pedido do Paulo):** as 26 que usam IA (21 ativas e 5
+pausadas) foram fixadas, uma a uma, com `hermes cron edit`, no provedor do plugin, modelo `claude-fable-5-2[1m]` e
+raciocínio `high`. As outras 76 são só script (`no_agent`) e não usam modelo nenhum. Rotina com IA criada depois
+disto segue o `cron.model` do config, que continua no GPT. Antes de trocar, uma rotina de teste com entrega `local`
+rodou pelo agendador no Fable e foi removida. Cópias de antes: `/opt/data/config.yaml.antes-fable-20261120`,
+`/opt/data/cron/jobs.json.antes-fable-20261120` e `jobs.json.antes-fable-rotinas-20261120` (o `jobs.json` guarda
+também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `hermes cron edit <id> --model ""
+--provider "" --reasoning-effort ""` em vez de repor o arquivo). Para voltar: no painel, Modelos → Main model → Change → OpenAI Codex
 `gpt-6.1-sol`, e `hermes config set agent.reasoning_effort medium`.
 
 Conferido depois da troca: uma mensagem de verdade pela API do gateway (o mesmo processo do WhatsApp) respondida pelo

@@ -42,6 +42,12 @@ O login de cada conta Claude vence depois de alguns dias e precisa ser refeito. 
 Outra mudança pequena: a página que aparece depois de entrar com o Google dizia "Pode voltar ao VS Code". Como o
 cliente do Hermes também entra por ela, agora diz só "Pronto! Conectado.".
 
+**Servidor 2.5.1: painel mais enxuto.** Na aba **Contas**, cada conta virou uma linha que abre e fecha com um
+clique, e a tela abre com todas fechadas. A linha mostra o nome e o e-mail, a barra do limite mais perto de parar a
+conta, quando ele renova e se a conta participa da troca. As contas em uso vêm primeiro. Quando faltam menos de 3
+dias para o login de uma conta vencer (ou ele já venceu), a linha dela pisca "Fazer login até…" com a data e a hora.
+E a aba **Computadores** agora se chama **Serviços** (só o nome mudou).
+
 ## Quem precisa
 
 Só quem quer usar o Claude Code **fora do VS Code** com as contas do Swap Plus: pelo Hermes, por um serviço ou por

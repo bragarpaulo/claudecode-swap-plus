@@ -174,14 +174,16 @@ PanelState ganha: `ruleProfiles: [ { id, name, rules, usedBy: [email] } ]`, `acc
 
 ## 2.3 — SUBSTITUI a 2.2: só 3 menus (pedido do dono, 14/11/2026, mais "clean")
 
-Menu: **Contas · Computadores · Usuários**. No topo à direita, **Minha conta** (e-mail do administrador, kit de
-recuperação, sessões abertas, sair). Histórico: botão discreto "Histórico" no topo (abre um painel lateral/lista).
+Menu: **Contas · Serviços · Usuários** (até a 2.5.0 o segundo menu aparecia como "Computadores"; ver "2.5.1"). No topo
+à direita, **Minha conta** (e-mail do administrador, kit de recuperação, sessões abertas, sair). Histórico: botão
+discreto "Histórico" no topo (abre um painel lateral/lista).
 Sem perfis de regras: as regras são UMA só (gerais), ficam dentro de **Contas**, abaixo da lista.
 
 **Contas**
 - Botão **+ Adicionar conta** (login pela assinatura Claude, direto no painel — ver "Adicionar conta pela assinatura").
 - Lista: participantes da troca primeiro, na ordem da fila (semanal que renova antes primeiro; empate: menos uso);
-  embaixo, grupo recolhido **Fora da troca (N)**.
+  embaixo, grupo recolhido **Fora da troca (N)**. Desde a 2.5.1 a lista é uma coluna de linhas que abrem e fecham, com
+  as contas em uso no alto (ver "2.5.1").
 - Cartão da conta como hoje + **Computadores permitidos**: "Todos" ou caixas por computador (um ou mais).
   `state.accountDevices["<n>"] = null | [deviceId...]` (null = todos). Remover computador/conta limpa as listas.
 - Abaixo da lista, seção **Regras de troca** (o formulário de regras de hoje: sessão/semanal/modelo %, modelo
@@ -195,7 +197,7 @@ Sem perfis de regras: as regras são UMA só (gerais), ficam dentro de **Contas*
   - Vai em `PUT /web/api/rules { rules: { devicePlacement } }` (rota de hoje; o motor recusa outro valor com 400 `invalid_rules`).
     Motor: SPEC.md, "Regra Computadores".
 
-**Computadores**: grade de quadradinhos, um por computador: nome (renomear), sistema, usuário (conta Google), último
+**Serviços** (o menu "Computadores" até a 2.5.0): grade de quadradinhos, um por computador: nome (renomear), sistema, usuário (conta Google), último
 contato (ativo/parado), **conta Claude logada nele agora** (número + e-mail) com o uso dela em barras pequenas; ações:
 trocar de conta (só entre as permitidas para esse computador; "melhor conta"), desconectar. Bloco "Conectar um
 computador" (passo a passo + código de reserva).
@@ -247,3 +249,43 @@ mas para uma conta que já existe, com o e-mail dela já pedido na página da Cl
 
 **Avisos por e-mail ao dono** (SPEC.md, "Avisos por e-mail ao dono"): login vencendo em menos de 3 dias (1 por conta por dia),
 conta que morreu (na hora) e cofre sem gravar (1 por incidente). Cada aviso explica como renovar pelo **Entrar de novo** deste painel.
+
+## 2.5.1 — Menu "Serviços" e contas em linhas que abrem e fecham (pedido do dono, 20/11/2026)
+
+Só a tela mudou (`server/web/`): nenhuma rota nem campo novo. O PanelState já mandava tudo (`loginExpiresAt`,
+`assignedDevices`, `usage`, `disabled`, `alias`).
+
+**Menu: Contas · Serviços · Usuários.** O menu "Computadores" passou a se chamar **Serviços** (o rótulo da aba e o título
+da página dela). Só o nome na tela: o id da seção, o endereço `#computadores` e o `?next=computadores` do login continuam.
+Os outros textos com "computadores" não mudaram (regra "Computadores: Separados/Juntos", "Computadores permitidos",
+"Computadores nela", "Em N computadores", "Conectar um computador"…).
+
+**Contas: uma coluna de linhas** (no lugar da grade de cartões). Cada conta é uma linha que abre e fecha:
+- A página abre com **todas recolhidas**. O que está aberto fica só na memória da página (por número da conta): continua
+  igual nas atualizações de 30 s e some ao recarregar.
+- **Linha recolhida** (cerca de duas linhas de texto na tela larga; empilhada abaixo de 960 px):
+  - "Conta N", o apelido (se houver) e o e-mail; etiquetas "Em N computadores" (conta em uso), "Nº na fila" e "Login morto";
+  - **uma barra de uso**: a do limite mais perto de parar a conta = a maior porcentagem entre sessão 5h, semanal e os de
+    modelo (empate: sessão, depois semanal), com o rótulo ("Sessão 5h", "Semanal", "Fable"…), a porcentagem, as cores de
+    sempre (pela linha de troca daquele limite) e "renova <quando>" ("sem uso nas últimas 5 horas" na sessão parada). Sem
+    leitura de uso: "Ainda sem leitura de uso." ("Sem dados de uso." no login morto);
+  - **Participa da troca** / **Fora da troca**: só um indicador (bolinha + texto). O liga/desliga fica no cartão aberto.
+- **Clicar na linha abre o cartão ali mesmo** (sem janela), embaixo dela, com tudo o que o cartão já tinha: plano e
+  organização, situação, as barras todas, computadores nela, computadores permitidos, acesso, login, aviso com "Entrar de
+  novo", "Participa da troca", "Ajustes desta conta" e "Remover conta". Clicar de novo fecha.
+- **Ordem**: primeiro as contas **em uso** (com computador nelas agora — `assignedDevices`), inclusive uma conta fora da
+  troca que esteja em uso; depois as outras que participam, na ordem da fila. A etiqueta "Nº na fila" é a posição na
+  fila, não na lista (a conta em uso sobe sem mudar de posição). As que não participam e não estão em uso continuam no
+  grupo recolhido **Fora da troca (N)**.
+- **Alerta de login** (a validade é o `loginExpiresAt`, o mesmo "Login vale até" do cartão): faltando **menos de 3 dias**,
+  a linha ganha o ícone de alerta, a borda amarela e a linha **"Fazer login até <data e hora>"** piscando; já vencido,
+  em vermelho, **"Login venceu em <data e hora>"**. Aparece com a conta recolhida e com ela aberta (a linha é o cabeçalho
+  do cartão), além da caixa de aviso com "Entrar de novo" de sempre. Sem data conhecida: nenhum alerta. **Login morto**:
+  como antes (borda vermelha, situação e caixa com "Entrar de novo") e, na linha, a etiqueta "Login morto" e uma linha
+  vermelha parada.
+- O piscar é uma animação de CSS (`loginblink`), sem temporizador de JS; com `prefers-reduced-motion: reduce` a linha fica
+  parada, com a mesma cor.
+- Acessibilidade: a linha é um `<button>` com `aria-expanded` e `aria-controls` (o corpo do cartão); Enter e Espaço abrem
+  e fecham. O corpo é irmão do botão, não filho: os controles de dentro não abrem nem fecham o cartão. A atualização de
+  30 s devolve o foco ao mesmo controle (`data-k`) sem rolar a página. "Ver conta N" (avisos do topo) abre o cartão.
+- Rascunho de "Ajustes desta conta" ainda não salvo: a linha mostra "Alterações não salvas", mesmo com o cartão fechado.

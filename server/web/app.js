@@ -1,12 +1,14 @@
 // Painel web do Swap Plus Servidor — JS puro, sem bibliotecas.
 // CSP do servidor: só 'self' (nada de inline, eval ou innerHTML com dados). Todo texto entra por textContent.
-// Desenho 2.3 (server/WEB-SPEC.md): menus Contas · Computadores · Usuários; "Minha conta" e "Histórico" no topo.
+// Desenho 2.3 (server/WEB-SPEC.md): menus Contas · Serviços · Usuários; "Minha conta" e "Histórico" no topo.
+// Desde a 2.5.1 o menu "Computadores" aparece como "Serviços" (só o nome na tela: o id da seção e o endereço
+// "#computadores" continuam) e as contas são linhas que abrem e fecham no lugar (WEB-SPEC.md, "2.5.1").
 (function () {
   "use strict";
 
   // ------------------------------------------------------------ constantes
 
-  const SECTIONS = ["contas", "computadores", "usuarios"];
+  const SECTIONS = ["contas", "computadores", "usuarios"]; // "computadores" = a aba "Serviços"
   // Endereços antigos continuam valendo (o kit de recuperação volta do Google em /#acesso).
   const HASH_ALIASES = { geral: "contas", regras: "contas", acesso: "contas", "minha-conta": "contas", historico: "contas", acessos: "usuarios" };
   const REFRESH_MS = 30000;
@@ -85,6 +87,9 @@
 
   const acctDraft = new Map(); // número da conta → rascunho dos ajustes { alias, priority, devAll, devPicked }
   const acctOpen = new Set(); // contas com "Ajustes desta conta" aberto
+  // Contas com o cartão aberto na lista. A página abre com todas recolhidas (nada é gravado: recarregar fecha
+  // tudo); a escolha vale enquanto a página fica aberta, inclusive nas atualizações de 30 s.
+  const acctExpanded = new Set();
   // Linhas próprias por conta (sessão 5h, semanal, modelo): salvas na hora, sem o "Salvar ajustes".
   const OWN_KEYS = ["threshold", "weeklyThreshold", "modelThreshold"];
   const OWN_SAVE_MS = 500; // espera depois do último movimento do slider antes de salvar
@@ -391,6 +396,7 @@
     outOpen = false;
     acctDraft.clear();
     acctOpen.clear();
+    acctExpanded.clear();
     ownUi.clear();
     ownLive.clear();
     for (const t of ownTimers.values()) clearTimeout(t);
@@ -569,6 +575,19 @@
 
   const isDead = (a) => !!a.dead || a.usageStatus === "relogin_required";
 
+  /**
+   * Login que precisa ser refeito: morto ("dead"), já vencido ("expired") ou vencendo em menos de 3 dias ("soon",
+   * LOGIN_WARN_MS). → { kind, date, left (ms) } ou null (em dia, ou sem data conhecida: sem aviso).
+   */
+  function loginAlert(a) {
+    if (isDead(a)) return { kind: "dead", date: null, left: 0 };
+    const d = toDate(a.loginExpiresAt);
+    if (!d) return null;
+    const left = d.getTime() - nowMs();
+    if (left >= LOGIN_WARN_MS) return null;
+    return { kind: left <= 0 ? "expired" : "soon", date: d, left };
+  }
+
   /** Verde abaixo de 70% da linha, amarelo perto, vermelho na linha. */
   function sev(pct, line) {
     const p = Number(pct) || 0;
@@ -577,12 +596,48 @@
     if (p >= l * 0.7) return "warn";
     return "ok";
   }
+  const sevText = (s) => (s === "bad" ? "na linha de troca" : s === "warn" ? "perto da linha de troca" : "longe da linha de troca");
+
+  /**
+   * Limites de uma leitura de uso (u), na ordem das barras: sessão 5h, semanal e os de modelo (ex.: Fable).
+   * Cada um: rótulo (label; short = o dos quadradinhos), nome por extenso, %, linha de troca, quando renova,
+   * idle (sem uso nas últimas 5 horas) e own (a linha é própria da conta).
+   */
+  function limitsOf(a, u) {
+    const lines = linesFor(a);
+    const five = isObj(u.fiveHour) ? u.fiveHour : null;
+    const list = [
+      { label: "Sessão 5h", short: "5h", long: "Sessão de 5 horas", pct: five ? five.pct : 0, line: lines.session, resetsAt: five ? five.resetsAt : null, idle: !five, own: hasOwnLine(a) },
+    ];
+    if (isObj(u.sevenDay)) {
+      list.push({ label: "Semanal", short: "Semanal", long: "Limite semanal", pct: u.sevenDay.pct, line: lines.weekly, resetsAt: u.sevenDay.resetsAt, idle: false, own: ownVal(a, "weeklyThreshold") !== null });
+    }
+    for (const s of Array.isArray(u.scoped) ? u.scoped : []) {
+      if (!s || !s.name) continue;
+      const name = String(s.name);
+      list.push({ label: name, short: name, long: `Limite semanal do ${name}`, pct: s.pct, line: lines.model, resetsAt: s.resetsAt, idle: false, own: ownVal(a, "modelThreshold") !== null });
+    }
+    return list;
+  }
+
+  /**
+   * O limite mais perto de parar a conta (o da linha recolhida): o de maior porcentagem entre sessão 5h, semanal
+   * e os de modelo. Empate: sessão, depois semanal (a ordem de limitsOf).
+   */
+  function topLimit(a, u) {
+    const list = limitsOf(a, u);
+    let best = list[0];
+    for (const l of list) if (clamp(l.pct) > clamp(best.pct)) best = l;
+    return best;
+  }
 
   function deviceNames(a) {
     return (Array.isArray(a.assignedDevices) ? a.assignedDevices : [])
       .map((d) => (typeof d === "string" ? d : d && (d.name || d.id)))
       .filter(Boolean);
   }
+  /** Conta em uso: tem computador nela agora. */
+  const inUse = (a) => deviceNames(a).length > 0;
 
   function platformLabel(p) {
     if (!p) return "—";
@@ -820,15 +875,15 @@
     $("summary").textContent = parts.join(" · ");
   }
 
+  /** Leva até a conta n: abre o grupo "Fora da troca" (se ela está nele) e o cartão dela. */
   function goToAccount(n) {
     selectSection("contas", false);
     const a = accById(n);
-    if (a && a.disabled) {
-      outOpen = true;
-      const g = $("accounts").querySelector(".outgroup");
-      if (g) g.open = true;
-    }
     const card = $(`conta-${n}`);
+    const g = card ? card.closest("details.outgroup") : null;
+    if (g) g.open = true;
+    if (g || (a && a.disabled && !inUse(a))) outOpen = true;
+    if (a) setAccountOpen(n, true);
     if (card) {
       card.scrollIntoView({ block: "start" });
       card.focus({ preventScroll: true });
@@ -854,7 +909,6 @@
     fill.style.width = `${p}%`;
     const mark = h("span", { class: "linemark" });
     mark.style.left = `${clamp(line)}%`;
-    const sevText = s === "bad" ? "na linha de troca" : s === "warn" ? "perto da linha de troca" : "longe da linha de troca";
     const when = resetsAt ? fmtWhen(resetsAt) : null;
     const foot = opt.idle
       ? `sem uso nas últimas 5 horas · linha ${fmtPct(line)}${opt.own ? " (própria)" : ""}`
@@ -865,15 +919,13 @@
       h("span", { class: "lbl", "aria-hidden": "true", text: label }),
       h("span", { class: "bar", "aria-hidden": "true" }, fill, mark),
       h("span", { class: "pct " + s, "aria-hidden": "true", text: fmtPct(p) }),
-      h("span", { class: "visually-hidden", text: `${longLabel}: ${fmtPct(p)} usado, ${sevText} (${fmtPct(line)})${when ? `, renova ${when}` : ""}.` }),
+      h("span", { class: "visually-hidden", text: `${longLabel}: ${fmtPct(p)} usado, ${sevText(s)} (${fmtPct(line)})${when ? `, renova ${when}` : ""}.` }),
       opt.mini ? null : h("span", { class: "reset", text: foot })
     );
   }
 
   /** Barras de uso de uma conta (cheias no cartão da conta, pequenas no quadradinho do computador). */
   function usageMeters(a, mini) {
-    const lines = linesFor(a);
-    const own = hasOwnLine(a);
     const f = usageOf(a);
     const box = h("div", { class: "meters" + (mini ? " minis" : "") });
     if (!f) {
@@ -885,14 +937,8 @@
       );
       return box;
     }
-    const u = f.u;
-    const five = isObj(u.fiveHour) ? u.fiveHour : null;
-    box.append(meter(mini ? "5h" : "Sessão 5h", "Sessão de 5 horas", five ? five.pct : 0, lines.session, five ? five.resetsAt : null, { idle: !five, own, mini }));
-    const ownWeekly = ownVal(a, "weeklyThreshold") !== null;
-    const ownModel = ownVal(a, "modelThreshold") !== null;
-    if (isObj(u.sevenDay)) box.append(meter("Semanal", "Limite semanal", u.sevenDay.pct, lines.weekly, u.sevenDay.resetsAt, { mini, own: ownWeekly }));
-    for (const s of Array.isArray(u.scoped) ? u.scoped : []) {
-      if (s && s.name) box.append(meter(String(s.name), `Limite semanal do ${s.name}`, s.pct, lines.model, s.resetsAt, { mini, own: ownModel }));
+    for (const l of limitsOf(a, f.u)) {
+      box.append(meter(mini ? l.short : l.label, l.long, l.pct, l.line, l.resetsAt, { idle: l.idle, own: l.own, mini }));
     }
     const age = Number(f.age);
     if (!mini && (f.old || (Number.isFinite(age) && age > STALE_USAGE_SEC))) {
@@ -936,35 +982,125 @@
     });
   }
 
+  /** Abre ou fecha o cartão da conta n ali mesmo (sem redesenhar a lista) e guarda a escolha (acctExpanded). */
+  function setAccountOpen(n, open) {
+    if (open) acctExpanded.add(n);
+    else acctExpanded.delete(n);
+    const card = $(`conta-${n}`);
+    if (!card) return;
+    card.classList.toggle("open", open);
+    $(`acc-${n}-row`).setAttribute("aria-expanded", open ? "true" : "false");
+    $(`acc-${n}-body`).hidden = !open;
+  }
+
+  /** "Fazer login até dom 22/11 14:00"; vencido: "Login venceu em qua 18/11 09:00" ("venceu ontem 22:10", sem o "em"). */
+  function loginAlertText(al) {
+    const when = fmtWhen(al.date);
+    if (al.kind === "soon") return `Fazer login até ${when}`;
+    return `Login venceu ${/^(hoje|ontem|amanhã) /.test(when) ? "" : "em "}${when}`;
+  }
+
+  /**
+   * Linha da conta (o cartão recolhido), em cerca de duas linhas: nome, apelido e e-mail; UMA barra de uso, a do
+   * limite mais perto de parar a conta (topLimit), com quando renova; e se participa da troca (só um indicador: o
+   * liga/desliga fica no cartão aberto). "Em N computadores" e a posição na fila aparecem como etiquetas.
+   * Login que vence em menos de 3 dias (ou já venceu): ícone de alerta e a linha "Fazer login até …" piscando (o
+   * piscar é só CSS; para com prefers-reduced-motion). Login morto: etiqueta e linha vermelhas, paradas.
+   * É um botão de verdade: clicar (ou Enter/Espaço) abre e fecha o cartão ali mesmo.
+   * o: { pos (posição na fila ou null), open, titleId, alert (loginAlert da conta) }.
+   */
+  function accountRow(a, o) {
+    const n = Number(a.number);
+    const devs = deviceNames(a);
+    const al = o.alert;
+    const bad = !!al && al.kind !== "soon";
+
+    const f = usageOf(a);
+    let use;
+    if (!f) {
+      use = h("span", { class: "ruse none" }, h("span", { class: "rreset", text: isDead(a) ? "Sem dados de uso." : "Ainda sem leitura de uso." }));
+    } else {
+      const l = topLimit(a, f.u);
+      const p = clamp(l.pct);
+      const s = sev(p, l.line);
+      const fill = h("span", { class: "fill " + s });
+      fill.style.width = `${p}%`;
+      const mark = h("span", { class: "linemark" });
+      mark.style.left = `${clamp(l.line)}%`;
+      const when = l.resetsAt ? fmtWhen(l.resetsAt) : null;
+      use = h(
+        "span",
+        { class: "ruse" },
+        h(
+          "span",
+          { class: "rbar" },
+          h("span", { class: "lbl", "aria-hidden": "true", text: l.label }),
+          h("span", { class: "bar", "aria-hidden": "true" }, fill, mark),
+          h("span", { class: "pct " + s, "aria-hidden": "true", text: fmtPct(p) }),
+          h("span", { class: "visually-hidden", text: `${l.long}: ${fmtPct(p)} usado, ${sevText(s)} (${fmtPct(l.line)}).` })
+        ),
+        h("span", { class: "rreset", text: l.idle ? "sem uso nas últimas 5 horas" : when ? `renova ${when}` : "" })
+      );
+    }
+
+    const title = h(
+      "span",
+      { class: "rtitle" },
+      al ? h("span", { class: "wico" + (bad ? " bad" : ""), "aria-hidden": "true" }) : null,
+      h("span", { class: "aname", id: o.titleId }, h("span", { class: "n", text: `Conta ${n}` }), a.alias ? h("span", { class: "alias", text: `“${a.alias}”` }) : null),
+      devs.length ? badge("on", devs.length === 1 ? "Em 1 computador" : `Em ${devs.length} computadores`) : null,
+      o.pos ? badge("plain", `${o.pos}º na fila`) : null,
+      al && al.kind === "dead" ? badge("dead", "Login morto") : null,
+      // rascunho de "Ajustes desta conta" ainda não salvo (o cartão pode estar fechado)
+      h("span", { class: "dirty", id: `acc-${n}-rowdirty`, text: acctDraft.has(n) ? "Alterações não salvas" : "" })
+    );
+    const alertLine = al
+      ? h(
+          "span",
+          { class: "ralert" + (bad ? " bad" : "") + (al.kind === "dead" ? " still" : "") },
+          h("span", { class: "visually-hidden", text: bad ? "Problema: " : "Atenção: " }),
+          al.kind === "dead" ? "Login morto: é preciso entrar de novo com esta conta" : loginAlertText(al)
+        )
+      : null;
+
+    return h(
+      "button",
+      {
+        type: "button",
+        class: "arow",
+        id: `acc-${n}-row`,
+        "data-k": `acc-${n}-row`,
+        "aria-expanded": o.open ? "true" : "false",
+        "aria-controls": `acc-${n}-body`,
+        onclick: () => setAccountOpen(n, !acctExpanded.has(n)),
+      },
+      h("span", { class: "chev", "aria-hidden": "true" }),
+      h("span", { class: "rid" }, title, a.email ? h("span", { class: "email", text: a.email }) : null),
+      use,
+      h(
+        "span",
+        { class: "rtroca" + (a.disabled ? " off" : "") },
+        h("span", { class: "dot" + (a.disabled ? "" : " on"), "aria-hidden": "true" }),
+        a.disabled ? "Fora da troca" : "Participa da troca"
+      ),
+      alertLine
+    );
+  }
+
+  /**
+   * Conta na lista: a linha (accountRow) e, embaixo dela, o cartão completo (.abody), que só aparece com a conta
+   * aberta. A página abre com todas fechadas; a escolha de cada conta fica em acctExpanded.
+   */
   function accountCard(a, pos) {
     const n = Number(a.number);
     const dead = isDead(a);
     const devs = deviceNames(a);
+    const open = acctExpanded.has(n);
+    const al = loginAlert(a);
     const plan = a.plan && a.plan.label ? a.plan.label : null;
     const org = a.organizationName || a.orgName || null;
     const sub = [plan, org].filter(Boolean).join(" · ");
     const titleId = `acc-${n}-title`;
-
-    // --- cabeçalho
-    const head = h(
-      "div",
-      { class: "ahead" },
-      h(
-        "div",
-        { class: "aid" },
-        h("h3", { class: "aname", id: titleId }, h("span", { class: "n", text: `Conta ${n}` }), a.alias ? h("span", { class: "alias", text: `“${a.alias}”` }) : null),
-        a.email ? h("div", { class: "email", text: a.email }) : null,
-        sub ? h("div", { class: "sub", text: sub }) : null
-      ),
-      h(
-        "div",
-        { class: "badges" },
-        pos ? badge("plain", `${pos}º na fila`) : null,
-        dead ? badge("dead", "Login morto") : null,
-        a.disabled ? badge("plain", "Fora da troca") : null,
-        devs.length ? badge("on", devs.length === 1 ? "Em 1 computador" : `Em ${devs.length} computadores`) : null
-      )
-    );
 
     // --- situação (ok: linha discreta; login morto: caixa vermelha; fora da troca: texto apagado)
     const sitParts = [];
@@ -1008,15 +1144,12 @@
     const reloginBox = (cls, text) =>
       h("div", { class: `warnbox relogin${cls ? ` ${cls}` : ""}` }, h("p", { text }), reloginButton(a, false));
     let loginWarn = null;
-    if (dead) {
+    if (al && al.kind === "dead") {
       loginWarn = reloginBox("bad", `O login parou de valer e o servidor não consegue mais renovar. Entre de novo com ${who}.`);
-    } else if (loginDate) {
-      const left = loginDate.getTime() - t;
-      if (left <= 0) {
-        loginWarn = reloginBox("bad", `O login venceu ${fmtWhen(loginDate)}. Entre de novo com ${who}.`);
-      } else if (left < LOGIN_WARN_MS) {
-        loginWarn = reloginBox("", `Login vence em ${fmtSpan(left)} (${fmtWhen(loginDate)}). Entre de novo com ${who} para renovar.`);
-      }
+    } else if (al && al.kind === "expired") {
+      loginWarn = reloginBox("bad", `O login venceu ${fmtWhen(al.date)}. Entre de novo com ${who}.`);
+    } else if (al) {
+      loginWarn = reloginBox("", `Login vence em ${fmtSpan(al.left)} (${fmtWhen(al.date)}). Entre de novo com ${who} para renovar.`);
     }
 
     // --- participa da troca (vale na hora)
@@ -1032,43 +1165,63 @@
         const on = e.target.checked;
         if (!on) outOpen = true; // a conta desce para "Fora da troca": deixar o grupo aberto para ela não sumir
         act(e.target, () => api("PATCH", `/web/api/accounts/${n}`, { disabled: !on }), {
-          ok: on ? `Conta ${n} de volta à troca.` : `Conta ${n} fora da troca: a troca automática não vai usá-la. Ela fica no grupo “Fora da troca”, embaixo.`,
+          ok: () => {
+            if (on) return `Conta ${n} de volta à troca.`;
+            const cur = accById(n); // já com o estado novo: a conta em uso continua no alto da lista
+            const where = cur && inUse(cur) ? "Enquanto houver computador nela, continua no alto da lista; depois vai para o grupo “Fora da troca”, embaixo." : "Ela fica no grupo “Fora da troca”, embaixo.";
+            return `Conta ${n} fora da troca: a troca automática não vai usá-la. ${where}`;
+          },
         });
       },
     });
     const rotRow = h("label", { class: "switchrow", for: rotId }, rot, h("span", { text: "Participa da troca" }));
 
-    // Rodapé do cartão (sempre no pé, para os cartões lado a lado ficarem alinhados):
-    // liga/desliga da troca; "Ajustes desta conta" com "Remover conta" na mesma linha, à direita.
-    return h(
-      "article",
-      { class: "card acct" + (a.disabled ? " off" : "") + (dead ? " deadacc" : ""), id: `conta-${n}`, tabindex: "-1", "aria-labelledby": titleId },
-      head,
-      sit,
-      usageMeters(a, false),
-      info,
-      loginWarn,
+    // Rodapé do cartão: liga/desliga da troca; "Ajustes desta conta" com "Remover conta" na mesma linha, à direita.
+    const bottom = h(
+      "div",
+      { class: "abottom" },
+      rotRow,
       h(
         "div",
-        { class: "abottom" },
-        rotRow,
+        { class: "aactions" },
+        adjustForm(a),
         h(
           "div",
-          { class: "aactions" },
-          adjustForm(a),
-          h(
-            "div",
-            { class: "afoot" },
-            h("button", {
-              type: "button",
-              class: "danger subtle small",
-              "data-k": `acc-${n}-del`,
-              text: "Remover conta",
-              "aria-label": `Remover a Conta ${n}`,
-              onclick: (e) => removeAccount(a, e.currentTarget),
-            })
-          )
+          { class: "afoot" },
+          h("button", {
+            type: "button",
+            class: "danger subtle small",
+            "data-k": `acc-${n}-del`,
+            text: "Remover conta",
+            "aria-label": `Remover a Conta ${n}`,
+            onclick: (e) => removeAccount(a, e.currentTarget),
+          })
         )
+      )
+    );
+
+    // A linha (botão) é o cabeçalho; o corpo é irmão dela, não filho: clicar no liga/desliga, em "Ajustes desta
+    // conta" ou em "Remover conta" não abre nem fecha o cartão.
+    const cls =
+      "card acct" +
+      (open ? " open" : "") +
+      (a.disabled ? " off" : "") +
+      (dead ? " deadacc" : "") +
+      (al && al.kind === "soon" ? " loginsoon" : "") +
+      (al && al.kind === "expired" ? " loginbad" : "");
+    return h(
+      "article",
+      { class: cls, id: `conta-${n}`, tabindex: "-1", "aria-labelledby": titleId },
+      h("h3", { class: "arowh" }, accountRow(a, { pos, open, titleId, alert: al })),
+      h(
+        "div",
+        { class: "abody", id: `acc-${n}-body`, hidden: !open },
+        sub ? h("p", { class: "sub", text: sub }) : null,
+        sit,
+        usageMeters(a, false),
+        info,
+        loginWarn,
+        bottom
       )
     );
   }
@@ -1277,6 +1430,8 @@
       if (same(x)) acctDraft.delete(n);
       else acctDraft.set(n, x);
       dirtyNote.textContent = acctDraft.has(n) ? "Alterações não salvas" : "";
+      const rowNote = $(id("rowdirty")); // o mesmo aviso na linha da conta (continua à vista com o cartão fechado)
+      if (rowNote) rowNote.textContent = dirtyNote.textContent;
     };
 
     const prioMatters = r.strategy === "priority";
@@ -1381,14 +1536,22 @@
       before: () => {
         acctDraft.delete(n);
         acctOpen.delete(n);
+        acctExpanded.delete(n);
       },
       ok: `Conta ${n} removida.`,
     });
   }
 
+  /**
+   * Lista de contas, numa coluna de linhas que abrem e fecham (accountCard). Ordem (pedido do dono): primeiro as
+   * contas em uso (com computador nelas agora); depois as outras que participam da troca, na ordem da fila. A
+   * posição na fila ("1º na fila") é a da fila, não a da lista: a conta em uso sobe sem mudar de posição. As que
+   * não participam (e não estão em uso) ficam no grupo recolhido "Fora da troca".
+   */
   function renderAccounts(box) {
     for (const n of [...acctDraft.keys()]) if (!accById(n)) acctDraft.delete(n);
     for (const n of [...ownUi]) if (!accById(n)) ownUi.delete(n);
+    for (const n of [...acctExpanded]) if (!accById(n)) acctExpanded.delete(n);
     const all = accounts();
     if (!all.length) {
       box.replaceChildren(
@@ -1397,20 +1560,24 @@
       return;
     }
     const inQ = queueOrder(all.filter((a) => !a.disabled));
-    const out = all.filter((a) => a.disabled).sort(byNumber);
+    const posOf = new Map(); // número da conta → posição na fila (login morto não entra na fila)
+    for (const a of inQ) if (!isDead(a)) posOf.set(Number(a.number), posOf.size + 1);
+    const off = all.filter((a) => a.disabled).sort(byNumber);
+    const top = [...inQ.filter(inUse), ...off.filter(inUse), ...inQ.filter((a) => !inUse(a))];
+    const out = off.filter((a) => !inUse(a));
     const kids = [];
-    if (inQ.length) {
-      let pos = 0;
-      kids.push(h("div", { class: "accounts" }, inQ.map((a) => accountCard(a, isDead(a) ? null : ++pos))));
-    } else {
-      kids.push(emptyState("Nenhuma conta participa da troca agora", "Abra “Fora da troca”, abaixo, e ligue “Participa da troca” numa conta."));
+    if (top.length) kids.push(h("div", { class: "accounts" }, top.map((a) => accountCard(a, posOf.get(Number(a.number)) || null))));
+    if (!inQ.length) {
+      kids.push(
+        emptyState("Nenhuma conta participa da troca agora", `${out.length ? "Abra “Fora da troca”, abaixo, clique" : "Clique"} numa conta e ligue “Participa da troca”.`)
+      );
     }
     if (out.length) {
       const det = h(
         "details",
         { class: "outgroup", open: outOpen },
         h("summary", { "data-k": "out-group" }, h("span", { class: "outtitle", text: `Fora da troca (${out.length})` })),
-        h("p", { class: "muted small", text: "Contas que não participam da troca automática. Dá para usá-las numa troca manual (em Computadores) ou ligar “Participa da troca” de novo." }),
+        h("p", { class: "muted small", text: "Contas que não participam da troca automática. Dá para usá-las numa troca manual (em Serviços) ou ligar “Participa da troca” de novo." }),
         h("div", { class: "accounts" }, out.map((a) => accountCard(a, null)))
       );
       det.addEventListener("toggle", () => {
@@ -2137,7 +2304,7 @@
     );
     const parts = [];
     if (!anySince && rows.some((r) => r.role !== "admin")) parts.push(`A data em que cada usuário foi liberado fica ${SOON}; por enquanto aparece quando ele conectou o primeiro computador.`);
-    if (rows.some((r) => r.role === "gone")) parts.push("“Não liberado”: saiu da lista, mas os computadores que já conectou continuam funcionando (desconecte-os em Computadores para cortar).");
+    if (rows.some((r) => r.role === "gone")) parts.push("“Não liberado”: saiu da lista, mas os computadores que já conectou continuam funcionando (desconecte-os em Serviços para cortar).");
     note.textContent = parts.join(" ");
     note.classList.toggle("hidden", !parts.length);
   }
@@ -2145,7 +2312,7 @@
   async function removeAllowed(email, btn) {
     const ok = await confirmBox({
       title: `Tirar ${email}?`,
-      text: "Ele não conecta mais computadores novos. Os computadores que ele já conectou continuam funcionando; para cortar, desconecte-os em Computadores.",
+      text: "Ele não conecta mais computadores novos. Os computadores que ele já conectou continuam funcionando; para cortar, desconecte-os em Serviços.",
       ok: "Tirar usuário",
     });
     if (!ok) return;
@@ -2200,7 +2367,7 @@
     }
     el.textContent =
       g.enabled === false
-        ? "O login com Google está desligado no servidor: ninguém consegue entrar de novo no painel nem conectar computadores com Google. Os computadores podem conectar com o código de conexão (em Computadores)."
+        ? "O login com Google está desligado no servidor: ninguém consegue entrar de novo no painel nem conectar computadores com Google. Os computadores podem conectar com o código de conexão (em Serviços)."
         : g.callbackUrl
           ? `Login com Google ligado. Endereço de retorno cadastrado no Google: ${g.callbackUrl}`
           : "Login com Google ligado.";

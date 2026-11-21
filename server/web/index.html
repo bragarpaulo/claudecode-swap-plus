@@ -84,7 +84,7 @@
   <nav class="tabs" aria-label="Menu do painel">
     <div id="tablist" class="tablist">
       <button type="button" class="tab" id="tab-contas" data-sec="contas" aria-controls="sec-contas"><span>Contas</span> <span class="count" id="count-contas"></span></button>
-      <button type="button" class="tab" id="tab-computadores" data-sec="computadores" aria-controls="sec-computadores"><span>Computadores</span> <span class="count" id="count-computadores"></span></button>
+      <button type="button" class="tab" id="tab-computadores" data-sec="computadores" aria-controls="sec-computadores"><span>Serviços</span> <span class="count" id="count-computadores"></span></button>
       <button type="button" class="tab" id="tab-usuarios" data-sec="usuarios" aria-controls="sec-usuarios"><span>Usuários</span> <span class="count" id="count-usuarios"></span></button>
     </div>
   </nav>
@@ -134,10 +134,11 @@
       </div>
 
       <details class="legend">
-        <summary>Como ler os cartões</summary>
-        <p class="muted small">As contas que participam da troca aparecem primeiro, na ordem da fila: primeiro a conta cujo limite semanal renova antes; em empate, a menos usada. As que não participam ficam no grupo “Fora da troca”, embaixo.</p>
+        <summary>Como ler a lista</summary>
+        <p class="muted small">Cada conta é uma linha. Clique nela para abrir o cartão com todos os limites, os dados e os ajustes; clique de novo para fechar. A linha mostra uma barra só, a do limite mais perto de parar a conta (o de maior porcentagem entre sessão de 5 horas, semanal e modelo), quando ele renova e se a conta participa da troca.</p>
+        <p class="muted small">As contas em uso (com computador nelas agora) aparecem primeiro. Depois vêm as outras que participam da troca, na ordem da fila: primeiro a conta cujo limite semanal renova antes; em empate, a menos usada. As que não participam ficam no grupo “Fora da troca”, embaixo.</p>
         <p class="muted small">As barras mostram quanto de cada limite já foi usado; o tracinho é a linha de troca. Verde: longe da linha. Amarelo: chegando perto. Vermelho: na linha (o servidor passa o computador para outra conta).</p>
-        <p class="muted small">“Acesso” é a chave de poucas horas que o servidor renova sozinho. “Login” é o que permite renovar: quando vence, é preciso entrar de novo com a conta.</p>
+        <p class="muted small">“Acesso” é a chave de poucas horas que o servidor renova sozinho. “Login” é o que permite renovar: quando vence, é preciso entrar de novo com a conta. Faltando menos de 3 dias, a linha da conta pisca “Fazer login até…” com a data e a hora.</p>
       </details>
 
       <div id="accounts"><p class="muted loading">Carregando…</p></div>
@@ -155,7 +156,7 @@
               <input type="checkbox" role="switch" class="sw" id="rAuto" aria-describedby="rAutoHint">
               <span id="rAutoText">Troca automática ligada</span>
             </label>
-            <p class="hint" id="rAutoHint">Desligada, nenhum computador troca de conta sozinho. A troca manual (em Computadores) continua funcionando.</p>
+            <p class="hint" id="rAutoHint">Desligada, nenhum computador troca de conta sozinho. A troca manual (em Serviços) continua funcionando.</p>
           </fieldset>
 
           <fieldset class="card r-devices">
@@ -287,11 +288,11 @@
       </section>
     </section>
 
-    <!-- ------------------------------------------------ Computadores -->
+    <!-- ------------------------------------------------ Serviços (o menu que se chamava "Computadores"; os ids continuam) -->
     <section class="sec" id="sec-computadores" data-sec="computadores" aria-labelledby="h-computadores">
       <div class="sectop">
         <div class="sectitle">
-          <h2 id="h-computadores" class="sechead">Computadores</h2>
+          <h2 id="h-computadores" class="sechead">Serviços</h2>
           <p class="muted small">Cada computador conectado recebe do servidor o acesso de uma conta Claude. Trocar aqui vale em até 30 segundos, e o Claude Code aberto passa a usar a conta nova sozinho.</p>
         </div>
       </div>
@@ -357,7 +358,7 @@
           <tbody id="usersBody"><tr><td colspan="5" class="empty">Carregando…</td></tr></tbody>
         </table>
         <div class="tablefoot">
-          <p class="muted small">Tirar um usuário impede que ele conecte computadores novos. Os computadores que ele já conectou continuam funcionando; para cortar, desconecte-os em Computadores.</p>
+          <p class="muted small">Tirar um usuário impede que ele conecte computadores novos. Os computadores que ele já conectou continuam funcionando; para cortar, desconecte-os em Serviços.</p>
           <p id="usersNote" class="muted small hidden"></p>
         </div>
       </div>

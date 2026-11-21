@@ -1477,6 +1477,56 @@ test("painel: arquivos com CSP e lista fixa (sem path traversal); a página sai 
   assert.equal(r.status, 404);
 });
 
+// Os outros testes usam arquivos de mentira (config.webDir). Este lê os de verdade, em server/web, e confere o que
+// dá para conferir sem navegador: o menu, a CSP (nada inline) e as peças da lista de contas da 2.5.1.
+test('painel de verdade (server/web): menu "Contas · Serviços · Usuários", nada inline (CSP) e contas que abrem e fecham', () => {
+  const webDir = path.join(__dirname, "..", "web");
+  const html = fs.readFileSync(path.join(webDir, "index.html"), "utf8");
+  const js = fs.readFileSync(path.join(webDir, "app.js"), "utf8");
+  const css = fs.readFileSync(path.join(webDir, "app.css"), "utf8");
+
+  // Menu: só o nome da aba "Computadores" mudou para "Serviços" (o id da seção e o endereço continuam).
+  const abas = [...html.matchAll(/<button type="button" class="tab" id="tab-([a-z]+)" data-sec="([a-z]+)"[^>]*><span>([^<]+)<\/span>/g)].map((m) => [m[1], m[2], m[3]]);
+  assert.deepEqual(abas, [
+    ["contas", "contas", "Contas"],
+    ["computadores", "computadores", "Serviços"],
+    ["usuarios", "usuarios", "Usuários"],
+  ]);
+  assert.match(html, /<h2 id="h-computadores" class="sechead">Serviços<\/h2>/);
+  assert.ok(!/<span>Computadores<\/span>/.test(html), "sobrou a aba com o nome antigo");
+  assert.ok(!/class="sechead">Computadores</.test(html), "sobrou o título antigo da página da aba");
+  assert.match(js, /const SECTIONS = \["contas", "computadores", "usuarios"\]/, "o id da seção não mudou (#computadores)");
+
+  // CSP do painel (script-src 'self'; style-src 'self'): nada de script ou estilo inline na página.
+  assert.ok(!/<script(?![^>]*\ssrc=)[^>]*>/i.test(html), "script inline");
+  assert.ok(!/<style[\s>]/i.test(html), "<style> na página");
+  assert.ok(!/\sstyle\s*=/i.test(html), 'atributo style="…"');
+  assert.ok(!/\son[a-z]+\s*=\s*["']/i.test(html), "atributo on…= (evento inline)");
+  assert.ok(!/\.innerHTML\b|\binsertAdjacentHTML\b|\beval\(|setAttribute\(\s*["']style["']/.test(js), "app.js: nada de innerHTML, eval ou style por atributo");
+  assert.ok(!/@import|url\(\s*["']?(?:https?:)?\/\//i.test(css), "app.css: nada de fora do servidor");
+
+  // Contas: a linha é um botão com aria-expanded/aria-controls; o que está aberto fica só na memória (por número).
+  assert.match(js, /const acctExpanded = new Set\(\);/);
+  assert.match(js, /class: "arow"/);
+  assert.match(js, /"aria-expanded":/);
+  assert.match(js, /"aria-controls": `acc-\$\{n\}-body`/);
+  assert.match(js, /class: "abody", id: `acc-\$\{n\}-body`/);
+  assert.ok(!/(?:local|session)Storage\.setItem\([^)]*(?:acct|conta)/i.test(js), "o aberto/fechado das contas não é gravado");
+  // Alerta de login: os dois textos, e o piscar só no CSS (parado com prefers-reduced-motion).
+  assert.match(js, /`Fazer login até \$\{when\}`/);
+  assert.match(js, /`Login venceu \$\{/);
+  assert.match(css, /\.ralert\s*\{[^}]*animation:\s*loginblink[^}]*infinite/);
+  assert.match(css, /@keyframes loginblink\s*\{/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?\.ralert\s*\{[^}]*animation:\s*none/);
+  assert.ok(!/setInterval\([^)]*(?:blink|pisca)/i.test(js), "o piscar não usa temporizador");
+});
+
+test("versão: server.js e engine.js dizem a mesma (é a do rodapé do painel)", () => {
+  const { VERSION } = require("../src/server");
+  assert.match(VERSION, /^\d+\.\d+\.\d+$/);
+  assert.equal(require("../src/engine").VERSION, VERSION);
+});
+
 test("painel: 60 respostas 401 em 10 min bloqueiam só o painel (os computadores seguem); /web/login 20 por IP", async (t) => {
   const ctx = await setup(t);
   const { s } = await webLogin(ctx, "ana@exemplo.com");

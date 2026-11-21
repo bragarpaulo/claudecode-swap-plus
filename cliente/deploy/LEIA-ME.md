@@ -1,16 +1,41 @@
 # Swap Plus Cliente no Contabo — o cliente do Hermes: instalação e operação
 
-Escrito em 20/11/2026. **Ainda não instalado no servidor**: este arquivo é o roteiro. O que já foi conferido:
+Escrito em 20/11/2026 e **instalado no servidor nesse dia** (seção seguinte). O código do cliente tem testes
+automáticos (`node --test cliente/test/*.test.js`), que passam no Linux, no Mac e no Windows, e a imagem Docker é
+construída e executada na conferência automática do GitHub.
 
-- o código do cliente tem testes automáticos (`node --test cliente/test/*.test.js`), que passam no Linux, no Mac e no
-  Windows;
-- a imagem Docker é construída e executada na conferência automática do GitHub, como no servidor (uid 10000, raiz só
-  de leitura, sem capacidades);
-- o `preparar.sh` rodou no servidor em simulação e o `compose.yaml` foi validado lá;
-- o comando `entrar` (login com Google) conectou de verdade ao Swap de produção, a partir de um computador.
+## Como está instalado (20/11/2026)
 
-O que roda pela primeira vez na instalação: o `preparar.sh --apply`, o `entrar.sh`, o `parear.sh` e a stack. E tudo
-da seção [Ligar o Hermes](#ligar-o-hermes-roteiro), que nunca foi executado.
+Feito a pedido do Paulo ("tudo automático, nada manual"), sem recriar o contêiner do Hermes:
+
+| o quê | como ficou |
+| --- | --- |
+| cliente | stack `swap-plus-cliente-hermes` (Portainer, id 20), contêiner `swap-plus-cliente-hermes`, imagem `swap-plus-cliente:1.0.0`; no Swap é o computador "Hermes (servidor)", conectado por código |
+| pasta de login | `/srv/hermes-personal/data/swap-plus-login` no host (variável `SWAP_PLUS_CLIENTE_LOGIN_DIR` da stack). O Hermes já enxerga essa pasta como `/opt/data/swap-plus-login`, sem bind novo; o login do Claude Code fica em `claude/` dentro dela |
+| Claude Code no Hermes | binário nativo 2.1.323 em `/opt/data/.local/bin/claude` (está no `PATH` do contêiner), baixado como o usuário do Hermes e conferido pelo checksum do manifesto oficial. Fica no volume de dados, não na imagem |
+| plugin | `claude-subscription-directsdk-experimental` 0.4.0, do catálogo oficial, em `/opt/data/plugins/`; `claude_config_dir` = `/opt/data/swap-plus-login/claude` no `config.yaml` do Hermes |
+| trava de modelo | `/opt/data/extra_pkgs/hermes_model_lock.py` ganhou a exceção para o provedor do plugin (cópia anterior ao lado, `.antes-claude-code-20261120`). O resto da trava não mudou |
+| gateway do Hermes | reiniciado uma vez com `scripts/hermes/geise/reiniciar_hermes.sh` (11 s; saúde ok, WhatsApp conectado) para carregar a exceção. O contêiner não foi recriado e o modelo padrão continua o Codex |
+
+Conferido de verdade: o cliente em dia e saudável; `claude auth status` dentro do Hermes reconhecendo o login; duas
+chamadas reais pelo Hermes (`hermes chat --oneshot`) com o provedor do plugin, uma pelo apelido (`haiku`) e uma pelo
+nome da lista (`claude-haiku-4-5-20251001`), as duas respondidas pelo Claude Code (no log: `provider=
+claude-subscription-directsdk-experimental`); e o cliente passando a **ativo** depois do uso.
+
+Ainda não conferido: uma conversa do WhatsApp ou do painel usando o provedor (a exceção da trava foi simulada e o
+caminho do `hermes chat` passou, mas nenhuma mensagem real de gateway foi enviada); uma rotina (cron) com o provedor; a
+renovação do acesso durante a madrugada (o servidor renova e o cliente regrava: o healthcheck acusa se falhar).
+
+Para lembrar:
+
+- o binário do Claude Code (360 MB) e a pasta de login ficam dentro de `/srv/hermes-personal/data`, então entram no
+  backup do Hermes. Na pasta de login só há um acesso de até ~8 h, sem refresh token;
+- o Claude Code não se atualiza sozinho ali (o plugin liga `DISABLE_AUTOUPDATER`). Para trocar de versão, repita o
+  download com a versão e o checksum novos;
+- na próxima vez que a imagem do Hermes for refeita, vale levar o binário para dentro dela, como no `comando-ia`
+  (o trecho do Dockerfile está em [Ligar o Hermes](#ligar-o-hermes-roteiro), passo 1), e apagar o do volume;
+- registrar no `central-comando-server`: a stack no `catalogo.json`, a linha na tabela de stacks e a nota datada
+  (seção final deste arquivo).
 
 O Swap Plus Cliente é o trabalho da extensão do VS Code sem o VS Code: um "computador" a mais no Swap Plus, que
 recebe do servidor o acesso da conta escolhida para ele e o grava numa pasta de login do Claude Code. O Hermes usa
@@ -99,9 +124,22 @@ Tudo como root, no servidor.
    painel do Swap, **Contas → Ajustes desta conta → Computadores permitidos**, libere as contas para "Hermes
    (servidor)" (um computador novo não entra sozinho nas contas que têm lista própria).
 
-4. **Stack.** No Portainer: **Stacks → Add stack**, nome `swap-plus-cliente-hermes`, cole o
-   `cliente/deploy/compose.yaml` e defina a variável `SWAP_PLUS_CLIENTE_VERSAO` (a mesma versão do passo 3). Criada
-   pelo Portainer a stack fica com controle total; pela linha de comando ficaria "Limited".
+4. **Stack.** Pela API do Portainer (primeiro a simulação), que confere imagem, rede, pastas e a conexão antes de
+   criar:
+
+   ```sh
+   python3 /opt/swap-plus/app/cliente/deploy/portainer_stack_create_cliente.py --versao 1.0.0
+   python3 /opt/swap-plus/app/cliente/deploy/portainer_stack_create_cliente.py --versao 1.0.0 --apply
+   ```
+
+   Ou pela tela: **Stacks → Add stack**, nome `swap-plus-cliente-hermes`, cole o `cliente/deploy/compose.yaml` e
+   defina a variável `SWAP_PLUS_CLIENTE_VERSAO`. Criada pelo Portainer (API ou tela) a stack fica com controle total;
+   pela linha de comando ficaria "Limited".
+
+   **Pasta de login dentro dos dados do Hermes** (foi como se instalou em 20/11/2026, para não recriar o Hermes):
+   crie a pasta de dentro do contêiner dele (`docker exec -u 10000 hermes mkdir -m 0700 /opt/data/swap-plus-login`)
+   e passe `--login-dir /srv/hermes-personal/data/swap-plus-login` ao `preparar.sh`, ao `entrar.sh`/`parear.sh` e ao
+   `portainer_stack_create_cliente.py`.
 
 5. **Conferir.**
 
@@ -117,9 +155,21 @@ Tudo como root, no servidor.
 
 ## Ligar o Hermes (roteiro)
 
-**Nada desta seção foi executado nem testado.** É o que falta do lado do Hermes, com o que já se sabe do servidor.
-Cada passo que recria ou reinicia o Hermes segue o procedimento de sempre (OK do Paulo, drenar antes, fora de
-01:00–05:30, `validar_hermes.sh` depois) e é registrado no `central-comando-server`.
+Em 20/11/2026 o Hermes foi ligado por um caminho mais curto, sem recriar o contêiner
+([Como está instalado](#como-está-instalado-20112026)): os passos 3, 4 e 5 abaixo foram executados; os passos 1 e 2
+(Claude Code dentro da imagem e bind próprio da pasta de login) **não**, e ficam como o caminho para quando a imagem
+do Hermes for refeita. Cada passo que recria ou reinicia o Hermes segue o procedimento de sempre (OK do Paulo,
+drenar antes, fora de 01:00–05:30, `validar_hermes.sh` depois) e é registrado no `central-comando-server`.
+
+**Onde escolher o Claude Code no Hermes:**
+
+- **numa conversa** (WhatsApp, painel, aplicativo): `/model fable --provider claude-subscription-directsdk-experimental`
+  (ou `opus`, `sonnet`, `haiku`). Vale só para aquela conversa; para voltar: `/model gpt-6.1-sol --provider openai-codex`;
+- **numa rotina**: na tela **Cron** do painel, o provedor e o modelo da rotina;
+- **como padrão de tudo**: na tela **Modelos** do painel, **Model Settings → Main model → Change**, provedor "Claude
+  Subscription DirectSDK (Experimental)". Atenção: isso muda o modelo de todas as sessões novas, WhatsApp incluído (o
+  botão **Switch model** da tela de chat do painel faz a mesma coisa). O provedor "Anthropic" da mesma lista é outro
+  (chave de API) e continua sendo trocado por GPT pela trava.
 
 1. **Claude Code dentro do contêiner do Hermes.** Hoje não há (`claude` saiu da imagem em 07/11 porque nada usava).
    O `npm` do contêiner é um atalho para a loja de ferramentas em `/opt/data/tools`, então `npm i -g` não serve. O

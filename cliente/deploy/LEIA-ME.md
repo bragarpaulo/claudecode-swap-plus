@@ -155,7 +155,23 @@ também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `he
 - **O que continua igual:** a mensagem em que o limite bate ainda é respondida pela reserva; a partir da troca
   (até 30 s depois), a mensagem seguinte volta ao modelo principal.
 - **Stafy:** o código é do projeto Stafy. O contrato do servidor (`POST /v1/events` com `limit_hit`,
-  `GET /v1/credential`, refazer a chamada) foi passado à sessão do Claude que cuida dele.
+  `GET /v1/credential`, refazer a chamada) foi passado à sessão do Claude que cuida dele, que avisou às 16:30 que
+  o gatilho está no ar no gateway de IA do Stafy (commit `7a7aaa15d` de lá): limite → avisa o Swap, busca a conta
+  nova e refaz a chamada uma vez; 401 no meio da chamada → relê o estado e refaz. Lá, testado com simulação; não
+  visto com uma conta real batendo o limite.
+
+**21/11/2026, 16:37 — servidor 2.6.0 e extensão 3.4.0 (pedido do dono: modelo preferido e secundário no painel,
+com todos os modelos e o esforço de cada um):**
+
+- **Servidor 2.6.0 no ar às 16:37:50** (mesmo procedimento). Na subida: `[modelos] catálogo atualizado com a conta 6:
+  15 modelo(s)`. Regras novas com os valores de partida: preferido `claude-fable-5-2`, secundário `claude-opus-5-5`,
+  os dois com esforço "Padrão do Claude Code" (o Swap não mexe até alguém escolher no painel). Voltar: a variável
+  `SWAP_PLUS_VERSAO` com `2.5.6`; o cofre guarda o catálogo (`models`) e as regras novas, que a 2.5.6 ignora.
+- **Extensão 3.4.0** (tag `plus-v3.4.0`): o modelo secundário e os esforços passam a vir das regras do servidor.
+- **Não conferido:** a tela nova num navegador (só por testes e pelo HTML servido, que traz os campos).
+- **Este notebook estava com a CPU em 100% e 0,5 GB de memória livre às 16:33** (duas frentes de trabalho e as
+  baterias de teste). O túnel da saída "casa" do WhatsApp passa por ele: foi a causa da oscilação vista no reinício
+  do Hermes. Os testes pesados passaram a rodar só no GitHub.
 
 Conferido depois da troca: uma mensagem de verdade pela API do gateway (o mesmo processo do WhatsApp) respondida pelo
 `claude-fable-5-2[1m]` com uso de ferramenta, em 5,5 s, sem a trava trocar por GPT; e o cliente acompanhando sozinho

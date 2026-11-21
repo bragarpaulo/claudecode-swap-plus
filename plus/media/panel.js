@@ -163,7 +163,9 @@
         modelEnabled: bool(al.modelEnabled),
         modelPct: num(al.modelPct),
       },
-      ui: { showAccountNumber: bool(ui.showAccountNumber), showModelWeekly: bool(ui.showModelWeekly) },
+      ui: { showAccountNumber: bool(ui.showAccountNumber), showModelWeekly: bool(ui.showModelWeekly), autoResume: bool(ui.autoResume) },
+      // Retomada automática: ligada? o gancho está no Claude Code? e o erro, se não deu para pôr.
+      resume: isObj(m.resume) ? { on: m.resume.on === true, installed: m.resume.installed === true, error: str(m.resume.error) } : null,
       updates: isObj(m.updates) ? m.updates : null,
       server: {
         status: str(sv.status),
@@ -706,10 +708,19 @@
     { key: "privacy.hideEmails", box: $("uiPrivacy"), real: () => S.privacy },
     { key: "statusBar.showAccountNumber", box: $("uiAcctNumber"), real: () => S.ui.showAccountNumber },
     { key: "statusBar.showModelWeekly", box: $("uiModelWeekly"), real: () => S.ui.showModelWeekly },
+    { key: "resume.enabled", box: $("uiAutoResume"), real: () => S.ui.autoResume },
   ];
 
   function renderUi() {
     for (const o of UI_BOXES) syncBox(o.box, `ui:${o.key}`, o.real());
+    // Retomada automática: avisa quando a opção está ligada e o gancho não está no Claude Code.
+    const note = $("resumeNote");
+    const r = isObj(S.resume) ? S.resume : null;
+    const text = !r || !r.on ? "" : r.error ? `Não consegui pôr o gancho no Claude Code: ${r.error}` : !r.installed ? "O gancho ainda não está no settings.json do Claude Code." : "";
+    if (note) {
+      note.textContent = text;
+      note.hidden = !text;
+    }
   }
 
   const REASONS = { open: "ao abrir o VS Code", close: "ao fechar o VS Code", periodic: "verificação periódica", manual: "manual" };

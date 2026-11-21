@@ -2522,7 +2522,9 @@ test("22d. tela de verdade × extensão de verdade: o estado desenha e cada cliq
     assert.equal(typeof p.auto.enabled, "boolean");
     assert.equal(p.rules.devicePlacement, "together");
     assert.deepEqual(Object.keys(p.alerts).sort(), ["fiveHourEnabled", "fiveHourPct", "modelEnabled", "modelPct", "weeklyEnabled", "weeklyPct"]);
-    assert.deepEqual(Object.keys(p.ui).sort(), ["showAccountNumber", "showModelWeekly"]);
+    assert.deepEqual(Object.keys(p.ui).sort(), ["autoResume", "showAccountNumber", "showModelWeekly"]);
+    assert.equal(p.ui.autoResume, true, "retomada automática: ligada por padrão");
+    assert.deepEqual(p.resume, { on: true, installed: true, error: null }, "e o gancho já está no settings.json do Claude Code");
     for (const k of ["status", "statusText", "host", "deviceName", "lastOkWhen"]) assert.equal(typeof p.server[k], "string", `server.${k}`);
     for (const k of ["connected", "connecting", "canUploadLogins", "addressChanged", "storeBlocked", "loginPromptOff", "otherWindow"]) assert.equal(typeof p.server[k], "boolean", `server.${k}`);
     assert.ok(Array.isArray(p.server.storeWarnings) && Array.isArray(p.server.devices) && Array.isArray(p.modelNames));
@@ -2583,6 +2585,24 @@ test("22d. tela de verdade × extensão de verdade: o estado desenha e cada cliq
     visor.clicar(visor.$("uiAcctNumber"));
     assert.deepEqual(await repassar(visor), [{ type: "ui", key: "statusBar.showAccountNumber", value: true }]);
     assert.equal(store["swapPlus.statusBar.showAccountNumber"], true);
+    // retomada automática: a caixa põe e tira o gancho StopFailure do settings.json do Claude Code, na hora
+    const nossos = () => ((lerSettings().hooks || {}).StopFailure || []).flatMap((g) => g.hooks).filter((h) => JSON.stringify(h).includes("retomar.js"));
+    assert.equal(nossos().length, 1);
+    assert.equal(nossos()[0].async, true);
+    const swapDir = path.join(CLAUDE_DIR, "swap-plus"); // com CLAUDE_CONFIG_DIR, a pasta do Swap fica dentro dela
+    assert.ok(JSON.stringify(nossos()[0]).includes(JSON.stringify(path.join(swapDir, "retomar.js")).slice(1, -1)), "aponta para o script copiado");
+    assert.equal(fs.readFileSync(path.join(swapDir, "retomar.js"), "utf8"), fs.readFileSync(path.join(__dirname, "..", "hooks", "retomar.js"), "utf8"));
+    const aplicado = JSON.parse(fs.readFileSync(path.join(swapDir, "aplicado.json"), "utf8"));
+    assert.deepEqual([aplicado.number, aplicado.gen], [4, 1], "a troca de há pouco deixou o marcador que o gancho espera");
+    assert.ok(Date.now() - aplicado.at < 60000);
+    visor.clicar(visor.$("uiAutoResume"));
+    assert.deepEqual(await repassar(visor), [{ type: "ui", key: "resume.enabled", value: false }]);
+    assert.equal(store["swapPlus.resume.enabled"], false);
+    assert.equal(nossos().length, 0, "desligada: o gancho sai do settings.json");
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(swapDir, "retomar.json"), "utf8")), { enabled: false, text: "Troquei de conta, pode continuar." });
+    assert.deepEqual(T.buildPayload().resume, { on: false, installed: false, error: null });
+    await cfgApi.update("resume.enabled", true);
+    assert.equal(nossos().length, 1, "ligada de novo: o gancho volta");
     const o0 = opened.length;
     visor.clicar(visor.$("btnPanel"));
     assert.deepEqual(await repassar(visor), [{ type: "openPanel" }]);

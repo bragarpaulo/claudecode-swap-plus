@@ -35,6 +35,7 @@ const {
   RULE_DEFAULTS,
 } = require("./rules");
 const modelSwitch = require("./modelSwitch");
+const resume = require("./resume");
 
 const NS = "swapPlus";
 const HISTORY_KEY = "swapPlus.autoHistory";
@@ -754,6 +755,40 @@ async function pushHistory(entries) {
 // ---------------------------------------------------------------- limite estourado: reação imediata
 
 const RESUME_TIP = " Se o Claude Code parou com “You've hit your limit”, mande uma mensagem (por exemplo, “continue”) para ele seguir na conta nova.";
+const RESUME_AUTO_TIP = " A conversa do Claude Code que parou nesse limite retoma sozinha em alguns segundos.";
+
+// ---------------------------------------------------------------- retomar a conversa depois da troca
+
+const RESUME_CHECK_MS = 10 * 60 * 1000;
+let resumeTimer = null;
+let resumeState = { enabled: false, installed: false, changed: false, error: null };
+
+/** A conversa que parou por limite retoma sozinha depois da troca? Opção deste VS Code; com o Swap Plus desligado, não. */
+function resumeOn() {
+  return swapOn() && cfg().get("resume.enabled") !== false;
+}
+
+/**
+ * Deixa o gancho do Claude Code como a opção pede (resume.js): ligado, o script hooks/retomar.js é copiado para
+ * ~/.swap-plus e entra no hooks.StopFailure do settings.json do Claude Code; desligado, sai. Vale para todas as
+ * janelas deste sistema (o settings.json é um só); cada janela chama isto e o resultado é o mesmo. Nunca lança.
+ */
+function syncResume() {
+  let r;
+  try {
+    r = resume.sync({ enabled: resumeOn(), text: String(cfg().get("resume.text") || ""), scriptSource: path.join(__dirname, "hooks", "retomar.js") });
+  } catch (e) {
+    r = { enabled: resumeOn(), installed: false, changed: false, error: { code: "error", message: String((e && e.message) || e) } };
+  }
+  if (r.error && (!resumeState.error || resumeState.error.message !== r.error.message)) console.error("[swap-plus] retomar", r.error.message);
+  resumeState = r;
+  return r;
+}
+
+/** A dica do aviso de troca por limite: com a retomada ligada e instalada, a conversa segue sozinha. */
+function resumeTip() {
+  return resumeOn() && resumeState.installed ? RESUME_AUTO_TIP : RESUME_TIP;
+}
 const LIMIT_KEY = "swapPlus.lastLimitHit";
 const LIMIT_LOCK = path.join(os.tmpdir(), "swap-plus-limit.lock");
 const LIMIT_SCAN_S = 15;
@@ -2080,6 +2115,8 @@ async function applyServerCredential(client, resp, auth, live, { force, retryNow
   srv.applyFail = null;
   srv.discard = null;
   const appliedNow = { number: r.number, gen: r.gen, expiresAt: o.expiresAt, at: Date.now(), noIdentity: !oa };
+  // É por este arquivo que o gancho de retomada (hooks/retomar.js) sabe que há login novo no Claude Code.
+  resume.markApplied({ number: r.number, gen: r.gen });
   await extContext.globalState.update(SERVER_APPLIED_KEY, appliedNow);
   if (oa) {
     try {
@@ -2361,7 +2398,7 @@ async function serverLimitHitNow(label, { quiet = false } = {}) {
     await extContext.globalState.update(LAST_SWITCH_KEY, Date.now());
     wrote = w.status === "ok";
     // "Trocou" só quando a conta nova foi gravada aqui de fato.
-    if (wrote) vscode.window.showInformationMessage(`Swap Plus: ${text}.${RESUME_TIP}`);
+    if (wrote) vscode.window.showInformationMessage(`Swap Plus: ${text}.${resumeTip()}`);
     else if (w.status === "fail" && w.shown) {
       // o erro de gravação já foi mostrado
     } else vscode.window.showWarningMessage(`Swap Plus: o servidor trocou a conta deste computador (${text.replace(/^./, (c) => c.toLowerCase())}), mas não gravei a conta nova aqui: ${w.reason || "falhou"}.`);
@@ -3233,7 +3270,10 @@ function buildPayload() {
     ui: {
       showAccountNumber: !!cfg().get("statusBar.showAccountNumber"),
       showModelWeekly: !!cfg().get("statusBar.showModelWeekly"),
+      autoResume: cfg().get("resume.enabled") !== false,
     },
+    // Retomada automática: se o gancho está mesmo no settings.json do Claude Code, e o erro se não deu para pôr.
+    resume: { on: resumeOn(), installed: !!resumeState.installed, error: resumeState.error ? safe(String(resumeState.error.message)) : null },
   };
 }
 
@@ -3327,7 +3367,7 @@ async function handleMessage(m) {
       return;
 
     case "ui": {
-      const allowed = ["statusBar.showAccountNumber", "statusBar.showModelWeekly", "privacy.hideEmails"];
+      const allowed = ["statusBar.showAccountNumber", "statusBar.showModelWeekly", "privacy.hideEmails", "resume.enabled"];
       if (!allowed.includes(m.key)) return;
       await cfg().update(m.key, m.value, vscode.ConfigurationTarget.Global);
       return;
@@ -3608,6 +3648,8 @@ function activate(context) {
         syncLoginPrompt();
         setupPolling();
       }
+      // Retomada automática: o gancho do Claude Code entra ou sai junto com a opção (e com o Swap Plus inteiro).
+      if (onOff || e.affectsConfiguration(`${NS}.resume`)) syncResume();
       // Troca do modelo padrão desligada (ou o Swap Plus inteiro): o padrão volta ao que era.
       if ((onOff || e.affectsConfiguration(`${NS}.autoModel.enabled`)) && !autoModelOn()) {
         undoModelSwitch(swapOn() ? "a troca automática do modelo padrão foi desligada" : "o Swap Plus foi desligado").catch((err) => console.error("[swap-plus] modelo padrão", safeErr(err)));
@@ -3643,6 +3685,10 @@ function activate(context) {
   updater.start();
 
   setupLimitWatch();
+  syncResume();
+  // De 10 em 10 min confere de novo: se outro programa regravou o settings.json sem o gancho, ele volta.
+  resumeTimer = setInterval(syncResume, RESUME_CHECK_MS);
+  if (resumeTimer.unref) resumeTimer.unref();
 
   // 3.0: remove o motor antigo (swap-plus), uma vez, depois que a janela assenta.
   engineCleanupTimer = setTimeout(() => {
@@ -3655,6 +3701,7 @@ function activate(context) {
 function deactivate() {
   if (pollTimer) clearInterval(pollTimer);
   if (limitTimer) clearInterval(limitTimer);
+  if (resumeTimer) clearInterval(resumeTimer);
   if (ownerTimer) clearInterval(ownerTimer);
   if (engineCleanupTimer) clearTimeout(engineCleanupTimer);
   engineCleanupTimer = null;
@@ -3687,6 +3734,10 @@ module.exports = {
     newerInstalledVersion,
     scanLimitErrors,
     checkLimitErrors,
+    syncResume,
+    resumeOn,
+    resumeTip,
+    resumeState: () => resumeState,
     limitLabel,
     setLimitRoot: (r) => (limitRoot = r),
     modelStatus,

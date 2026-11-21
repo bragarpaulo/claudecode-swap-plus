@@ -14,7 +14,8 @@ VS Code: veja [Hermes e outros serviços](#hermes-e-outros-serviços-sem-vs-code
 robô. No painel, todos ficam na aba **Serviços**.
 
 Não existe mais o motor (`swap-plus`) nem o modo local. O que mudou na 3.0: [NOVIDADES-3.0.md](NOVIDADES-3.0.md).
-O que mudou por último (o painel com "serviços" e a tela enxuta no VS Code): [NOVIDADES-3.2.md](NOVIDADES-3.2.md).
+O que mudou por último (a conversa que retoma sozinha depois da troca de conta): [NOVIDADES-3.3.md](NOVIDADES-3.3.md).
+Antes disso (o painel com "serviços" e a tela enxuta no VS Code): [NOVIDADES-3.2.md](NOVIDADES-3.2.md).
 
 Neste manual:
 
@@ -245,6 +246,11 @@ cima para baixo:
   Code:
   - **Avisar quando chegar em**: os avisos de uso da sessão de 5 horas, do limite semanal e do limite por modelo, cada
     um com a sua porcentagem. O aviso só avisa: quem troca de conta é o servidor, pelas regras do painel;
+  - **Depois da troca de conta**: **Retomar sozinho a conversa que parou no limite** (vem ligado). Quando uma
+    conversa do Claude Code para com "You've hit your limit" e o Swap Plus troca de conta, ele manda nela a mensagem
+    "Troquei de conta, pode continuar." e ela segue sozinha. Vale para todas as janelas do VS Code do computador.
+    Para isso o Swap Plus põe um gancho no `settings.json` do Claude Code (detalhes em
+    [NOVIDADES-3.3.md](NOVIDADES-3.3.md));
   - **Exibição**: o modo privado e o que aparece na barra;
   - **Atualizações da extensão**: a versão instalada e o botão **Verificar agora**;
 - no pé da tela, o botão **Abrir o painel**, que abre o painel do servidor no navegador. Ele só funciona com este VS
@@ -261,8 +267,10 @@ dois jeitos:
 - na tela de Configurações: em **Trocar de conta**, clique em **Usar esta conta**;
 - pelo painel: **Serviços** → clique na linha do serviço → **Trocar para** → **Trocar**.
 
-Se a conta bater o limite antes da troca, o Claude Code pode ficar parado esperando: mande uma mensagem (por exemplo,
-"continue") e ele segue na conta nova.
+Se a conta bater o limite antes da troca, a conversa do Claude Code para. Com a opção **Retomar sozinho a conversa
+que parou no limite** ligada (o padrão), ela retoma sozinha alguns segundos depois da troca: o Swap Plus manda nela
+"Troquei de conta, pode continuar.". Com a opção desligada, mande você uma mensagem (por exemplo, "continue") e ela
+segue na conta nova.
 
 ### Desligar o Swap Plus por um tempo
 
@@ -433,8 +441,11 @@ desliga na hora; as outras regras só mudam quando você clicar em **Salvar regr
   "continue". Com **Trocar de conta**, enquanto alguma conta tiver Fable a conversa aberta nem para.
 - **Para qual conta ir (estratégia):** **Aproveitar ao máximo** (o padrão), **Mais folga** ou **Por prioridade**, e o
   **Modelo preferido**.
-- **Ajustes finos:** **Horas para "cota prestes a zerar"**, **Intervalo mínimo entre trocas** e **Margem da conta de
-  destino**.
+- **Ajustes finos:** **Horas para "cota prestes a zerar"**, **Intervalo mínimo entre trocas**, **Margem da conta de
+  destino** e **Mínimo de Fable sobrando no destino**. Este último vale para as trocas que o servidor faz por conta
+  própria (aproveitar uma cota que vai zerar, renovar um login): a conta de destino precisa ter pelo menos esse
+  percentual do Fable sobrando. De 0 a 50%; o padrão é 10%. Troca obrigatória (conta na linha ou limite batido) não
+  olha esse número.
 - Botões: **Voltar ao padrão** (só preenche o formulário; ainda precisa salvar), **Desfazer** e **Salvar regras**.
 
 ### Serviços
@@ -616,6 +627,7 @@ pode apagar à mão (veja [Veio da versão 2.x?](#veio-da-versão-2x)).
 
 ---
 
-Mais detalhes: [novidades da 3.2](NOVIDADES-3.2.md) · [novidades da 3.0](NOVIDADES-3.0.md) ·
+Mais detalhes: [novidades da 3.3](NOVIDADES-3.3.md) · [novidades da 3.2](NOVIDADES-3.2.md) ·
+[novidades da 3.0](NOVIDADES-3.0.md) ·
 [novidades da 2.0](NOVIDADES-2.0.md) (histórico) ·
 [extensão](plus/README.md) · [servidor](server/deploy/LEIA-ME.md).

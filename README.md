@@ -18,6 +18,7 @@ O Swap Plus tem três partes, as três neste repositório:
   o trabalho da extensão sem o VS Code, para o Hermes e outros serviços em segundo plano usarem o Claude Code com as
   mesmas contas. Manual em [`cliente/README.md`](cliente/README.md).
 
+O que mudou por último (a conversa que parou no limite retoma sozinha depois da troca): [NOVIDADES-3.3.md](NOVIDADES-3.3.md).
 O que mudou na 3.0: [NOVIDADES-3.0.md](NOVIDADES-3.0.md).
 
 ## Instalar

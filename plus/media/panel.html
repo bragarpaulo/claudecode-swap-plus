@@ -69,6 +69,13 @@
     <p class="muted small">O aviso aparece neste VS Code quando a conta em uso aqui passa do percentual. Ele só avisa: quem troca de conta sozinho é o servidor, pelas regras do painel do Swap.</p>
   </section>
 
+  <section class="opt" aria-labelledby="resumeTitle">
+    <h3 id="resumeTitle">Depois da troca de conta</h3>
+    <label class="check" for="uiAutoResume"><input type="checkbox" id="uiAutoResume" disabled><span>Retomar sozinho a conversa que parou no limite</span></label>
+    <p class="muted small indent">Quando uma conversa do Claude Code para com “You've hit your limit” e o Swap Plus troca de conta, ele manda nela a mensagem “Troquei de conta, pode continuar.” e ela segue sozinha. Vale para todas as janelas do VS Code deste computador. Para isso o Swap Plus põe um gancho (StopFailure) no settings.json do Claude Code.</p>
+    <p class="muted small indent" id="resumeNote" hidden></p>
+  </section>
+
   <section class="opt" aria-labelledby="uiTitle">
     <h3 id="uiTitle">Exibição</h3>
     <label class="check" for="uiPrivacy"><input type="checkbox" id="uiPrivacy" disabled><span>Modo privado: mostrar só “Conta N”, sem e-mail</span></label>

@@ -2,7 +2,7 @@
   "name": "swap-plus",
   "displayName": "Swap Plus",
   "description": "Uso do Claude Code na barra de status (ícone de e-mail, 5h, semanal e Fable) e tela de configurações deste VS Code: conexão com o servidor, conta em uso, troca de conta e avisos. Um servidor Swap Plus guarda os logins, renova e decide as trocas; este computador recebe só o acesso da conta escolhida para ele (entrar com Google). Fork pessoal de smith89k/claude-swap-status (MIT).",
-  "version": "3.2.1",
+  "version": "3.3.0",
   "publisher": "paulo-local",
   "license": "MIT",
   "icon": "icon.png",
@@ -130,6 +130,16 @@
           "default": true,
           "scope": "machine",
           "description": "Quando não há Fable (acabou na conta em uso e, na regra “trocar de conta”, também nas outras), o modelo padrão do Claude Code neste computador passa para o Opus 5.5, e toda conversa nova já abre nele; quando o Fable volta, volta ao que era. Faz parte das duas opções da regra “Quando o limite de um modelo acaba”, do painel do Swap; desligue aqui só se não quiser que o Swap Plus mexa no modelo. Só mexe se o padrão for o Fable (ou o do plano). Conversa já aberta não muda: o Claude Code só deixa trocar o modelo por dentro dela."
+        },
+        "swapPlus.resume.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Retomar sozinho a conversa do Claude Code que parou no limite: depois de trocar de conta, o Swap Plus manda nela a mensagem abaixo e ela continua. Para isso ele põe um gancho (StopFailure) no settings.json do Claude Code; vale para todas as janelas do VS Code deste sistema."
+        },
+        "swapPlus.resume.text": {
+          "type": "string",
+          "default": "Troquei de conta, pode continuar.",
+          "description": "A mensagem que o Swap Plus manda na conversa que parou, depois de trocar de conta."
         },
         "swapPlus.privacy.hideEmails": {
           "type": "boolean",

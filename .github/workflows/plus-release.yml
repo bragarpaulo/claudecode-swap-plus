@@ -122,6 +122,12 @@ jobs:
             echo "plus/test/smoke.js não existe: pulado."
           fi
 
+      - name: Testes da extensão — retomada automática (no Windows a caixa de entrada do Claude Code é um pipe nomeado)
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: node --test plus/test/resume.test.js
+
   publicar:
     name: Empacotar e publicar
     needs: [testes-linux, testes-windows]
@@ -159,9 +165,10 @@ jobs:
             exit 1
           fi
 
-          # Obrigatório: o package.json, todo .js da raiz de plus/ e a tela (media/).
+          # Obrigatório: o package.json, todo .js da raiz de plus/, a tela (media/) e o script do gancho de
+          # retomada (hooks/: sem ele no pacote, a extensão não tem o que instalar no Claude Code).
           falta=0
-          for f in package.json *.js media/*; do
+          for f in package.json *.js media/* hooks/*; do
             grep -qxF "extension/$f" "$LISTA" || { echo "::error::faltou extension/$f no .vsix"; falta=1; }
           done
           [ "$falta" = 0 ] || exit 1

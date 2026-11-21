@@ -6,7 +6,8 @@ Desde a **3.0** funciona só com o **servidor Swap Plus** (pasta [`server/`](../
 [smith89k/claude-swap-status](https://github.com/smith89k/claude-swap-status) (MIT) e foi reescrita aqui em `plus/`.
 
 Passo a passo completo, para quem usa: **[MANUAL](../MANUAL.md)**. O que mudou na 3.0:
-**[NOVIDADES-3.0](../NOVIDADES-3.0.md)**; na 3.2: **[NOVIDADES-3.2](../NOVIDADES-3.2.md)**.
+**[NOVIDADES-3.0](../NOVIDADES-3.0.md)**; na 3.2: **[NOVIDADES-3.2](../NOVIDADES-3.2.md)**; na 3.3:
+**[NOVIDADES-3.3](../NOVIDADES-3.3.md)**.
 
 ## Em poucas palavras (versão 3.0)
 
@@ -104,8 +105,9 @@ Daqui para baixo: detalhes técnicos, para quem mexe no código.
     para este serviço*), mas hoje nem o servidor nem a extensão mandam esse campo;
   - **Mais opções deste VS Code** (recolhido; abre fechado, e a tela lembra como ficou): **Avisar quando chegar em**
     (as seis configurações `swapPlus.alerts.*`: liga/desliga e percentual da sessão de 5 horas, do limite semanal e
-    do semanal por modelo), **Exibição** (modo privado, número da conta na barra, semanal por modelo na barra) e
-    **Atualizações da extensão** (**Verificar agora**);
+    do semanal por modelo), **Depois da troca de conta** (`swapPlus.resume.enabled`: retomar sozinho a conversa que
+    parou no limite; ver "Retomada automática", abaixo), **Exibição** (modo privado, número da conta na barra,
+    semanal por modelo na barra) e **Atualizações da extensão** (**Verificar agora**);
   - **rodapé**: *Contas, regras de troca, usuários e os outros serviços ficam no painel do Swap.*, o botão **Abrir o
     painel** (desabilitado sem conexão) e a nota *Só o administrador entra no painel.*
 - **Mensagens da tela** (`plus/media/panel.js` ↔ `handleMessage()`, em `plus/extension.js`). A extensão manda `state`
@@ -153,8 +155,35 @@ Daqui para baixo: detalhes técnicos, para quem mexe no código.
   conta**: enquanto alguma conta tiver Fable, o Swap Plus troca a conta antes do limite e a conversa segue.
 - **Limite batido antes da troca**: a extensão lê as transcrições do Claude Code (`~/.claude/projects/*/*.jsonl`)
   procurando o erro de limite ("You've hit your limit", `rate_limit`) e avisa o servidor, que decide a troca na hora.
-  O Claude Code pode ficar esperando; uma mensagem ("continue") faz ele seguir na conta nova. O erro passageiro
+  A conversa fica parada; desde a 3.3.0 ela retoma sozinha (próximo item). Com a retomada desligada, uma mensagem
+  ("continue") faz ela seguir na conta nova. O erro passageiro
   "Server is temporarily limiting requests (not your usage limit)" não é limite da conta e não dispara troca.
+- **Retomada automática (3.3.0)**: depois da troca, a conversa que parou recebe a mensagem "Troquei de conta, pode
+  continuar." e segue. O Claude Code não tem comando para outra extensão mandar mensagem numa conversa (o endereço
+  `vscode://anthropic.claude-code/open?prompt=…` só preenche a caixa, não envia). O que ele documenta e a extensão
+  usa:
+  - o gancho `StopFailure` (roda quando o turno acaba por erro da API; recebe `error`, `session_id` etc. no stdin; a
+    saída dele é ignorada);
+  - a caixa de entrada da sessão: `CLAUDE_CODE_MESSAGING_SOCKET` (pipe nomeado no Windows, socket Unix no resto) e
+    `CLAUDE_CODE_MESSAGING_TOKEN`, postos no ambiente dos ganchos. Um processo filho da sessão posta uma linha de
+    autenticação e uma mensagem de usuário, e a sessão parada começa um turno novo com ela.
+
+  As peças:
+  - `hooks/retomar.js` — o script que o Claude Code roda (sem dependências). Em `rate_limit` e
+    `authentication_failed`, espera o Swap Plus gravar um login novo (até 5 min) e posta a mensagem. Uma retomada
+    por troca; no máximo 6 por hora por conversa; registro em `~/.swap-plus/retomar.log`;
+  - `resume.js` — copia o script para `~/.swap-plus/retomar.js`, põe (ou tira) a entrada em `hooks.StopFailure` do
+    `settings.json` do Claude Code sem mexer no resto (cópia de antes: `settings.json.antes-swap-plus`), grava
+    `~/.swap-plus/retomar.json` (ligado/desligado e o texto) e, a cada login gravado, `~/.swap-plus/aplicado.json`
+    (é por ele que o script sabe que a troca aconteceu; sem ele vale a data do `.credentials.json`). O comando do
+    gancho é `node <script>`; sem `node` no sistema, o executável do VS Code com `ELECTRON_RUN_AS_NODE=1`. Com
+    `CLAUDE_CONFIG_DIR`, a pasta é `<CLAUDE_CONFIG_DIR>/swap-plus`;
+  - `extension.js` — `syncResume()` ao ativar, quando a opção muda e a cada 10 min; `resume.markApplied()` logo
+    depois de gravar o login.
+
+  Conferido na versão 2.1.330 do Claude Code, com login falso em pasta isolada: a cadeia inteira, a entrada do gancho
+  numa sessão já aberta (ela relê o `settings.json`) e a trava contra laço. Testes: `test/resume.test.js`. Não cobre
+  o limite de um modelo na regra **Seguir na mesma conta** (a conta não muda) nem os serviços sem VS Code.
 
 ## Como a extensão fala com o servidor
 

@@ -48,7 +48,7 @@ const {
 const { createWeb, webReplacer, uaSummary } = require("./web");
 const access = require("./access");
 
-const VERSION = "2.4.2";
+const VERSION = "2.5.0";
 const MAX_BODY = 256 * 1024; // corpo máximo aceito
 const HARD_BODY = MAX_BODY * 4; // acima disso nem lê o resto: responde 413 e fecha
 const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -1004,8 +1004,9 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     return pageReply(200, {
       tone: "ok",
       title: "Pronto",
-      heading: "Pronto! Pode voltar ao VS Code.",
-      lines: [["O computador ", { b: name }, " foi conectado com a conta Google ", { b: email }, "."], "Pode fechar esta aba."],
+      // Quem conecta nem sempre é o VS Code (o cliente do Hermes também entra por aqui): o texto não cita programa.
+      heading: "Pronto! Conectado.",
+      lines: [[{ b: name }, " foi conectado ao Swap Plus com a conta Google ", { b: email }, "."], "Pode fechar esta aba e voltar ao que estava fazendo."],
     });
   }
 
@@ -1541,8 +1542,27 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     return { ok: true, number: n, loginExpiresAt };
   }
 
+  /**
+   * POST /admin/weekly-notice → manda agora o resumo semanal ao dono (o mesmo que sai sozinho toda semana), sem
+   * mexer na marca do resumo automático. Serve para conferir que o e-mail chega. Com `{ preview: true }` só devolve
+   * o texto, sem mandar.
+   */
+  function weeklyNotice({ body }) {
+    if (typeof engine.weeklySummary !== "function") throw new HttpError(501, "not_implemented", "este servidor ainda não tem o resumo semanal");
+    if (body && body.preview === true) {
+      const s = engine.weeklySummary();
+      return { ok: true, sent: false, subject: s.subject, text: s.text, expiring: s.expiring, dead: s.dead, unknown: s.unknown };
+    }
+    const { result, summary } = engine.noticeWeekly();
+    const sent = !!(result && result.ok === true);
+    const why = sent ? null : !result ? "off" : result.skipped ? "disabled" : "failed";
+    log.info(`[avisos] resumo semanal pedido pelo admin: ${sent ? "enviado" : `não enviado (${why})`}`);
+    return { ok: true, sent, why, subject: summary.subject, text: summary.text, expiring: summary.expiring, dead: summary.dead, unknown: summary.unknown };
+  }
+
   const adminRoutes = [
     { m: "GET", p: /^\/v1\/health$/, quiet: true, fn: () => ({ ok: true, version: VERSION }) },
+    { m: "POST", p: /^\/admin\/weekly-notice$/, body: true, fn: weeklyNotice },
     { m: "POST", p: /^\/admin\/pair-code$/, fn: () => newPairCode() },
     { m: "GET", p: /^\/admin\/status$/, fn: () => status() },
     { m: "GET", p: /^\/admin\/devices$/, fn: () => devicesList(null) },

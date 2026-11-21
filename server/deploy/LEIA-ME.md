@@ -236,9 +236,13 @@ O servidor nunca põe token em log. Os logs giram em 3 arquivos de 5 MB.
 
 ## Avisos por e-mail ao dono
 
-Desde a 2.4.0 o servidor avisa o dono por e-mail quando:
+Desde a 2.4.0 o servidor avisa o dono por e-mail. Desde a 2.5.0 os avisos do vencimento dos logins são dois:
 
-- o login de uma conta **vence em menos de 3 dias** (um aviso por conta por dia, junto com o alerta do histórico);
+- o **resumo semanal**: toda segunda às 8h (horário de Brasília), um e-mail com as contas cujo login vence nos 7 dias
+  seguintes (a que vence antes primeiro), as que já pararam de valer e as que não têm data conhecida. Sai mesmo sem
+  nenhuma conta vencendo ("nenhuma conta vence nesta semana"), para você saber que está funcionando;
+- **um dia antes** de o login de cada conta vencer: um e-mail só dela (um por login, não um por dia). O alerta do
+  histórico e do painel continua aparecendo desde 3 dias antes;
 - o login de uma conta **parou de valer** (na hora; diz o motivo);
 - o **cofre não está gravando** (um por incidente: "NÃO reinicie o servidor; há login renovado só na memória; veja o disco").
 
@@ -255,11 +259,19 @@ saem da pasta sozinhos (e nunca passam de 500 arquivos).
 ls -la /opt/swap-plus/data/avisos/                                   # avisos ainda não levados pelo host
 docker exec swap-plus node -e "fetch('http://127.0.0.1:8444/admin/status').then(r=>r.json()).then(s=>console.log(s.notices))"
                                                                      # { enabled: true, dir: '/data/avisos' } (admin local)
+# o resumo semanal agora, sem esperar a segunda (vai para o e-mail do dono; o automático não muda por causa deste):
+docker exec swap-plus node /app/server/src/cli.js resumo
+docker exec swap-plus node /app/server/src/cli.js resumo ver         # só mostra o texto, sem mandar
 # aviso de teste (vai para o e-mail do dono como qualquer outro):
 docker exec swap-plus node -e "console.log(require('/app/server/src/notify').writeNotice('/data', { subject: 'Swap Plus: teste de aviso', text: 'Teste do aviso por e-mail.' }))"
 ```
 
-Para **desligar**: `NOTICES_ENABLED: "0"` no `environment` do compose e atualizar a stack (nada mais é gravado na pasta). O padrão
+Ajustes, todos no `environment` do compose (mudar pede atualizar a stack): `NOTICE_WEEKLY_DAY` (dia do resumo: `0` = domingo …
+`6` = sábado; padrão `1`, segunda), `NOTICE_WEEKLY_HOUR` (hora, 0 a 23; padrão `8`), `NOTICE_WEEKLY: "0"` (sem resumo semanal) e
+`NOTICE_LOGIN_DAYS` (quantos dias antes do vencimento sai o e-mail de cada conta; padrão `1`). Na primeira subida da 2.5.0 o
+servidor só começa a contar: o primeiro resumo automático sai na segunda seguinte (para ver um na hora, use o `resumo`).
+
+Para **desligar** tudo: `NOTICES_ENABLED: "0"` no `environment` do compose e atualizar a stack (nada mais é gravado na pasta). O padrão
 (sem a variável) é ligado. O log da subida diz `[avisos] avisos por e-mail ao dono ligados` ou `desligados`; uma falha ao gravar
 um aviso aparece como `[avisos] não consegui gravar o aviso ao dono…` (o servidor segue normal).
 

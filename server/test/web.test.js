@@ -1089,7 +1089,7 @@ test("painel: só o administrador entra; conta liberada não-admin vê 'painel s
   // mas bia conecta computador pelo VS Code
   const pcBia = await deviceLogin(ctx, "bia@exemplo.com", "PC da Bia");
   assertPage(pcBia.page, 200);
-  assert.match(pcBia.page.text, /Pronto! Pode voltar ao VS Code\./);
+  assert.match(pcBia.page.text, /Pronto! Conectado\./);
   assert.equal(pcBia.poll.status, "ok");
   assert.equal(ctx.store.state.devices[pcBia.poll.deviceId].googleEmail, "bia@exemplo.com");
   // a administradora também conecta computador, sem estar na lista

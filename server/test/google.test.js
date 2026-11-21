@@ -394,7 +394,7 @@ test("login com Google: start → Google (PKCE + state) → callback cria o comp
 
   // página de sucesso
   assertPage(b.page, 200);
-  assert.match(b.page.text, /Pronto! Pode voltar ao VS Code\./);
+  assert.match(b.page.text, /Pronto! Conectado\./);
   assert.ok(b.page.text.includes("ana@exemplo.com"));
   assert.ok(b.page.text.includes("Notebook do Paulo"));
 

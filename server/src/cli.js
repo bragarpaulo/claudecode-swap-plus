@@ -40,6 +40,10 @@ const USO = `Uso: node server/src/cli.js <comando>
 
   login-expires <n> <data>   diz até quando vale o login da conta n (o painel avisa 3 dias antes);
                  data em ISO, ex.: 2026-12-01T18:00 (hora daqui) ou 2026-12-01 (meia-noite)
+
+  resumo         manda agora ao dono o e-mail do resumo semanal (as contas que vencem nos próximos 7 dias);
+                 o resumo automático sai toda semana e não muda por causa deste
+  resumo ver     só mostra o texto do resumo, sem mandar e-mail
 `;
 
 class CliError extends Error {}
@@ -379,9 +383,21 @@ async function cmdRevoke(idArg) {
   console.log(`Computador "${d.name}" (${d.id}) desconectado. O token dele não vale mais.`);
 }
 
+async function cmdResumo(arg) {
+  if (arg !== undefined && arg !== "ver") throw new CliError("use: node server/src/cli.js resumo   (ou: resumo ver, para só mostrar)");
+  const r = await call("POST", "/admin/weekly-notice", { preview: arg === "ver" });
+  if (arg === "ver") console.log("Assim sairia o resumo semanal agora (nada foi enviado):\n");
+  else if (r.sent) console.log("Resumo semanal enviado ao dono (chega por e-mail em cerca de 1 minuto):\n");
+  else console.log(`O resumo NÃO foi enviado: ${r.why === "disabled" || r.why === "off" ? "os avisos por e-mail estão desligados (NOTICES_ENABLED)" : "o aviso não pôde ser gravado (veja o log do servidor)"}.\n`);
+  console.log(`Assunto: ${r.subject}\n`);
+  console.log(r.text);
+}
+
 async function main(argv) {
   const [cmd, arg, arg2] = argv;
   switch (cmd) {
+    case "resumo":
+      return cmdResumo(arg);
     case "pair":
       return cmdPair();
     case "status":

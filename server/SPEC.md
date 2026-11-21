@@ -53,6 +53,10 @@ Na imagem: `/app/plus/rules.js` e `/app/server/src/*.js` → `require("../../plu
 | `TZ` | `America/Sao_Paulo` | textos "hoje 18:00" do `rules.js` |
 | `ADMIN_EMAILS` | — | administrador(es) do painel web, separados por vírgula (produção: o e-mail do administrador, variável `SWAP_PLUS_ADMIN_EMAILS` da stack). Lido só na subida, sem rota para mudar. Vazio → painel desligado (aviso no log). Também decide quais computadores conectados com Google enviam logins (abaixo, "Quem envia logins"). Detalhes em WEB-SPEC.md |
 | `RESTIC_PASS_FILE` | `/run/secrets/restic_swap_plus_pass` | senha do backup, só para o kit de recuperação do painel (opcional: sem o arquivo, "não disponível") |
+| `NOTICE_LOGIN_DAYS` | `1` | quantos dias antes do fim do login de uma conta sai o e-mail dela ao dono (1 a 30); um e-mail por login |
+| `NOTICE_WEEKLY` | `1` | resumo semanal por e-mail ao dono (as contas que vencem nos 7 dias seguintes); `0` desliga |
+| `NOTICE_WEEKLY_DAY` | `1` | dia da semana do resumo: `0` = domingo … `6` = sábado (padrão: segunda) |
+| `NOTICE_WEEKLY_HOUR` | `8` | hora do resumo (0 a 23), no fuso do servidor (`TZ`) |
 | `NOTICES_ENABLED` | `1` | avisos por e-mail ao dono (abaixo, "Avisos por e-mail ao dono"); `0` desliga (nada é gravado em `DATA_DIR/avisos/`) |
 
 Login com Google ligado = client id + client secret + `PUBLIC_URL`. Retorno cadastrado no Google Cloud:
@@ -162,7 +166,9 @@ Fim do login (`refreshTokenExpiresAt`, epoch ms, gravado pelo Claude Code dentro
   de qualquer computador conectado." (`venceu` se a data já passou). O dia avisado fica em `loginWarnedOn` (zera com login novo ou data nova).
 - `stateFor().warnings` (calculado na hora): `{ kind: "dead", account: N, text }` para contas mortas e
   `{ kind: "login_expiring", account: N, text }` (mesmo texto do histórico) enquanto faltar menos de 3 dias.
-- No MESMO momento do alerta diário do histórico sai também o aviso por e-mail ao dono (abaixo): 1 por conta por dia.
+- E-mail ao dono (abaixo): não acompanha mais o alerta diário. Sai UM por login, quando falta menos de 1 dia
+  (`NOTICE_LOGIN_DAYS`) para ele vencer; o vencimento já avisado fica em `acc.loginMailedFor` (data nova → avisa de novo).
+  Antes disso quem avisa é o resumo semanal. Aviso que não gravou é tentado de novo em 10 min.
 - `setLoginExpiresAt(number, ms)`: para contas enviadas antes de o servidor guardar a data. `ms` = epoch em ms (número ou número em texto)
   depois de "agora - 1 dia" e até 5 anos à frente, senão `invalid`; conta inexistente → `not_found`. Muda `cred.refreshTokenExpiresAt` no lugar,
   sob a trava da conta; grava o cofre; histórico "Validade do login da conta N preenchida".
@@ -251,7 +257,17 @@ createNotifier({ dir, env, now, log }) → notify({ subject, text })    // + not
 - **Nunca lança**: erro (disco cheio, pasta sem permissão…) só vai para o log `[avisos]`.
 
 Gatilhos no motor (sem `notify`, nenhum; o texto diz a conta — número, apelido, e-mail — e como renovar):
-- **Login que vence em menos de 3 dias**: no mesmo momento do alerta diário do histórico (`loginWarnedOn`), 1 por conta por dia.
+- **Resumo semanal** (`weeklyStep`, desde a 2.5.0): uma vez a cada horário marcado (`NOTICE_WEEKLY_DAY`/`NOTICE_WEEKLY_HOUR`,
+  padrão segunda às 8h, fuso do servidor). Lista as contas vivas cujo login vence nos 7 dias seguintes (a que vence antes
+  primeiro), as que já pararam de valer e as sem data conhecida. Sem conta vencendo o resumo sai assim mesmo
+  (`Swap Plus: nenhuma conta vence nesta semana`). O instante do último fica no cofre (`state.weeklyNoticeAt`): reiniciar
+  não repete, e servidor parado na hora manda ao voltar. Na primeira subida com este recurso só começa a contar (o
+  primeiro resumo sai no próximo horário marcado). Assunto com conta: `Swap Plus: N contas vencem nesta semana`
+  (com uma só: `Swap Plus: 1 conta vence nesta semana (conta N, DD/MM HH:MM)`). `NOTICE_WEEKLY=0` desliga.
+  À mão: `POST /admin/weekly-notice` (CLI `resumo`; `{ preview: true }` / `resumo ver` só mostra o texto) — não mexe na
+  marca do resumo automático.
+- **Login que vence em menos de 1 dia** (`NOTICE_LOGIN_DAYS`): UM aviso por login (`loginMailedFor`), no ciclo em que a
+  conta entra nesse prazo. O alerta do histórico e do painel continua desde 3 dias antes, 1x por dia, sem e-mail.
   Assunto `Swap Plus: login da conta N vence DD/MM HH:MM` (`venceu`, se já passou).
 - **Conta que morre** (passa a `dead`, `markDead`): 1 na hora. Assunto `Swap Plus: o login da conta N parou de valer`; o texto traz o
   motivo e, com `dead.cause === "no_response"`, que "a renovação anterior ficou sem resposta".
@@ -301,7 +317,7 @@ O VS Code não recebe o retorno do navegador; por isso ele inicia, abre `authUrl
   `iss` ∈ {accounts.google.com, https://accounts.google.com}, `aud` contém o client id (e `azp`, se vier, é o client id), `exp` no futuro,
   `email_verified` true. E-mail do administrador (`ADMIN_EMAILS`) ou em `allowedEmails` (comparação pela `emailKey`: minúsculas e,
   no Gmail, sem pontos e sem `+algo`) → cria o dispositivo (como no pareamento, com `googleEmail`), grava o cofre, histórico
-  "Computador X conectado com a conta Google Y", página "Pronto! Pode voltar ao VS Code.". Não liberado → página de recusa e `poll` → `denied`.
+  "Computador X conectado com a conta Google Y", página "Pronto! Conectado." (o texto não cita programa: a extensão e o cliente sem VS Code entram por aqui). Não liberado → página de recusa e `poll` → `denied`.
   `error` na query, troca recusada ou id_token inválido → página de erro e a sessão continua `pending` (dá para tentar de novo pelo mesmo link).
   Recarregar o retorno depois de concluído mostra o mesmo resultado sem falar com o Google.
 - Depois do retorno do Google a sessão vale pelo menos mais 5 min. Se vencer com o computador criado e o VS Code não buscou o acesso,

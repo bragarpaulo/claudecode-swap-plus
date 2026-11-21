@@ -30,7 +30,7 @@ const crypto = require("crypto");
 const { RULE_DEFAULTS, STRATEGY_LABELS, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.4.2";
+const VERSION = "2.5.0";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
 const POLL_ACTIVE_MS = 3 * 60 * 1000; // conta de dispositivo ativo: uso a cada 3 min
@@ -53,7 +53,15 @@ const NOTE_REPEAT_MS = 60 * 60 * 1000; // "sem folga" no histórico no máximo 1
 const SPENT_KEEP = 500; // refresh tokens gastos lembrados (por conta e na lista geral)
 const DIAG_MAX_ATTEMPTS = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const LOGIN_WARN_MS = 3 * DAY_MS; // avisa quando faltam menos de 3 dias para o login vencer de vez
+const LOGIN_WARN_MS = 3 * DAY_MS; // avisa (histórico e painel) quando faltam menos de 3 dias para o login vencer de vez
+// E-mails ao dono sobre o vencimento dos logins (pedido do Paulo, 20/11/2026): um resumo por semana com as contas
+// que vencem nos 7 dias seguintes e, para cada conta, UM aviso quando falta menos de 1 dia.
+const LOGIN_MAIL_DAYS = 1; // NOTICE_LOGIN_DAYS (1 a 30)
+const WEEKLY_DAY = 1; // NOTICE_WEEKLY_DAY: 0 = domingo … 6 = sábado (padrão: segunda)
+const WEEKLY_HOUR = 8; // NOTICE_WEEKLY_HOUR: 0 a 23, no fuso do servidor (padrão: 8h)
+const WEEKLY_AHEAD_MS = 7 * DAY_MS; // o resumo olha os 7 dias seguintes
+const NOTICE_RETRY_MS = 10 * 60 * 1000; // aviso que não deu para gravar (disco cheio): tenta de novo em 10 min
+const OFF_RE = /^(0|false|off|no|n[aã]o)$/i;
 const LOGIN_FILL_MAX_AHEAD_MS = 5 * 365 * DAY_MS; // setLoginExpiresAt: mais longe que isso é engano de digitação
 const MAX_DATE_MS = 8.64e15; // maior data que o Date aceita (além disso toISOString lança)
 
@@ -299,6 +307,16 @@ class Engine {
     this.panelUrl = panelUrlOf(e.PUBLIC_URL);
     this.saveIncident = null; // cofre sem gravar: { since, error, notified, lastTry } (só na memória)
     this.saveNoticeAt = 0; // quando saiu o último aviso de "cofre sem gravar" (anti vai-e-volta)
+    // E-mails do vencimento dos logins: quantos dias antes vai o aviso de cada conta, e quando sai o resumo semanal.
+    const intIn = (v, min, max, def) => {
+      const n = Number(v);
+      return v !== undefined && v !== null && String(v).trim() !== "" && Number.isInteger(n) && n >= min && n <= max ? n : def;
+    };
+    this.loginMailMs = intIn(e.NOTICE_LOGIN_DAYS, 1, 30, LOGIN_MAIL_DAYS) * DAY_MS;
+    this.weeklyOn = !OFF_RE.test(String(e.NOTICE_WEEKLY === undefined || e.NOTICE_WEEKLY === null ? "" : e.NOTICE_WEEKLY).trim());
+    this.weeklyDay = intIn(e.NOTICE_WEEKLY_DAY, 0, 6, WEEKLY_DAY);
+    this.weeklyHour = intIn(e.NOTICE_WEEKLY_HOUR, 0, 23, WEEKLY_HOUR);
+    this.noticeTry = new Map(); // "weekly" | "login:<n>" → quando tentou e o aviso não gravou (só na memória)
     const perHour = Number(e.USAGE_MAX_PER_HOUR);
     this.usageMaxPerHour = Number.isFinite(perHour) && perHour >= 1 ? perHour : 24;
     const ahead = Number(e.REFRESH_AHEAD_MIN);
@@ -524,7 +542,109 @@ class Engine {
     );
   }
 
-  /** Aviso "o login vence" (junto com o alerta diário do histórico). */
+  /** O aviso gravou (ou não há o que insistir: sem avisos, ou desligados)? Falso = tentar de novo mais tarde. */
+  noticeDone(r) {
+    return !r || r.ok === true || !!r.skipped;
+  }
+
+  /** Pode tentar este aviso agora? Depois de uma tentativa que não gravou, espera 10 min. */
+  noticeMayTry(key, t) {
+    const last = this.noticeTry.get(key);
+    return !last || t - last >= NOTICE_RETRY_MS;
+  }
+
+  /**
+   * Resumo semanal para o dono: as contas vivas cujo login vence nos 7 dias seguintes (mais cedo primeiro), as que
+   * já pararam de valer e as que não têm data conhecida (o servidor não tem como avisar dessas).
+   * → { subject, text, expiring: [número], dead: [número], unknown: [número] }
+   */
+  weeklySummary(t = this.now()) {
+    const end = t + WEEKLY_AHEAD_MS;
+    const expiring = [];
+    const dead = [];
+    const unknown = [];
+    for (const a of this.accountList()) {
+      if (a.dead) {
+        dead.push(a);
+        continue;
+      }
+      const exp = this.loginExpiry(a);
+      if (!exp) unknown.push(a);
+      else if (exp < end) expiring.push({ a, exp });
+    }
+    expiring.sort((x, y) => x.exp - y.exp || x.a.number - y.a.number);
+    const n = expiring.length;
+    const subject =
+      n === 0
+        ? "Swap Plus: nenhuma conta vence nesta semana"
+        : n === 1
+          ? `Swap Plus: 1 conta vence nesta semana (conta ${expiring[0].a.number}, ${fmtDayTime(expiring[0].exp)})`
+          : `Swap Plus: ${n} contas vencem nesta semana`;
+    const lines = [`Resumo semanal do Swap Plus: logins das contas, de ${fmtDayTime(t)} a ${fmtDayTime(end)}.`, ""];
+    if (n === 0) lines.push("Nenhuma conta vence nos próximos 7 dias.");
+    else {
+      lines.push(n === 1 ? "Vence nesta semana (entre de novo com ela antes da data):" : "Vencem nesta semana (entre de novo com cada uma antes da data):");
+      for (const { a, exp } of expiring) {
+        lines.push(exp > t ? `- ${this.accountWho(a)}: vence ${fmtDayTime(exp)} (faltam ${leftText(exp - t)})` : `- ${this.accountWho(a)}: venceu ${fmtDayTime(exp)}`);
+      }
+    }
+    if (dead.length) {
+      lines.push("", dead.length === 1 ? "Já parou de valer (precisa de login novo agora):" : "Já pararam de valer (precisam de login novo agora):");
+      for (const a of dead) lines.push(`- ${this.accountWho(a)}`);
+    }
+    if (unknown.length) {
+      lines.push("", `Sem data de vencimento conhecida (o servidor não tem como avisar ${unknown.length === 1 ? "desta" : "destas"}): ${unknown.map((a) => `conta ${a.number}`).join(", ")}.`);
+    }
+    if (n) lines.push("", `Você recebe outro aviso de cada conta quando ${this.loginMailMs === DAY_MS ? "faltar menos de 1 dia" : `faltarem menos de ${Math.round(this.loginMailMs / DAY_MS)} dias`} para ela vencer.`);
+    if (n || dead.length) {
+      const where = this.panelUrl ? `abra ${this.panelUrl}` : "abra o painel do Swap Plus";
+      lines.push("", `Para renovar: ${where} → Contas → a conta → Entrar de novo, e entre com o e-mail da conta na página da Claude; copie o código e cole no painel.`);
+    }
+    return { subject, text: lines.join("\n"), expiring: expiring.map((x) => x.a.number), dead: dead.map((a) => a.number), unknown: unknown.map((a) => a.number) };
+  }
+
+  /** Manda o resumo semanal agora. → o resultado do aviso (ou null sem avisos) + o que foi no resumo. */
+  noticeWeekly(t = this.now()) {
+    const s = this.weeklySummary(t);
+    const r = this.notice(s.subject, s.text);
+    this.log.info(`[avisos] resumo semanal: ${s.expiring.length} conta(s) vencem nos próximos 7 dias${s.dead.length ? `, ${s.dead.length} parada(s)` : ""}`);
+    return { result: r, summary: s };
+  }
+
+  /** O último horário marcado do resumo (dia da semana e hora, no fuso do servidor) que já passou. */
+  weeklyDue(t = this.now()) {
+    const d = new Date(t);
+    const due = new Date(d.getFullYear(), d.getMonth(), d.getDate(), this.weeklyHour, 0, 0, 0);
+    let back = (d.getDay() - this.weeklyDay + 7) % 7;
+    if (back === 0 && t < due.getTime()) back = 7; // hoje é o dia, mas a hora ainda não chegou: vale o da semana passada
+    due.setDate(due.getDate() - back);
+    return due.getTime();
+  }
+
+  /**
+   * Resumo semanal: sai uma vez a cada horário marcado (padrão: segunda, 8h). O instante do último fica no cofre
+   * (`weeklyNoticeAt`): reiniciar o servidor não repete, e servidor parado na hora manda assim que voltar.
+   * Na primeira vez que roda (cofre sem a marca) só começa a contar: o primeiro resumo sai no próximo horário.
+   */
+  weeklyStep(t = this.now()) {
+    if (!this.notifyFn || !this.weeklyOn) return;
+    const st = this.st;
+    const last = Number(st.weeklyNoticeAt) || 0;
+    if (!last) {
+      st.weeklyNoticeAt = t;
+      this.dirty = true;
+      return;
+    }
+    if (last >= this.weeklyDue(t) || !this.noticeMayTry("weekly", t)) return;
+    const { result } = this.noticeWeekly(t);
+    if (this.noticeDone(result)) {
+      this.noticeTry.delete("weekly");
+      st.weeklyNoticeAt = t;
+      this.dirty = true;
+    } else this.noticeTry.set("weekly", t);
+  }
+
+  /** Aviso "o login vence": um por login, quando falta menos de 1 dia (loginExpiryStep). */
   noticeLoginExpiring(a, exp, t = this.now()) {
     const verb = exp > t ? "vence" : "venceu";
     const head =
@@ -852,6 +972,7 @@ class Engine {
       }
       await this.refreshStep();
       this.loginExpiryStep();
+      this.weeklyStep();
       if (!this.stopping) {
         await this.usageStep();
         await this.decisionStep();
@@ -1028,20 +1149,32 @@ class Engine {
   }
 
   /**
-   * Aviso no histórico quando faltam menos de 3 dias para o login de uma conta viva vencer de vez:
-   * no máximo 1x por dia (do fuso do servidor) por conta; o dia avisado fica em `acc.loginWarnedOn`.
-   * No MESMO momento vai o aviso por e-mail ao dono (notify): também 1 por conta por dia.
-   * Conta sem `refreshTokenExpiresAt` (login antigo) não avisa.
+   * O login de uma conta viva está para vencer de vez. Conta sem `refreshTokenExpiresAt` (login antigo) não avisa.
+   * - Histórico (e painel): quando faltam menos de 3 dias, no máximo 1x por dia (do fuso do servidor) por conta; o
+   *   dia avisado fica em `acc.loginWarnedOn`.
+   * - E-mail ao dono (notify): UM por login, quando falta menos de 1 dia (NOTICE_LOGIN_DAYS). O vencimento já
+   *   avisado fica em `acc.loginMailedFor`: login novo (data nova) avisa de novo. Antes disso quem avisa é o resumo
+   *   semanal (weeklyStep). Aviso que não gravou é tentado de novo em 10 min.
    */
   loginExpiryStep(t = this.now()) {
     const today = localDay(t);
     for (const acc of this.accountList()) {
-      if (acc.dead || acc.loginWarnedOn === today) continue;
+      if (acc.dead) continue;
       const exp = this.loginExpiry(acc);
-      if (!exp || exp - t >= LOGIN_WARN_MS) continue;
-      acc.loginWarnedOn = today;
-      this.pushHistory("alert", this.loginExpiringText(acc, exp, t), null); // marca dirty: grava no fim do ciclo
-      this.noticeLoginExpiring(acc, exp, t);
+      if (!exp) continue;
+      if (exp - t < LOGIN_WARN_MS && acc.loginWarnedOn !== today) {
+        acc.loginWarnedOn = today;
+        this.pushHistory("alert", this.loginExpiringText(acc, exp, t), null); // marca dirty: grava no fim do ciclo
+      }
+      if (this.notifyFn && exp - t < this.loginMailMs && acc.loginMailedFor !== exp) {
+        const key = `login:${acc.number}`;
+        if (!this.noticeMayTry(key, t)) continue;
+        if (this.noticeDone(this.noticeLoginExpiring(acc, exp, t))) {
+          this.noticeTry.delete(key);
+          acc.loginMailedFor = exp;
+          this.dirty = true;
+        } else this.noticeTry.set(key, t);
+      }
     }
   }
 

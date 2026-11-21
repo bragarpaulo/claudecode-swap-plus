@@ -2372,9 +2372,17 @@ const RENEW = (n, email) =>
   `Para renovar: abra https://swap.exemplo.com → Contas → conta ${n} → Entrar de novo, e entre com ${email} na página da Claude; ` +
   "copie o código e cole no painel. (Ou faça /login no Claude Code de um computador do administrador.)";
 
-test("avisos por e-mail: login que vence em < 3 dias → 1 aviso por conta por dia, no mesmo momento do alerta do histórico", async (t) => {
+/** O próximo horário marcado do resumo semanal (dia da semana e hora LOCAIS) depois de `from`. */
+function nextWeekly(from, day = 1, hour = 8) {
+  const d = new Date(from);
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hour, 0, 0, 0);
+  while (x.getDay() !== day || x.getTime() <= from) x.setDate(x.getDate() + 1);
+  return x.getTime();
+}
+
+test("avisos por e-mail: login que vence → UM aviso por login, quando falta menos de 1 dia; o histórico avisa desde 3 dias antes", async (t) => {
   const notify = noticeSpy();
-  const { engine, fake, clock, store } = setup(t, { notify, env: { PUBLIC_URL: "https://swap.exemplo.com/" } });
+  const { engine, fake, clock, store } = setup(t, { notify, env: { PUBLIC_URL: "https://swap.exemplo.com/", NOTICE_WEEKLY: "0" } });
   const END = START + 4 * DAY;
   const END2 = END + 2 * MIN;
   const l1 = fake.login("ana@x.com");
@@ -2391,51 +2399,208 @@ test("avisos por e-mail: login que vence em < 3 dias → 1 aviso por conta por d
   await engine.tick();
   assert.equal(notify.sent.length, 0, "faltam 4 dias: nada");
 
-  clock.t = END - 3 * DAY + MIN; // conta 1: faltam menos de 3 dias; conta 2 ainda não
+  clock.t = END - 3 * DAY + MIN; // conta 1: faltam menos de 3 dias → só o histórico (e o painel)
+  await engine.tick();
+  assert.equal(historyAlerts().length, 1);
+  assert.equal(expiring().length, 0, "o e-mail só sai no último dia");
+
+  clock.t = END - DAY - MIN; // ainda falta mais de 1 dia
+  await engine.tick();
+  assert.equal(expiring().length, 0);
+
+  clock.t = END - DAY + MIN; // conta 1: falta menos de 1 dia; a conta 2 vence 2 min depois, ainda não
   await engine.tick();
   assert.equal(expiring().length, 1);
-  assert.equal(historyAlerts().length, 1, "o aviso sai junto com o alerta do histórico");
   const [n1] = expiring();
   assert.equal(n1.subject, `Swap Plus: login da conta 1 vence ${dayTime(END)}`);
-  assert.ok(n1.text.startsWith(`O login da conta 1 (apelido “Trabalho”, e-mail ana@x.com) no Swap Plus vence em ${dayTime(END)} (faltam cerca de 3 dias).`), n1.text);
+  assert.ok(n1.text.startsWith(`O login da conta 1 (apelido “Trabalho”, e-mail ana@x.com) no Swap Plus vence em ${dayTime(END)} (faltam `), n1.text);
   assert.ok(n1.text.includes(RENEW(1, "ana@x.com")), n1.text);
   assert.deepEqual(Object.keys(n1).sort(), ["subject", "text"]);
+  assert.equal(store.state.accounts["1"].loginMailedFor, END, "o vencimento avisado fica na conta (vai para o cofre)");
 
-  // Mesmo dia: não repete (nem o histórico).
+  // Não repete: nem nos ciclos seguintes, nem depois.
   clock.t += 30 * SEC;
   await engine.tick();
   await engine.tick();
   assert.equal(expiring().length, 1);
-  assert.equal(historyAlerts().length, 1);
 
-  // A conta 2 entra na janela: o aviso dela (1 por conta).
+  // A conta 2 entra no último dia dela: o aviso dela (um por conta).
   clock.t += 2 * MIN;
   await engine.tick();
   assert.equal(expiring().length, 2);
   assert.equal(expiring()[1].subject, `Swap Plus: login da conta 2 vence ${dayTime(END2)}`);
   assert.ok(expiring()[1].text.startsWith("O login da conta 2 (e-mail bia@x.com) no Swap Plus vence em"), expiring()[1].text);
   assert.ok(expiring()[1].text.includes(RENEW(2, "bia@x.com")));
-  await engine.tick();
-  assert.equal(expiring().length, 2);
-
-  // Dia seguinte: de novo, um por conta.
-  clock.t += DAY;
+  clock.t += 6 * HOUR;
   await engine.tick();
   await engine.tick();
-  assert.equal(expiring().length, 4);
-  assert.equal(expiring().filter((n) => n.subject.includes("conta 1 ")).length, 2);
-  assert.equal(expiring().filter((n) => n.subject.includes("conta 2 ")).length, 2);
-  assert.equal(historyAlerts().length, 4);
-
-  // Conta morta: para de avisar que vence (o aviso dela agora é o de "parou de valer").
-  fake.refreshFail.set("ana@x.com", "invalid_grant");
-  assert.equal((await engine.refreshAccount(1, { minValidMs: Infinity })).error, "invalid_grant");
-  clock.t += DAY;
-  await engine.tick();
-  assert.equal(expiring().filter((n) => n.subject.includes("conta 1 ")).length, 2);
-  assert.equal(expiring().filter((n) => n.subject.includes("conta 2 ")).length, 3);
-  assert.equal(notify.sent.filter((n) => n.subject === "Swap Plus: o login da conta 1 parou de valer").length, 1);
+  assert.equal(expiring().length, 2, "um aviso por login, não um por dia");
   assert.ok(!notify.sent.some((n) => n.subject.includes("conta 3")), "conta sem data conhecida nunca avisa");
+  assert.ok(!notify.sent.some((n) => /nesta semana/.test(n.subject)), "NOTICE_WEEKLY=0: sem resumo semanal");
+});
+
+test("avisos por e-mail: aviso do último dia que não gravou é tentado de novo em 10 min; data nova avisa de novo; conta morta não avisa", async (t) => {
+  const notify = noticeSpy();
+  const { engine, fake, clock, store } = setup(t, { notify, env: { PUBLIC_URL: "https://swap.exemplo.com", NOTICE_WEEKLY: "0" } });
+  const END = START + 2 * DAY;
+  const l1 = fake.login("ana@x.com");
+  l1.claudeAiOauth.refreshTokenExpiresAt = END;
+  await engine.addLogin(l1);
+  const l2 = fake.login("bia@x.com");
+  l2.claudeAiOauth.refreshTokenExpiresAt = END;
+  await engine.addLogin(l2);
+  const de = (n) => notify.sent.filter((x) => x.subject.startsWith(`Swap Plus: login da conta ${n} vence`));
+
+  // A conta 2 morre antes do último dia: o aviso dela é o de "parou de valer", não o de "vence".
+  fake.refreshFail.set("bia@x.com", "invalid_grant");
+  assert.equal((await engine.refreshAccount(2, { minValidMs: Infinity })).error, "invalid_grant");
+
+  notify.fail = true; // a caixa de saída não grava (disco cheio)
+  clock.t = END - DAY + MIN;
+  await engine.tick();
+  assert.equal(de(1).length, 1, "tentou");
+  assert.equal(store.state.accounts["1"].loginMailedFor, undefined, "não gravou: não marca como avisado");
+  clock.t += MIN;
+  await engine.tick();
+  assert.equal(de(1).length, 1, "não insiste a cada ciclo");
+  notify.fail = false;
+  clock.t += 10 * MIN;
+  await engine.tick();
+  assert.equal(de(1).length, 2, "tentou de novo depois de 10 min");
+  assert.equal(store.state.accounts["1"].loginMailedFor, END);
+  await engine.tick();
+  assert.equal(de(1).length, 2);
+  assert.equal(de(2).length, 0, "conta morta não avisa que vence");
+
+  // O dono renovou o login (data nova): o aviso vale de novo para o vencimento novo.
+  const NOVO = clock.t + 20 * DAY;
+  await engine.setLoginExpiresAt(1, NOVO);
+  await engine.tick();
+  assert.equal(de(1).length, 2, "faltam 20 dias: nada");
+  clock.t = NOVO - DAY + MIN;
+  await engine.tick();
+  assert.equal(de(1).length, 3);
+  assert.equal(de(1)[2].subject, `Swap Plus: login da conta 1 vence ${dayTime(NOVO)}`);
+});
+
+test("resumo semanal: uma vez por semana no horário marcado, com as contas que vencem em 7 dias, as paradas e as sem data", async (t) => {
+  const notify = noticeSpy();
+  const { engine, fake, clock, store } = setup(t, { notify, env: { PUBLIC_URL: "https://swap.exemplo.com" } });
+  const DUE = nextWeekly(START); // a próxima segunda, 8h (hora do servidor)
+  const EXP1 = DUE + 3 * DAY;
+  const l1 = fake.login("ana@x.com");
+  l1.claudeAiOauth.refreshTokenExpiresAt = EXP1;
+  await engine.addLogin(l1);
+  const l2 = fake.login("bia@x.com");
+  l2.claudeAiOauth.refreshTokenExpiresAt = DUE + 10 * DAY; // fora dos 7 dias
+  await engine.addLogin(l2);
+  await engine.addLogin(fake.login("caio@x.com")); // sem data
+  await engine.addLogin(fake.login("dora@x.com"));
+  fake.refreshFail.set("dora@x.com", "invalid_grant");
+  assert.equal((await engine.refreshAccount(4, { minValidMs: Infinity })).error, "invalid_grant");
+  const weekly = () => notify.sent.filter((n) => /nesta semana/.test(n.subject));
+
+  await engine.tick();
+  assert.equal(weekly().length, 0, "primeira vez: só começa a contar");
+  assert.equal(store.state.weeklyNoticeAt, START);
+
+  clock.t = DUE - MIN;
+  await engine.tick();
+  assert.equal(weekly().length, 0, "antes da hora marcada");
+
+  clock.t = DUE + MIN;
+  await engine.tick();
+  assert.equal(weekly().length, 1);
+  const [w] = weekly();
+  assert.equal(w.subject, `Swap Plus: 1 conta vence nesta semana (conta 1, ${dayTime(EXP1)})`);
+  assert.ok(w.text.includes(`- conta 1 (e-mail ana@x.com): vence ${dayTime(EXP1)} (faltam `), w.text);
+  assert.ok(!w.text.includes("conta 2"), "a conta 2 vence depois dos 7 dias");
+  assert.ok(w.text.includes("Já parou de valer (precisa de login novo agora):\n- conta 4 (e-mail dora@x.com)"), w.text);
+  assert.ok(w.text.includes("Sem data de vencimento conhecida (o servidor não tem como avisar desta): conta 3."), w.text);
+  assert.ok(w.text.includes("Você recebe outro aviso de cada conta quando faltar menos de 1 dia para ela vencer."), w.text);
+  assert.ok(w.text.includes("Para renovar: abra https://swap.exemplo.com → Contas → a conta → Entrar de novo"), w.text);
+  assert.deepEqual(Object.keys(w).sort(), ["subject", "text"]);
+  assert.equal(store.state.weeklyNoticeAt, DUE + MIN, "o instante do resumo fica no cofre");
+
+  // Não repete na mesma semana.
+  await engine.tick();
+  clock.t += DAY;
+  await engine.tick();
+  clock.t = DUE + 7 * DAY - MIN;
+  await engine.tick();
+  assert.equal(weekly().length, 1);
+
+  // Semana seguinte: de novo. Agora quem vence em 7 dias é a conta 2 (a 1 já passou da data).
+  clock.t = nextWeekly(DUE + MIN) + MIN;
+  await engine.tick();
+  assert.equal(weekly().length, 2);
+  assert.ok(weekly()[1].text.includes("- conta 2 (e-mail bia@x.com): vence "), weekly()[1].text);
+});
+
+test("resumo semanal: servidor parado na hora manda ao voltar (uma vez só); falha tenta de novo em 10 min; sem contas vencendo diz isso; dia e hora configuráveis", async (t) => {
+  const notify = noticeSpy();
+  const { engine, fake, clock, store } = setup(t, { notify, env: { NOTICE_WEEKLY_DAY: "5", NOTICE_WEEKLY_HOUR: "18" } });
+  await engine.addLogin(fake.login("ana@x.com")); // sem data
+  const weekly = () => notify.sent.filter((n) => /nesta semana/.test(n.subject));
+  const DUE = nextWeekly(START, 5, 18); // sexta, 18h
+  await engine.tick();
+
+  const SEGUNDA = nextWeekly(START, 1, 8) + MIN; // segunda 8h não é o horário marcado deste servidor
+  if (SEGUNDA < DUE) {
+    clock.t = SEGUNDA;
+    await engine.tick();
+    assert.equal(weekly().length, 0);
+  }
+
+  // O servidor ficou parado na sexta às 18h e voltou 2 dias depois: manda ao voltar. Mas a caixa de saída falha...
+  notify.fail = true;
+  clock.t = DUE + 2 * DAY;
+  await engine.tick();
+  assert.equal(weekly().length, 1, "tentou");
+  assert.equal(store.state.weeklyNoticeAt, START, "não gravou: a marca não anda");
+  clock.t += MIN;
+  await engine.tick();
+  assert.equal(weekly().length, 1, "não insiste a cada ciclo");
+  notify.fail = false;
+  clock.t += 10 * MIN;
+  await engine.tick();
+  assert.equal(weekly().length, 2);
+  assert.equal(weekly()[1].subject, "Swap Plus: nenhuma conta vence nesta semana");
+  assert.ok(weekly()[1].text.includes("Nenhuma conta vence nos próximos 7 dias."), weekly()[1].text);
+  assert.ok(weekly()[1].text.includes("Sem data de vencimento conhecida"), weekly()[1].text);
+  assert.ok(!weekly()[1].text.includes("Para renovar"), "nada a renovar: sem a instrução");
+  await engine.tick();
+  clock.t += DAY;
+  await engine.tick();
+  assert.equal(weekly().length, 2, "uma vez só por horário marcado");
+});
+
+test("resumo semanal: sem avisos configurados não faz nada; weeklySummary e noticeWeekly servem ao comando do admin", async (t) => {
+  const semAvisos = setup(t, {});
+  await semAvisos.engine.addLogin(semAvisos.fake.login("ana@x.com"));
+  semAvisos.clock.t = nextWeekly(START) + MIN;
+  await semAvisos.engine.tick();
+  assert.equal(semAvisos.store.state.weeklyNoticeAt, undefined);
+  assert.equal(semAvisos.engine.noticeWeekly().result, null, "sem notify: nada é enviado");
+
+  const notify = noticeSpy();
+  const { engine, fake, clock, store } = setup(t, { notify });
+  const l1 = fake.login("ana@x.com");
+  l1.claudeAiOauth.refreshTokenExpiresAt = START + 2 * DAY;
+  await engine.addLogin(l1);
+  const l2 = fake.login("bia@x.com");
+  l2.claudeAiOauth.refreshTokenExpiresAt = START + DAY;
+  await engine.addLogin(l2);
+  const s = engine.weeklySummary();
+  assert.deepEqual(s.expiring, [2, 1], "a que vence antes vem primeiro");
+  assert.equal(s.subject, "Swap Plus: 2 contas vencem nesta semana");
+  assert.equal(notify.sent.length, 0, "weeklySummary só monta o texto");
+  const r = engine.noticeWeekly();
+  assert.equal(r.result.ok, true);
+  assert.equal(notify.sent.length, 1);
+  assert.equal(notify.sent[0].subject, s.subject);
+  assert.equal(store.state.weeklyNoticeAt, undefined, "mandar à mão não mexe na marca do resumo automático");
+  assert.equal(clock.t, START);
 });
 
 test("avisos por e-mail: conta que morre → 1 aviso na hora, com o motivo; morte depois de renovação sem resposta diz isso", async (t) => {

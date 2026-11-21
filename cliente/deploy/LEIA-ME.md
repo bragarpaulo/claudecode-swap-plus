@@ -87,6 +87,38 @@ também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `he
   com `2.5.2` (a imagem continua no servidor).
 - **Extensão 3.2.0 publicada às 02:42** (tag `plus-v3.2.0`), com o OK do dono.
 
+**21/11/2026, 08:21–15:05 — conversas do VS Code paradas três vezes, e o que mudou por causa disso:**
+
+- **09:53 — renovação da conta em uso.** O servidor renovou o login da conta 6 às 09:53:19, com os serviços nela.
+  A Anthropic cancela o acesso antigo na hora; o VS Code (NoteWin) só buscou o novo às 09:53:38. Nesses 19 s as
+  conversas "nexo" e "comando-server" e um subagente receberam `401 OAuth access token has been revoked` e pararam
+  (ficaram assim até 13:10). O mesmo erro está gravado em 16/11 às 09:51. O Hermes estava parado e não foi afetado.
+  → **Servidor 2.5.5** (no ar às 14:36): a conta que um serviço segura não é renovada com ele nela; faltando menos
+  de 1 h o servidor troca os serviços de conta e só então renova. Revisada por um revisor independente antes de
+  publicar (nada grave; três achados dele entraram: 3 min de tolerância depois da busca, marca gravada na hora e "ou
+  saem todos, ou ninguém").
+- **14:15 — limite do Fable logo depois de uma troca voluntária.** Às 14:03 o servidor levou os serviços para a
+  conta 22 pela regra "aproveitar ao máximo", com o Fable dela em 89%. Às 14:15:50 "nexo" e "Stafy" bateram o
+  limite; a extensão avisou, o servidor trocou para a conta 6 e o VS Code gravou às 14:15:55. O Hermes acompanhou
+  às 14:16:08, sem erro. → **Servidor 2.5.6** (no ar às 15:02): regra `preferMinFreePct` no painel ("Mínimo de
+  Fable sobrando no destino", em 10% a pedido do dono) e leitura da conta em uso a cada 2,5 a 5 min quando o Fable
+  está a até 15 pontos da linha. Com 10% a troca das 14:03 ainda aconteceria (a conta tinha 11%): quem segura o caso
+  é a leitura mais cedo; para barrar a troca o número precisa ser 12 ou mais.
+- **A conversa parava mesmo com a troca feita em 5 s.** → **Extensão 3.3.0** (tag `plus-v3.3.0`, publicada às 15:05): gancho
+  `StopFailure` do Claude Code que, depois da troca, posta "Troquei de conta, pode continuar." na caixa de entrada da
+  conversa parada (ver `NOVIDADES-3.3.md` e `plus/README.md`). No NoteWin o gancho foi instalado à mão às 14:58, com
+  o mesmo código (`resume.sync`), para valer antes de a extensão atualizar: `~/.claude/settings.json` ganhou a
+  entrada `hooks.StopFailure` (cópia de antes em `settings.json.antes-swap-plus`) e a pasta `~/.swap-plus` o
+  script. Com a extensão 3.2.1 ainda rodando, o script sabe da troca pela data do `.credentials.json`.
+- **08:21 — troca manual para conta sem Fable** (achado, não corrigido): a conversa "Stafy" testava a tela do Swap
+  dentro do Stafy e pediu a conta 1 (Fable em 100%); a regra "juntos" levou o VS Code junto e a própria conversa
+  bateu o limite. No aviso de limite o servidor registrou a conta 22 (a atribuída naquele instante), mas o acesso em
+  uso era o da conta 1: o aviso da extensão não diz de qual conta é o acesso.
+- **Ainda não visto ao vivo** (até 15:05): uma renovação adiada pela 2.5.5 (a primeira chance é às 15:53, conta 6) e
+  um limite de verdade com o gancho de retomada no ar (o registro dele fica em `~/.swap-plus/retomar.log`).
+- **Voltar atrás:** servidor, a variável `SWAP_PLUS_VERSAO` com `2.5.4` (as imagens continuam lá); retomada, a opção
+  na tela da extensão (ou `"enabled": false` em `~/.swap-plus/retomar.json`, que vale na hora).
+
 Conferido depois da troca: uma mensagem de verdade pela API do gateway (o mesmo processo do WhatsApp) respondida pelo
 `claude-fable-5-2[1m]` com uso de ferramenta, em 5,5 s, sem a trava trocar por GPT; e o cliente acompanhando sozinho
 uma troca de conta decidida pelo Swap.

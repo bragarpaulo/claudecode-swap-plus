@@ -21,21 +21,37 @@
   - Conversas que já estavam abertas passam a usar o gancho sem precisar reabrir.
   - O que o gancho fez fica em `~/.swap-plus/retomar.log` (hora, conversa e o que aconteceu).
 - **Travas:**
-  - só age em limite de uso e em acesso cancelado; outros erros (servidor da Anthropic fora, por exemplo) ficam
-    como antes;
-  - só manda a mensagem se o Swap gravou uma conta nova. Sem troca em 5 minutos (nenhuma outra conta com folga),
-    não manda nada;
+  - só age nos erros que são da conta, os que uma conta nova resolve: limite de uso, acesso cancelado ou vencido,
+    cobrança, conta suspensa e organização não permitida. Outros erros (servidor da Anthropic fora, por exemplo)
+    ficam como antes;
+  - só manda a mensagem se o Swap gravou um login novo: troca automática, troca manual no painel ou relogin, tanto
+    faz. Espera até 30 minutos por isso (eram 5 na primeira versão do gancho); sem login novo nesse tempo, não manda
+    nada;
   - uma retomada por troca: se a conta nova também falhar, espera a próxima troca. No máximo 6 por hora em cada
     conversa.
 - **O que não cobre:**
   - limite do Fable com a regra **Seguir na mesma conta**: a conta não muda, então a conversa não é retomada (nela
     ainda é preciso escolher outro modelo e escrever "continue");
-  - o Hermes e os outros serviços sem VS Code;
+  - o Hermes e os outros serviços sem VS Code, que têm um caminho próprio (abaixo, "Cliente 1.1.0");
   - em cada computador, a novidade vale depois que a extensão atualizar e o VS Code for reaberto (a atualização é
     automática). No macOS ela depende da versão nova, porque lá o login fica no Chaveiro.
 - **Conferido:** num ambiente isolado, com login falso, a cadeia inteira (erro → gancho → conta nova → mensagem →
   a conversa retoma), a entrada do gancho numa conversa já aberta e a trava contra laço. Ainda não visto: um limite
   de verdade batendo com o gancho no ar.
+
+## Cliente 1.1.0 (21/11/2026): o Hermes passa a poder avisar o limite
+
+- **O problema:** o Hermes usa o Claude Code sem deixar as conversas gravadas, então o Swap não via quando ele batia
+  o limite. Se só o Hermes estivesse usando a conta, ninguém avisava: ele caía na reserva (GPT) e ficava nela até a
+  conta reabrir.
+- **O que mudou:** quem chama o Claude Code pode deixar um recado na pasta de login (`swap-plus/limite.json`). O
+  cliente lê em até 30 segundos, avisa o servidor e grava a conta nova. No Hermes, a regra que já existia devolve a
+  conversa ao modelo principal assim que a conta muda. É o equivalente, para o Hermes, do "Troquei de conta, pode
+  continuar".
+- **Situação em 21/11 às 16:20:** o cliente 1.1.0 está no ar. O lado do Hermes que grava o recado está pronto e
+  simulado, mas só entra com o reinício do gateway dele, que depende do OK do dono.
+- **O que não muda:** a mensagem em que o limite bate ainda é respondida pela reserva; a seguinte já volta ao
+  modelo principal.
 
 ## Servidor 2.5.6 (21/11/2026): mínimo de Fable na conta de destino e leitura mais cedo
 

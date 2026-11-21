@@ -10,7 +10,7 @@ Feito a pedido do Paulo ("tudo automático, nada manual"), sem recriar o contêi
 
 | o quê | como ficou |
 | --- | --- |
-| cliente | stack `swap-plus-cliente-hermes` (Portainer, id 20), contêiner `swap-plus-cliente-hermes`, imagem `swap-plus-cliente:1.0.0`; no Swap é o computador "Hermes (servidor)", conectado por código |
+| cliente | stack `swap-plus-cliente-hermes` (Portainer, id 20), contêiner `swap-plus-cliente-hermes`, imagem `swap-plus-cliente:1.1.0` (desde 21/11/2026 16:15; antes, `1.0.0`); no Swap é o computador "Hermes (servidor)", conectado por código |
 | pasta de login | `/srv/hermes-personal/data/swap-plus-login` no host (variável `SWAP_PLUS_CLIENTE_LOGIN_DIR` da stack). O Hermes já enxerga essa pasta como `/opt/data/swap-plus-login`, sem bind novo; o login do Claude Code fica em `claude/` dentro dela |
 | Claude Code no Hermes | binário nativo 2.1.323 em `/opt/data/.local/bin/claude` (está no `PATH` do contêiner), baixado como o usuário do Hermes e conferido pelo checksum do manifesto oficial. Fica no volume de dados, não na imagem |
 | plugin | `claude-subscription-directsdk-experimental` 0.4.0, do catálogo oficial, em `/opt/data/plugins/`; `claude_config_dir` = `/opt/data/swap-plus-login/claude` no `config.yaml` do Hermes |
@@ -123,6 +123,31 @@ também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `he
   um limite de verdade com o gancho de retomada no ar (o registro dele fica em `~/.swap-plus/retomar.log`).
 - **Voltar atrás:** servidor, a variável `SWAP_PLUS_VERSAO` com `2.5.4` (as imagens continuam lá); retomada, a opção
   na tela da extensão (ou `"enabled": false` em `~/.swap-plus/retomar.json`, que vale na hora).
+
+**21/11/2026, 16:00–16:20 — o mesmo gatilho para o Hermes (pedido do dono: "o Hermes também tem que receber o
+'troquei, pode continuar'"):**
+
+- **Como era:** o plugin do Hermes chama o Claude Code com `--setting-sources ''` e sem transcrição. O gancho
+  `StopFailure` do VS Code não roda lá, e o cliente não via o limite. Se o Hermes batesse o limite sozinho, ninguém
+  avisava o Swap: ele caía na reserva (GPT) e ficava nela até a conta reabrir. A volta ao modelo principal quando a
+  conta muda já existia (`apply_swap_account_recovery`, da madrugada).
+- **Cliente 1.1.0 (no ar às 16:15:24, stack `swap-plus-cliente-hermes`):** lê o recado
+  `swap-plus/limite.json` na pasta de login a cada ciclo (30 s), manda `limit_hit` ao servidor e grava a conta nova
+  (ver `cliente/README.md`, "Limites e troca de conta"). Trocar a versão do cliente não mexeu no Hermes. Voltar: a
+  variável `SWAP_PLUS_CLIENTE_VERSAO` com `1.0.0`.
+- **Lado do Hermes, PREPARADO E SIMULADO, NÃO APLICADO (falta o OK do dono para reiniciar o gateway):** em
+  `/opt/data/extra_pkgs/hermes_model_lock.py`, a regra nova `_swap_limit_notice` (marcador
+  `HERMES_CLAUDE_SWAP_LIMIT_NOTICE_V1`) grava o recado no momento em que o Hermes arma a espera por limite no
+  provedor do Claude Code. Simulada às 16:13 contra o código de verdade, num processo à parte, com o recado indo para
+  uma pasta temporária: limite no Claude Code grava o recado; conta do login mudou → a espera acaba; outro provedor e
+  falha que não é limite não gravam nada; sem pasta ou sem poder gravar, nada quebra. O arquivo de verdade ficou
+  intacto (sha `4c23f7e0…`). Para aplicar: o roteiro `hermes_aviso_limite.py` (modo `aplicar`, como uid 10000 dentro
+  do contêiner; guarda a cópia `hermes_model_lock.py.antes-aviso-limite-20261121`) e depois
+  `reiniciar_hermes.sh`. O roteiro confere o sha do arquivo antes de mexer.
+- **O que continua igual:** a mensagem em que o limite bate ainda é respondida pela reserva; a partir da troca
+  (até 30 s depois), a mensagem seguinte volta ao modelo principal.
+- **Stafy:** o código é do projeto Stafy. O contrato do servidor (`POST /v1/events` com `limit_hit`,
+  `GET /v1/credential`, refazer a chamada) foi passado à sessão do Claude que cuida dele.
 
 Conferido depois da troca: uma mensagem de verdade pela API do gateway (o mesmo processo do WhatsApp) respondida pelo
 `claude-fable-5-2[1m]` com uso de ferramenta, em 5,5 s, sem a trava trocar por GPT; e o cliente acompanhando sozinho

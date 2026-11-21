@@ -163,8 +163,18 @@ também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `he
   camada "casa" (o túnel SSH do notebook), e o túnel estava lento e oscilando (sonda de 7 s, depois "não respondeu a
   tempo"); como oscilava, o `saida-gateway` não chegou a passar para o IP contratado. Fica a lição: antes de reiniciar
   o gateway, conferir a camada de saída (`/var/lib/saida-gateway/estado.json`: `ok` da camada ativa e há quanto tempo).
-- **Ainda não visto:** a linha `Swap account recovery active` no `gateway.log` depois deste reinício. A trava só é
-  carregada na primeira conversa (no reinício das 04:23 apareceu às 05:06); conferir quando chegar a primeira mensagem.
+- **Conferido às 20:15** (corrige o que foi escrito às 16:25, que a trava "só é carregada na primeira conversa": estava
+  errado). O gateway carrega a trava na subida (`sitecustomize.py`, caminho `_EAGER_PROCESS`) e não escreve nada no
+  registro: a linha `Swap account recovery active` não aparece no `gateway.log` em reinício nenhum, e as das 05:06 no
+  `agent.log` vieram de outros processos. O que mostra que a regra nova está valendo:
+  - o gateway (pid 91958) subiu às 16:19:15, depois do arquivo gravado às 16:19:00;
+  - num processo à parte, a trava de verdade, carregada por `apply_gateway_model_lock()` como na subida, tem o
+    embrulho da espera por limite chamando `_swap_limit_notice` (olhar `arm.__code__.co_names`; o
+    `inspect.getsource` segue o `__wrapped__` e mostra a função original do Hermes), e armar a espera grava o recado
+    (numa pasta temporária, nesse teste);
+  - uma conversa às 18:04 foi respondida pelo Fable (11 chamadas), sem erro.
+- **Ainda não visto:** um limite de verdade batendo no Hermes (o recado na pasta de login, o cliente avisando o
+  servidor e a volta ao modelo principal na mensagem seguinte).
 - **O que continua igual:** a mensagem em que o limite bate ainda é respondida pela reserva; a partir da troca
   (até 30 s depois), a mensagem seguinte volta ao modelo principal.
 - **Stafy:** o código é do projeto Stafy. O contrato do servidor (`POST /v1/events` com `limit_hit`,

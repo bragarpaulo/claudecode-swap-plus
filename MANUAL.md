@@ -14,7 +14,9 @@ VS Code: veja [Hermes e outros serviços](#hermes-e-outros-serviços-sem-vs-code
 robô. No painel, todos ficam na aba **Serviços**.
 
 Não existe mais o motor (`swap-plus`) nem o modo local. O que mudou na 3.0: [NOVIDADES-3.0.md](NOVIDADES-3.0.md).
-O que mudou por último (a conversa que retoma sozinha depois da troca de conta): [NOVIDADES-3.3.md](NOVIDADES-3.3.md).
+O que mudou por último (modelo preferido e secundário no painel, com a lista completa e o esforço):
+[NOVIDADES-3.4.md](NOVIDADES-3.4.md). Antes disso (a conversa que retoma sozinha depois da troca de conta):
+[NOVIDADES-3.3.md](NOVIDADES-3.3.md).
 Antes disso (o painel com "serviços" e a tela enxuta no VS Code): [NOVIDADES-3.2.md](NOVIDADES-3.2.md).
 
 Neste manual:
@@ -439,8 +441,16 @@ desliga na hora; as outras regras só mudam quando você clicar em **Salvar regr
   serviço para o **Opus 5.5** (as conversas novas já abrem nele) e volta para o Fable quando ele renova. Uma
   conversa que já estava aberta não muda sozinha: nela, escolha **Opus 5.5** no seletor de modelo e mande
   "continue". Com **Trocar de conta**, enquanto alguma conta tiver Fable a conversa aberta nem para.
-- **Para qual conta ir (estratégia):** **Aproveitar ao máximo** (o padrão), **Mais folga** ou **Por prioridade**, e o
-  **Modelo preferido**.
+- **Para qual conta ir (estratégia):** **Aproveitar ao máximo** (o padrão), **Mais folga** ou **Por prioridade**.
+  No mesmo cartão ficam os modelos:
+  - **Modelo preferido** e o **esforço** dele: o modelo que as conversas usam e que o Swap procura nas contas (ao
+    trocar, as contas que ainda têm esse modelo vêm primeiro);
+  - **Modelo secundário** e o **esforço** dele: onde as conversas novas abrem quando o preferido acaba em todas as
+    contas. Quando o preferido renova, o padrão volta para ele;
+  - as listas trazem todos os modelos que as contas enxergam, e o esforço mostra só os níveis que o modelo aceita
+    (**Baixo**, **Médio**, **Alto**, **Muito alto**, ou **Padrão do Claude Code**, para o Swap não mexer). A lista é
+    lida na Anthropic uma vez por dia e quando você clica em **Atualizar modelos**;
+  - o preferido e o secundário precisam ser diferentes. Uma conversa já aberta não troca de modelo sozinha.
 - **Ajustes finos:** **Horas para "cota prestes a zerar"**, **Intervalo mínimo entre trocas**, **Margem da conta de
   destino** e **Mínimo de Fable sobrando no destino**. Este último vale para as trocas que o servidor faz por conta
   própria (aproveitar uma cota que vai zerar, renovar um login): a conta de destino precisa ter pelo menos esse
@@ -627,7 +637,8 @@ pode apagar à mão (veja [Veio da versão 2.x?](#veio-da-versão-2x)).
 
 ---
 
-Mais detalhes: [novidades da 3.3](NOVIDADES-3.3.md) · [novidades da 3.2](NOVIDADES-3.2.md) ·
+Mais detalhes: [novidades da 3.4](NOVIDADES-3.4.md) · [novidades da 3.3](NOVIDADES-3.3.md) ·
+[novidades da 3.2](NOVIDADES-3.2.md) ·
 [novidades da 3.0](NOVIDADES-3.0.md) ·
 [novidades da 2.0](NOVIDADES-2.0.md) (histórico) ·
 [extensão](plus/README.md) · [servidor](server/deploy/LEIA-ME.md).

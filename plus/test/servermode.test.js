@@ -1653,6 +1653,72 @@ test("8e. erro passageiro do servidor (“not your usage limit”) não é limit
   }
 });
 
+test("8f. modelos escolhidos no painel (3.4.0): o esforço segue as regras; quando o preferido acaba, o padrão vira o SECUNDÁRIO escolhido (ID e esforço) e volta depois", { timeout: T_MAX }, async () => {
+  await prepararServidor();
+  const ganchos = { StopFailure: [{ hooks: [{ type: "command", command: "node", args: ["/x/.swap-plus/retomar.js"], async: true }] }] };
+  escreverSettings({ model: "fable", theme: "dark", hooks: ganchos, modelSettings: { "claude-fable-5-2": { effortLevel: "medium" }, "claude-haiku-5-5": { effortLevel: "low" } } });
+  fake.fable = { 1: 40, 2: 10 };
+  fake.rules = { onModelLimit: "sameAccount", modelPct: 95, marginPct: 5, primaryModel: "claude-fable-5-2", primaryEffort: "xhigh", secondaryModel: "claude-sonnet-5-5", secondaryEffort: "medium" };
+
+  // a) só o esforço: o settings.json do Claude Code fica como o painel pede, e o resto do arquivo não muda
+  await ciclo();
+  await waitFor(() => (lerSettings().modelSettings["claude-sonnet-5-5"] || {}).effortLevel === "medium", 3000, "o esforço das regras chegar ao settings.json");
+  let st = lerSettings();
+  assert.equal(st.model, "fable", "o preferido tem folga: o padrão fica");
+  assert.deepEqual(st.modelSettings, { "claude-fable-5-2": { effortLevel: "xhigh" }, "claude-haiku-5-5": { effortLevel: "low" }, "claude-sonnet-5-5": { effortLevel: "medium" } });
+  assert.equal(st.theme, "dark");
+  assert.deepEqual(st.hooks, ganchos, "os ganchos do Claude Code ficam como estavam");
+  assert.equal(lerMarcador(), null);
+  assert.equal(T.buildPayload().autoModel.fallbackLabel, "Sonnet 5.5", "a tela fala do secundário escolhido");
+  assert.ok(T.historyPayload().some((h) => h.text === "Esforço no Claude Code acertado pelas regras do painel: Fable 5.2 em muito alto e Sonnet 5.5 em médio"), "fica no histórico deste VS Code");
+  // já igual: não regrava
+  const m0 = fs.statSync(settingsFile()).mtimeMs;
+  await ciclo();
+  await sleep(50);
+  assert.equal(fs.statSync(settingsFile()).mtimeMs, m0, "sem mudança, o arquivo não é regravado");
+
+  // b) o preferido chega na linha: o padrão passa para o secundário do painel (o ID), com o esforço dele
+  fake.fable = { 1: 96, 2: 10 };
+  let n0 = notes.length;
+  await ciclo();
+  await waitFor(() => lerSettings().model === "claude-sonnet-5-5", 3000, "o padrão passar para o secundário escolhido");
+  st = lerSettings();
+  assert.equal(st.modelSettings["claude-sonnet-5-5"].effortLevel, "medium");
+  assert.deepEqual(st.hooks, ganchos);
+  assert.deepEqual([lerMarcador().from, lerMarcador().to, lerMarcador().state], ["fable", "claude-sonnet-5-5", "fallback"]);
+  const aviso = notes.slice(n0).filter((n) => /Fable da conta 1 chegou a 96% \(linha 95%\)/.test(n.message));
+  assert.equal(aviso.length, 1);
+  assert.match(aviso[0].message, /O modelo padrão do Claude Code passou para o Sonnet 5\.5: toda conversa nova já abre nele/);
+  assert.match(aviso[0].message, /escolha Sonnet 5\.5 no seletor de modelo/);
+  const pl = T.buildPayload().autoModel;
+  assert.deepEqual([pl.switched, pl.isOpus, pl.isFable, pl.label, pl.backLabel], [true, true, false, "Sonnet 5.5", "Fable"]);
+
+  // c) o preferido volta (com folga): o padrão volta ao de antes
+  fake.fable = { 1: 20, 2: 10 };
+  await ciclo();
+  await waitFor(() => lerSettings().model === "fable", 3000, "o padrão voltar ao preferido");
+  assert.equal(lerMarcador(), null);
+
+  // d) regra do esforço vazia = o Swap não mexe mais naquele modelo (o que a pessoa escolher fica)
+  fake.rules = { ...fake.rules, primaryEffort: "" };
+  escreverSettings({ ...lerSettings(), modelSettings: { ...lerSettings().modelSettings, "claude-fable-5-2": { effortLevel: "low" } } });
+  await ciclo();
+  await sleep(50);
+  assert.equal(lerSettings().modelSettings["claude-fable-5-2"].effortLevel, "low");
+
+  // e) servidor antigo (sem as regras de modelo): tudo como antes da 3.4.0 — apelido “opus”, e nenhum esforço imposto
+  fake.rules = { onModelLimit: "sameAccount", modelPct: 95 };
+  escreverSettings({ model: "fable" });
+  fake.fable = { 1: 97, 2: 10 };
+  await ciclo();
+  await waitFor(() => lerSettings().model === "opus", 3000, "a troca de sempre, para o apelido “opus”");
+  assert.equal(lerSettings().modelSettings, undefined);
+  assert.equal(T.buildPayload().autoModel.fallbackLabel, "Opus 5.5");
+  fake.fable = { 1: 20, 2: 10 };
+  await ciclo();
+  await waitFor(() => lerSettings().model === "fable", 3000, "voltar ao Fable");
+});
+
 test("9. nenhum token em notificações, histórico, logs, tela, barra, globalState ou temporários", { timeout: T_MAX }, async () => {
   await prepararServidor();
   // Mais caminhos com token por perto: login aceito, recusado, servidor que devolve o token no erro.

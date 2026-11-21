@@ -385,6 +385,78 @@ function partC() {
   gravar("y", "﻿" + JSON.stringify({ model: "fable" }));
   r = M.toFallback(f("y"), mk("y"), { account: 1, reason: "limit", now });
   check("arquivo com BOM (Windows): lê e troca", r.ok && r.changed && ler("y").model === "opus");
+
+  // --- 3.4.0: o par de modelos e o esforço vêm das regras do servidor (painel → Modelo preferido / Modelo secundário)
+  const D = M.DEFAULT_PAIR;
+  check("sem as regras novas (servidor antigo): o par de sempre, Fable → “opus”, sem esforço imposto", (() => {
+    const p0 = M.pairOf({ preferModel: "Fable", strategy: "max" });
+    return !p0.explicit && p0.primaryName === "Fable" && p0.secondaryValue === "opus" && p0.secondaryLabel === "Opus 5.5" && p0.primaryEffort === "" && p0.secondaryEffort === "" && JSON.stringify(M.pairOf(null)) === JSON.stringify(D) && JSON.stringify(M.pairOf(undefined)) === JSON.stringify(D);
+  })());
+  let par = M.pairOf({ primaryModel: "claude-fable-5-2", primaryEffort: "xhigh", secondaryModel: "claude-opus-5-5", secondaryEffort: "high" });
+  check("servidor novo com os padrões: mesmo par, mas grava o ID escolhido (não o apelido) e leva o esforço", par.explicit && par.primaryName === "Fable" && par.secondaryValue === "claude-opus-5-5" && par.secondaryLabel === "Opus 5.5" && par.primaryEffort === "xhigh" && par.secondaryEffort === "high");
+  check("regra estranha não quebra: ID inválido, esforço que não existe e secundário igual ao preferido ficam no de sempre", (() => {
+    const a = M.pairOf({ primaryModel: "gpt-6", secondaryModel: 7, primaryEffort: "max", secondaryEffort: "altíssimo" });
+    const b = M.pairOf({ primaryModel: "claude-opus-5-5", secondaryModel: "claude-opus-5-5" });
+    return !a.explicit && a.primaryId === D.primaryId && a.secondaryValue === "opus" && a.primaryEffort === "" && a.secondaryEffort === "" && b.primaryId === "claude-opus-5-5" && b.secondaryId === D.secondaryId;
+  })());
+  const SONNET = M.pairOf({ primaryModel: "claude-opus-5-5", secondaryModel: "claude-sonnet-5-5", secondaryEffort: "medium" });
+  check("outro par (Opus → Sonnet 5.5): nomes e famílias", SONNET.primaryName === "Opus" && SONNET.primaryLine === "opus" && SONNET.secondaryLabel === "Sonnet 5.5" && SONNET.secondaryLine === "sonnet");
+  check("“é o preferido” e “é o secundário” seguem o par", M.isPrimaryDefault("opus", SONNET) && M.isPrimaryDefault("claude-opus-5-5", SONNET) && M.isPrimaryDefault(undefined, SONNET) && !M.isPrimaryDefault("fable", SONNET) && M.isSecondary("sonnet", SONNET) && M.isSecondary("claude-sonnet-5-5", SONNET) && !M.isSecondary("opus", SONNET) && M.isSecondary("opus[1m]") && M.isPrimaryDefault("fable") && !M.isPrimaryDefault("sonnet"));
+  check("erro de limite do Haiku também é de um modelo", M.limitModel("You've hit your Haiku limit · resets 3pm") === "Haiku");
+
+  // decisão: quem manda é o limite do modelo PREFERIDO do par
+  const comOpus = (pct) => ({ ...acct(1, {}), usage: { ...acct(1, {}).usage, scoped: [{ name: "Fable", pct: 100, resetsAt: new Date(now + 48 * 3600000).toISOString() }, { name: "Opus", pct, resetsAt: new Date(now + 48 * 3600000).toISOString() }] } });
+  p = M.plan({ list: { activeAccountNumber: 1, accounts: [comOpus(96)] }, records: {}, r: R1, marker: null, now, pair: SONNET });
+  check("par Opus → Sonnet: o Opus na linha pede o secundário (o Fable em 100% não conta)", p.want === "fallback" && p.name === "Opus" && p.pct === 96);
+  p = M.plan({ list: { activeAccountNumber: 1, accounts: [comOpus(50)] }, records: {}, r: R1, marker: null, now, pair: SONNET });
+  check("par Opus → Sonnet: Opus abaixo da linha → nada", p.want === null && /Opus abaixo da linha/.test(p.why), p.why);
+  p = M.plan({ list: { activeAccountNumber: 1, accounts: [acct(1, { f: 10 })] }, records: {}, r: R1, marker: null, now, pair: SONNET });
+  check("conta que não informa o limite do preferido: nada", p.want === null && /não informa o limite do Opus/.test(p.why), p.why);
+
+  // trocar e desfazer com o par do painel: grava o ID e o esforço do secundário
+  gravar("p1", { model: "fable", theme: "dark", hooks: { StopFailure: [{ hooks: [{ type: "command", command: "node", args: ["x"] }] }] }, modelSettings: { "claude-fable-5-2": { effortLevel: "xhigh" } } });
+  r = M.toFallback(f("p1"), mk("p1"), { account: 1, reason: "limit", now, pair: par });
+  check("par do painel: o padrão vira o ID do secundário, com o esforço escolhido; o resto do arquivo fica", r.ok && r.changed && r.model === "claude-opus-5-5" && r.effort === "high" && ler("p1").model === "claude-opus-5-5" && ler("p1").modelSettings["claude-opus-5-5"].effortLevel === "high" && ler("p1").modelSettings["claude-fable-5-2"].effortLevel === "xhigh" && ler("p1").theme === "dark" && ler("p1").hooks.StopFailure.length === 1 && M.readMarker(mk("p1")).to === "claude-opus-5-5");
+  r = M.toFallback(f("p1"), mk("p1"), { account: 1, reason: "limit", now, pair: par });
+  check("par do painel: já no secundário → não mexe", r.ok && !r.changed && r.state === "already");
+  // o secundário foi trocado no painel DEPOIS da troca: o que está no arquivo continua sendo “nosso” e é desfeito
+  r = M.toPreferred(f("p1"), mk("p1"), M.pairOf({ primaryModel: "claude-fable-5-2", secondaryModel: "claude-sonnet-5-5" }));
+  check("secundário trocado no painel depois: a volta ao preferido ainda desfaz o que o Swap pôs", r.ok && r.changed && r.state === "restored" && ler("p1").model === "fable" && M.readMarker(mk("p1")) === null);
+  gravar("p2", { model: "opus" });
+  r = M.toFallback(f("p2"), mk("p2"), { account: 1, reason: "limit", now, pair: SONNET });
+  check("par Opus → Sonnet: padrão no Opus → Sonnet 5.5 (ID), com o esforço do painel", r.ok && r.changed && ler("p2").model === "claude-sonnet-5-5" && ler("p2").modelSettings["claude-sonnet-5-5"].effortLevel === "medium");
+  gravar("p3", { model: "fable" });
+  r = M.toFallback(f("p3"), mk("p3"), { account: 1, reason: "limit", now, pair: SONNET });
+  check("par Opus → Sonnet: padrão no Fable (outro modelo) → não mexe", r.ok && !r.changed && r.state === "other" && ler("p3").model === "fable");
+  // escolha da pessoa depois da troca, com o par do painel
+  gravar("p4", { model: "fable" });
+  M.toFallback(f("p4"), mk("p4"), { account: 1, reason: "line", now, pair: par });
+  gravar("p4", { model: "sonnet" });
+  let m4 = M.noteUserChoice(f("p4"), mk("p4"), now, par);
+  check("par do painel: a pessoa tirou do secundário → marcador “user”", m4 && m4.state === "user" && m4.from === "fable");
+  gravar("p4", { model: "claude-opus-5-5" });
+  m4 = M.noteUserChoice(f("p4"), mk("p4"), now, par);
+  check("par do painel: voltou ao secundário → marcador “fallback” de novo", m4 && m4.state === "fallback" && m4.to === "claude-opus-5-5");
+
+  // esforço: o settings.json do Claude Code fica como o painel pede (só o que precisa, sem mexer no resto)
+  gravar("e1", { model: "fable", hooks: { StopFailure: [{ hooks: [{ type: "command", command: "node", args: ["x"] }] }] }, modelSettings: { "claude-fable-5-2": { effortLevel: "medium", maxEffortLevel: "max" }, "claude-haiku-5-5": { effortLevel: "low" } } });
+  r = M.syncEfforts(f("e1"), par);
+  check("esforço: grava o do preferido e o do secundário, guardando as outras chaves", r.ok && r.changed.length === 2 && ler("e1").modelSettings["claude-fable-5-2"].effortLevel === "xhigh" && ler("e1").modelSettings["claude-fable-5-2"].maxEffortLevel === "max" && ler("e1").modelSettings["claude-opus-5-5"].effortLevel === "high" && ler("e1").modelSettings["claude-haiku-5-5"].effortLevel === "low" && ler("e1").model === "fable" && ler("e1").hooks.StopFailure.length === 1);
+  const mtimeE1 = fs.statSync(f("e1")).mtimeMs;
+  r = M.syncEfforts(f("e1"), par);
+  check("esforço já igual: não regrava o arquivo", r.ok && r.changed.length === 0 && fs.statSync(f("e1")).mtimeMs === mtimeE1);
+  gravar("e2", { model: "fable" });
+  r = M.syncEfforts(f("e2"), M.pairOf({ primaryModel: "claude-fable-5-2", secondaryModel: "claude-opus-5-5", secondaryEffort: "low" }));
+  check("esforço vazio na regra = não mexe naquele modelo; sem modelSettings, cria só o que precisa", r.ok && r.changed.length === 1 && JSON.stringify(ler("e2").modelSettings) === JSON.stringify({ "claude-opus-5-5": { effortLevel: "low" } }));
+  gravar("e3", { model: "fable" });
+  r = M.syncEfforts(f("e3"), D);
+  check("par de sempre (sem esforço nas regras): nada a fazer, arquivo intocado", r.ok && r.changed.length === 0 && JSON.stringify(ler("e3")) === JSON.stringify({ model: "fable" }));
+  gravar("e4", { modelSettings: ["estranho"] });
+  r = M.syncEfforts(f("e4"), par);
+  check("modelSettings num formato inesperado: não mexe", r.ok && r.changed.length === 0 && Array.isArray(ler("e4").modelSettings));
+  gravar("e5", "{ isto não é json");
+  r = M.syncEfforts(f("e5"), par);
+  check("esforço com o arquivo corrompido: não grava e explica", !r.ok && /não consegui ler/.test(r.error) && fs.readFileSync(f("e5"), "utf8") === "{ isto não é json");
   fs.rmSync(dir, { recursive: true, force: true });
 }
 

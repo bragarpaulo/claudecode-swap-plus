@@ -148,6 +148,16 @@ Daqui para baixo: detalhes técnicos, para quem mexe no código.
   que ele mesmo trocou; padrão escolhido à mão depois da troca fica como a pessoa deixou. Na regra **Trocar de
   conta** (no painel, em **Quando o limite de um modelo acaba**), o erro de limite do Fable vai primeiro ao servidor
   (que procura uma conta com Fable); o modelo só muda se não houver conta com Fable.
+  **Desde a 3.4.0 os dois modelos e o esforço vêm das regras do servidor** (painel → Regras de troca → **Modelo
+  preferido** e **Modelo secundário**, cada um com o seu **Esforço**): `primaryModel`, `primaryEffort`,
+  `secondaryModel`, `secondaryEffort`, dentro de `rules` do estado. `modelSwitch.pairOf()` monta o par a partir das
+  regras como o servidor mandou; servidor antigo (sem essas chaves) = o par de sempre, Fable → apelido `opus`, sem
+  esforço imposto. Com as regras: o padrão passa para o **ID** do secundário escolhido; o esforço de cada modelo é
+  gravado em `modelSettings["<id>"].effortLevel` do settings.json do Claude Code a cada ciclo da janela dona
+  (`syncModelEfforts`: só quando está diferente, só conectado, e sem mexer no resto do arquivo); regra de esforço vazia
+  = o Swap não mexe naquele modelo. O "max" não é uma opção: o Claude Code só guarda de `low` a `xhigh`. As travas são
+  as mesmas (só troca se o padrão é o preferido ou o do plano; só desfaz o que ele mesmo pôs — inclusive se o secundário
+  foi trocado no painel no meio do caminho). Desligar `swapPlus.autoModel.enabled` desliga as duas coisas neste VS Code.
   **Limite do Claude Code (conferido no 2.1.325; de novo no 2.1.330, em 21/11/2026, numa pasta isolada com login
   falso):** outra extensão não consegue trocar o modelo de uma conversa já aberta. No 2.1.330 foram tentados três
   caminhos, sem efeito: `/model …` postado na caixa de entrada da sessão (chega como texto de "outra sessão", não
@@ -280,7 +290,7 @@ guardado e devolve a tela de login do Claude Code ao que era. Pelo painel: **Ser
 | --- | --- |
 | `plus/extension.js` | a extensão (barra de status, avisos, conexão com o servidor, gravação do login) |
 | `plus/rules.js` | a regra de troca (`decide()`), usada pela extensão e pelo servidor |
-| `plus/modelSwitch.js` | o modelo padrão do Claude Code quando o Fable acaba (Opus 5.5 e a volta ao Fable) |
+| `plus/modelSwitch.js` | o modelo padrão do Claude Code quando o modelo preferido acaba (o secundário e a volta) e o esforço dos dois, pelas regras do servidor |
 | `plus/claudeAuth.js` | ler e gravar o login do Claude Code (Keychain no Mac, `.credentials.json` nos outros), com as travas dele |
 | `plus/serverClient.js` | falar com o servidor (HTTPS, com a impressão digital do certificado quando ele é próprio; `User-Agent: SwapPlus-VSCode/<versão>` em tudo, por causa da Cloudflare), ler o código de conexão, parear e entrar com Google (`loginStart`/`loginPoll`) |
 | `plus/updater.js` | as atualizações da extensão |

@@ -103,7 +103,8 @@ também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `he
   às 14:16:08, sem erro. → **Servidor 2.5.6** (no ar às 15:02): regra `preferMinFreePct` no painel ("Mínimo de
   Fable sobrando no destino", em 10% a pedido do dono) e leitura da conta em uso a cada 2,5 a 5 min quando o Fable
   está a até 15 pontos da linha. Com 10% a troca das 14:03 ainda aconteceria (a conta tinha 11%): quem segura o caso
-  é a leitura mais cedo; para barrar a troca o número precisa ser 12 ou mais.
+  é a leitura mais cedo; para barrar a troca o número precisa ser 12 ou mais. **Às 15:29 o dono mandou pôr 20%**
+  (`cli.js rule preferMinFreePct 20`; o padrão do código continua 10). Naquela hora 15 das 23 contas passavam.
 - **A conversa parava mesmo com a troca feita em 5 s.** → **Extensão 3.3.0** (tag `plus-v3.3.0`, publicada às 15:05): gancho
   `StopFailure` do Claude Code que, depois da troca, posta "Troquei de conta, pode continuar." na caixa de entrada da
   conversa parada (ver `NOVIDADES-3.3.md` e `plus/README.md`). No NoteWin o gancho foi instalado à mão às 14:58, com

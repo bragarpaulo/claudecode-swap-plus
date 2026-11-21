@@ -148,8 +148,11 @@ Daqui para baixo: detalhes técnicos, para quem mexe no código.
   que ele mesmo trocou; padrão escolhido à mão depois da troca fica como a pessoa deixou. Na regra **Trocar de
   conta** (no painel, em **Quando o limite de um modelo acaba**), o erro de limite do Fable vai primeiro ao servidor
   (que procura uma conta com Fable); o modelo só muda se não houver conta com Fable.
-  **Limite do Claude Code (conferido no 2.1.325):** outra extensão não consegue trocar o modelo de uma conversa já
-  aberta. Ela só lê o modelo padrão ao começar, o "modelo reserva" (`fallbackModel`) não vale para limite de uso, e
+  **Limite do Claude Code (conferido no 2.1.325; de novo no 2.1.330, em 21/11/2026, numa pasta isolada com login
+  falso):** outra extensão não consegue trocar o modelo de uma conversa já aberta. No 2.1.330 foram tentados três
+  caminhos, sem efeito: `/model …` postado na caixa de entrada da sessão (chega como texto de "outra sessão", não
+  como comando), um `control_request` `set_model` na mesma caixa (ignorado) e mudar o `model` do
+  `settings.json` com a sessão aberta (o turno seguinte continua no modelo antigo). Ela só lê o modelo padrão ao começar, o "modelo reserva" (`fallbackModel`) não vale para limite de uso, e
   não há comando para isso. A conversa que parou continua assim: escolha **Opus 5.5** no seletor de modelo e mande
   "continue" (o aviso do Swap Plus diz isso na hora). Para as conversas abertas nem pararem, use a regra **Trocar de
   conta**: enquanto alguma conta tiver Fable, o Swap Plus troca a conta antes do limite e a conversa segue.

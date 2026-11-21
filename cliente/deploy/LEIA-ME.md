@@ -1,9 +1,16 @@
 # Swap Plus Cliente no Contabo — o cliente do Hermes: instalação e operação
 
-Escrito em 20/11/2026. **Ainda não instalado no servidor**: este arquivo é o roteiro. A imagem, a stack e os dois
-scripts desta pasta foram escritos e revisados, mas **não rodaram** (o computador em que foram escritos não tem
-Docker); a primeira instalação é também o primeiro teste deles. O código do cliente, esse sim, tem testes
-automáticos (`node --test cliente/test/*.test.js`).
+Escrito em 20/11/2026. **Ainda não instalado no servidor**: este arquivo é o roteiro. O que já foi conferido:
+
+- o código do cliente tem testes automáticos (`node --test cliente/test/*.test.js`), que passam no Linux, no Mac e no
+  Windows;
+- a imagem Docker é construída e executada na conferência automática do GitHub, como no servidor (uid 10000, raiz só
+  de leitura, sem capacidades);
+- o `preparar.sh` rodou no servidor em simulação e o `compose.yaml` foi validado lá;
+- o comando `entrar` (login com Google) conectou de verdade ao Swap de produção, a partir de um computador.
+
+O que roda pela primeira vez na instalação: o `preparar.sh --apply`, o `entrar.sh`, o `parear.sh` e a stack. E tudo
+da seção [Ligar o Hermes](#ligar-o-hermes-roteiro), que nunca foi executado.
 
 O Swap Plus Cliente é o trabalho da extensão do VS Code sem o VS Code: um "computador" a mais no Swap Plus, que
 recebe do servidor o acesso da conta escolhida para ele e o grava numa pasta de login do Claude Code. O Hermes usa
@@ -117,11 +124,28 @@ Cada passo que recria ou reinicia o Hermes segue o procedimento de sempre (OK do
 1. **Claude Code dentro do contêiner do Hermes.** Hoje não há (`claude` saiu da imagem em 07/11 porque nada usava).
    O `npm` do contêiner é um atalho para a loja de ferramentas em `/opt/data/tools`, então `npm i -g` não serve. O
    caminho já usado no servidor é o do `apps/comando-ia/Dockerfile`: o binário nativo, fixado por sha256, dentro da
-   imagem, com `DISABLE_AUTOUPDATER=1`. Isso pede uma etiqueta nova da imagem do Hermes (por exemplo
-   `hermes-personal-runtime:v0.23.0-contabo.2`) e as mudanças que acompanham uma etiqueta nova (variável
-   `HERMES_RUNTIME_IMAGE`, o padrão no `hermes-release-watch` e nos scripts de release). O plugin pede uma versão
-   mínima do Claude Code por modelo (README dele: Opus 5.5 → 2.1.280; Sonnet 5.5 → 2.1.284; Haiku 5.5 → 2.1.293;
-   Fable 5.2 → 2.1.321).
+   imagem. No `stacks/hermes-personal/Dockerfile` do `central-comando-server`, antes do `ENV` final:
+
+   ```dockerfile
+   # Claude Code (binário nativo linux-x64 para glibc), fixado e conferido pelo checksum do manifesto oficial:
+   # https://downloads.claude.ai/claude-code-releases/2.1.323/manifest.json -> platforms.linux-x64.checksum
+   ARG CLAUDE_CODE_VERSION=2.1.323
+   ARG CLAUDE_CODE_SHA256=604d29a6869409106b6a1110bdadcc8b72e8654a5a865d23258f938a696e348e
+   RUN set -eu; \
+       curl -fsSL --retry 3 -o /usr/local/bin/claude \
+         "https://downloads.claude.ai/claude-code-releases/${CLAUDE_CODE_VERSION}/linux-x64/claude"; \
+       echo "${CLAUDE_CODE_SHA256}  /usr/local/bin/claude" | sha256sum -c -; \
+       chmod 0755 /usr/local/bin/claude
+   ENV DISABLE_AUTOUPDATER=1
+   ```
+
+   A 2.1.323 era a versão "stable" em 20/11/2026 (a mais nova era a 2.1.330); o checksum acima é o do manifesto
+   oficial, consultado nesse dia. Ela atende todos os modelos do plugin (README dele: Opus 5.5 → 2.1.280; Sonnet 5.5
+   → 2.1.284; Haiku 5.5 → 2.1.293; Fable 5.2 → 2.1.321). O contêiner é Debian 13 (glibc 2.41, x86_64) e
+   `/usr/local/bin` está no `PATH` dele. O binário tem uns 360 MB. Isso pede uma etiqueta nova da imagem do Hermes
+   (por exemplo `hermes-personal-runtime:v0.23.0-contabo.2`) e as mudanças que acompanham uma etiqueta nova
+   (variável `HERMES_RUNTIME_IMAGE`, o padrão no `hermes-release-watch` e nos scripts de release). Conferir a imagem
+   antes de trocar: `docker run --rm --entrypoint /usr/local/bin/claude <imagem nova> --version`.
 
 2. **A pasta de login dentro do Hermes.** Um bind a mais na stack `hermes`, com a pasta-mãe:
 
@@ -139,29 +163,39 @@ Cada passo que recria ou reinicia o Hermes segue o procedimento de sempre (OK do
 3. **O plugin.** Como o usuário do Hermes (uid 10000), de dentro do contêiner:
 
    ```sh
-   H="docker exec -u 10000 hermes /opt/hermes/.venv/bin/hermes"
+   H="docker exec -it -u 10000 hermes /opt/hermes/.venv/bin/hermes"     # -it: a instalação pode pedir confirmação
    $H plugins install claude-subscription-directsdk
    $H config set plugins.entries.claude-subscription-directsdk-experimental.settings.claude_config_dir /opt/swap-plus-login/claude
    ```
 
    Nunca `yes |` com `hermes plugins` (já encheu o disco uma vez). O plugin é marcado como experimental pelos autores
-   (Nous Research) e pede Hermes 0.21.4 ou mais novo; o do servidor é 0.23.1.
+   (Nous Research) e pede Hermes 0.21.4 ou mais novo; o do servidor é 0.23.1, e o catálogo dele já oferece o plugin
+   (versão 0.4.0; conferido com `hermes plugins search claude-subscription`). Se depois de instalar o provedor não
+   aparecer no `hermes model`, reinicie só o gateway (`scripts/hermes/geise/reiniciar_hermes.sh`, que espera o
+   Hermes ficar sem uso).
 
-4. **A trava de modelo.** A regra `gateway_model_lock` do `sitecustomize` do Hermes troca qualquer modelo
-   Claude/Anthropic do gateway por GPT via Codex. Enquanto ela valer, escolher o Claude Code não tem efeito no
-   gateway. Abrir uma exceção para o provedor `claude-subscription-directsdk-experimental` é decisão do Paulo (o módulo
-   `hermes_model_lock.py` fica só no servidor).
+4. **A trava de modelo.** A regra `gateway_model_lock` (`/opt/data/extra_pkgs/hermes_model_lock.py`, no host
+   `/srv/hermes-personal/data/extra_pkgs/`) troca por GPT, no gateway, toda sessão cujo provedor é `anthropic` **ou
+   cujo modelo tem nome começando com `claude`**. O provedor do plugin não é `anthropic`, mas os modelos dele têm
+   nomes como `claude-sonnet-5-5[1m]`: escolhido pelo gateway, o Claude Code seria trocado por GPT. Para valer, a
+   regra precisa de uma exceção para o provedor do plugin, logo antes do `if` que decide a troca:
+
+   ```python
+           if provider.startswith("claude-subscription-directsdk"):
+               return model, runtime
+   ```
+
+   Mudar essa regra é decisão do Paulo. Ela é carregada na subida do gateway: vale depois de reiniciá-lo (a
+   recriação dos passos 1 e 2 já reinicia). Pela leitura do código, a trava só age nas sessões do gateway; o
+   `hermes chat` pela linha de comando (o teste do passo 5) não passa por ela.
 
 5. **Onde usar.** O Codex continua sendo o padrão. O Claude Code entra onde for escolhido: num perfil, numa rotina
    (cron) ou numa conversa, com o provedor `claude-subscription-directsdk-experimental` e o modelo (`sonnet`, `opus`,
    `fable`, `haiku`). Teste de uma linha, **que gasta uso da conta**:
 
    ```sh
-   $H --provider claude-subscription-directsdk-experimental -m sonnet chat -q "Responda só: ok"
+   $H chat --oneshot -q "Responda só: ok" --provider claude-subscription-directsdk-experimental -m sonnet
    ```
-
-   (confira a forma exata do comando na versão do Hermes instalada; o README do plugin mostra
-   `hermes --provider claude-subscription-directsdk-experimental -m sonnet`.)
 
 O que conferir no primeiro teste:
 

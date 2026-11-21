@@ -1,5 +1,5 @@
 "use strict";
-// Testes do login dos computadores com Google (server.js + google.js).
+// Testes do login dos serviços com Google (server.js + google.js).
 // Um "Google falso" (servidor HTTP local em 127.0.0.1) serve a tela de login e o endpoint de token;
 // GOOGLE_AUTH_URL / GOOGLE_TOKEN_URL apontam para ele. Cofre de verdade numa pasta temporária
 // (chave gerada aqui) e um engine mínimo (só o que as rotas usam).
@@ -347,7 +347,7 @@ async function browserLogin(ctx, s, email = "ana@exemplo.com") {
 // Testes
 // ---------------------------------------------------------------------------
 
-test("login com Google: start → Google (PKCE + state) → callback cria o computador → poll entrega uma vez → token funciona", async (t) => {
+test("login com Google: start → Google (PKCE + state) → callback cria o serviço → poll entrega uma vez → token funciona", async (t) => {
   const ctx = await setup(t);
   await allow(ctx, "  Ana@Exemplo.com ");
   assert.deepEqual(ctx.store.state.allowedEmails, ["ana@exemplo.com"]);
@@ -398,7 +398,7 @@ test("login com Google: start → Google (PKCE + state) → callback cria o comp
   assert.ok(b.page.text.includes("ana@exemplo.com"));
   assert.ok(b.page.text.includes("Notebook do Paulo"));
 
-  // computador criado e gravado
+  // serviço criado e gravado
   const devs = Object.values(ctx.store.state.devices);
   assert.equal(devs.length, 1);
   const dev = devs[0];
@@ -410,7 +410,7 @@ test("login com Google: start → Google (PKCE + state) → callback cria o comp
   assert.equal(dev.lastSeen, dev.createdAt);
   assert.ok(
     ctx.engine.history.some(
-      (h) => h.kind === "device" && h.device === dev.id && h.text === 'Computador "Notebook do Paulo" conectado com a conta Google ana@exemplo.com'
+      (h) => h.kind === "device" && h.device === dev.id && h.text === 'Serviço "Notebook do Paulo" conectado com a conta Google ana@exemplo.com'
     ),
     "histórico"
   );
@@ -505,7 +505,7 @@ test("login com Google: id_token com aud, azp ou iss errados, vencido ou e-mail 
   assert.equal(Object.keys(ctx.store.state.devices).length, 1);
 });
 
-test("login com Google: sessão vencida e pollToken errado → 404; link vencido → página de erro; computador não buscado é desfeito", async (t) => {
+test("login com Google: sessão vencida e pollToken errado → 404; link vencido → página de erro; serviço não buscado é desfeito", async (t) => {
   const ctx = await setup(t);
   await allow(ctx, "ana@exemplo.com");
   const s = await loginStart(ctx);
@@ -534,7 +534,7 @@ test("login com Google: sessão vencida e pollToken errado → 404; link vencido
   assertPage(r, 400);
   assert.equal(ctx.fake.tokenCalls.length, 0, "não foi ao Google");
 
-  // Computador criado, mas o VS Code não buscou o acesso a tempo: desfeito quando a sessão vence.
+  // Serviço criado, mas o VS Code não buscou o acesso a tempo: desfeito quando a sessão vence.
   const s2 = await loginStart(ctx, { name: "Esquecido" });
   const b = await browserLogin(ctx, s2, "ana@exemplo.com");
   assertPage(b.page, 200);
@@ -735,7 +735,7 @@ test("callback: login cancelado no Google, troca recusada e retorno repetido nã
   assertPage(r, 405);
 });
 
-test("a mesma conta Google conecta vários computadores; cada um é revogável sozinho; nomes escapados na página", async (t) => {
+test("a mesma conta Google conecta vários serviços; cada um é revogável sozinho; nomes escapados na página", async (t) => {
   const ctx = await setup(t);
   await allow(ctx, "ana@exemplo.com");
   const conectados = [];
@@ -800,7 +800,7 @@ test("admin: allow / deny / allowed (minúsculas, gravado no cofre); deny não d
   assert.deepEqual(r.json.google.allowedEmails, ["ana@exemplo.com", "bia@exemplo.com"]);
   assert.ok(!r.text.includes(CLIENT_SECRET), "o status não mostra o client secret");
 
-  // bia conecta um computador; depois é tirada da lista
+  // bia conecta um serviço; depois é tirada da lista
   const s = await loginStart(ctx, { name: "PC da Bia" });
   await browserLogin(ctx, s, "bia@exemplo.com");
   const ok = (await poll(ctx, s)).json;
@@ -811,7 +811,7 @@ test("admin: allow / deny / allowed (minúsculas, gravado no cofre); deny não d
   assert.deepEqual(r.json.devices, [{ id: ok.deviceId, name: "PC da Bia" }]);
   assert.deepEqual(r.json.google.allowedEmails, ["ana@exemplo.com"]);
   r = await request(ctx.api, "GET", "/v1/state", { headers: bearer(ok.token) });
-  assert.equal(r.status, 200, "o computador já conectado continua (revogar é à parte)");
+  assert.equal(r.status, 200, "o serviço já conectado continua (revogar é à parte)");
   // mas um login novo com ela é recusado
   const s2 = await loginStart(ctx);
   const b = await browserLogin(ctx, s2, "bia@exemplo.com");
@@ -827,9 +827,9 @@ test("admin: allow / deny / allowed (minúsculas, gravado no cofre); deny não d
   assert.equal(r.status, 403);
 });
 
-test("logins: com Google só o computador do administrador envia; conta liberada que não é administradora → 403 not_admin sem chamar o engine", async (t) => {
+test("logins: com Google só o serviço do administrador envia; conta liberada que não é administradora → 403 not_admin sem chamar o engine", async (t) => {
   const ctx = await setup(t, { env: { ADMIN_EMAILS: "dono.exemplo@gmail.com" } });
-  await allow(ctx, "bia@exemplo.com"); // pode conectar computadores, mas não é administradora
+  await allow(ctx, "bia@exemplo.com"); // pode conectar serviços, mas não é administradora
   const conecta = async (name, email) => {
     const s = await loginStart(ctx, { name });
     const b = await browserLogin(ctx, s, email);
@@ -862,7 +862,7 @@ test("logins: com Google só o computador do administrador envia; conta liberada
   assert.equal(r.status, 403, r.text);
   assert.deepEqual(r.json, {
     error: "not_admin",
-    message: "Só os computadores do administrador enviam logins ao servidor. Este computador usa as contas do servidor.",
+    message: "Só os serviços do administrador enviam logins ao servidor. Este serviço usa as contas do servidor.",
   });
   assert.equal(ctx.engine.logins.length, 1, "o engine não foi chamado");
   r = await request(ctx.api, "POST", "/v1/logins", { headers: bearer(bia.token), body: login });

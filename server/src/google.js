@@ -1,12 +1,12 @@
 "use strict";
-// Login dos computadores com Google (OAuth 2.0 + OpenID Connect), no padrão "login de dispositivo":
+// Login dos serviços com Google (OAuth 2.0 + OpenID Connect), no padrão "login de dispositivo":
 // o VS Code não recebe o retorno do navegador, então abre a página de login no navegador e fica
 // perguntando ao servidor (poll) até o login terminar.
 //
 //   1. POST /v1/login/start        → sessão EM MEMÓRIA (id, pollToken, state, PKCE) e o link do navegador
 //   2. GET  /auth/google/start     → 302 para o Google (state + PKCE S256)
 //   3. GET  /auth/google/callback  → troca o code no Google, lê o id_token e, se a conta puder conectar
-//                                    computadores (administrador ou lista de liberadas), cria o dispositivo
+//                                    serviços (administrador ou lista de liberadas), cria o dispositivo
 //   4. POST /v1/login/poll         → pending | ok (entrega o token UMA vez) | denied | 404 expired
 //
 // Aqui ficam as partes sem rotas (configuração, sessões, troca do code, leitura do id_token e as
@@ -18,7 +18,7 @@
 //   "web"    — entrar no painel web (GET /web/login → Google → retorno cria a sessão do painel,
 //              ver web.js). Só o administrador (ADMIN_EMAILS) entra. Não tem poll: o próprio
 //              navegador recebe o cookie no retorno.
-// Cada tipo tem o seu limite de sessões vivas (logins do painel não ocupam a vez dos computadores).
+// Cada tipo tem o seu limite de sessões vivas (logins do painel não ocupam a vez dos serviços).
 
 const crypto = require("crypto");
 const fs = require("fs");

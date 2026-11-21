@@ -5,10 +5,10 @@
 // - Mesma origem da API (PUBLIC_URL). Os arquivos saem de uma lista fixa (nada do caminho pedido vira
 //   caminho no disco → sem path traversal), com CSP só 'self'.
 // - Só o ADMINISTRADOR entra: os e-mails de ADMIN_EMAILS (variável de ambiente, lida na subida; nada
-//   aqui muda essa lista). As contas da lista de liberadas (allowedEmails) só conectam computadores.
+//   aqui muda essa lista). As contas da lista de liberadas (allowedEmails) só conectam serviços.
 //   Sem ADMIN_EMAILS o painel fica desligado: "/" mostra uma página explicando e /web/api/* → 503.
 // - O login com Google do painel (GET /web/login e o retorno /auth/google/callback) fica em server.js,
-//   junto do login dos computadores; quando o Google confirma o administrador, ele chama
+//   junto do login dos serviços; quando o Google confirma o administrador, ele chama
 //   createSession() daqui e devolve o cookie.
 // - Sessão: token de 32 bytes (base64url) no cookie sp_sess (HttpOnly; Secure; SameSite=Lax; 30 dias).
 //   No cofre fica só o sha256 (state.webSessions). lastSeen sobe no máximo 1x/min e só na memória:
@@ -23,8 +23,11 @@
 //   renovar na hora: o login acabou de ser emitido) e renovada depois pelo ciclo do motor.
 //   "Entrar de novo" (cartão da conta) é o mesmo fluxo com start { loginHint: e-mail da conta } → login_hint na URL
 //   da Claude; no finish, se entrou com outro e-mail, a mensagem diz qual conta mudou (e que a pedida não mudou).
-// - Computadores permitidos por conta (WEB-SPEC 2.3, access.js): PUT /web/api/accounts/:n/devices →
-//   engine.setAccountDevices; o PanelState mostra `devices` em cada conta e `allowedAccounts` em cada computador.
+// - Serviços permitidos por conta (WEB-SPEC 2.3, access.js): PUT /web/api/accounts/:n/devices →
+//   engine.setAccountDevices; o PanelState mostra `devices` em cada conta e `allowedAccounts` em cada serviço.
+// - Presença dos serviços (2.5.3): cada serviço do PanelState leva `lastContact` (ms do último pedido autenticado),
+//   `connected` e `presence` ("active" | "connected" | "waiting" | "none"), calculados pelo motor
+//   (engine.presenceOf, a partir do engine.touch que o server.js chama a cada token aceito). É só para mostrar.
 
 const crypto = require("crypto");
 const fs = require("fs");
@@ -46,9 +49,11 @@ const LOGIN_WARN_MS = 3 * 24 * 60 * 60 * 1000; // aviso quando o login vence em 
 const HISTORY_IN_PANEL = 100;
 const DEFAULT_WEB_DIR = path.join(__dirname, "..", "web"); // repo: server/web · imagem: /app/server/web
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/; // 32 bytes em base64url
-const DEVICE_NAME_MAX = 40; // nome do computador (renomear pelo painel): 1 a 40 caracteres
+const DEVICE_NAME_MAX = 40; // nome do serviço (renomear pelo painel): 1 a 40 caracteres
 // Caracteres de controle, separadores de linha e os de direção do texto (que enganam a leitura do nome).
 const DEVICE_NAME_BAD = /[\p{Cc}\u2028\u2029\u202a-\u202e\u2066-\u2069]/u;
+// Presença de um serviço no PanelState: ativo agora · conectado (sem uso) · aguardando contato (o servidor acabou de subir) · sem contato.
+const PRESENCES = new Set(["active", "connected", "waiting", "none"]);
 const RECENT_LOGIN_MS = 15 * 60 * 1000; // kit de recuperação: só com login no Google feito há menos disso
 const SECRET_MAX_BYTES = 4096;
 const RECOVERY_ADVICE =
@@ -248,7 +253,7 @@ function createWeb(deps) {
     const e = pageError(503, "panel_off", "Painel desligado", [
       "O painel web deste servidor está desligado: não há administrador definido.",
       ["O dono do servidor precisa pôr o próprio e-mail Google em ", { b: "ADMIN_EMAILS" }, " (no compose) e reiniciar o servidor."],
-      "Os computadores conectados continuam funcionando normalmente.",
+      "Os serviços conectados continuam funcionando normalmente.",
     ]);
     e.page.links = [];
     return e;
@@ -454,18 +459,26 @@ function createWeb(deps) {
   function devicesNow() {
     const st = store.state;
     const list = typeof engine.devicesList === "function" ? engine.devicesList(null) : [];
-    return (Array.isArray(list) ? list : []).filter(isObj).map((d) => ({
-      id: d.id,
-      name: d.name ?? null,
-      platform: d.platform ?? null,
-      googleEmail: d.googleEmail ?? null,
-      createdAt: d.createdAt ?? null,
-      lastSeen: d.lastSeen ?? null,
-      active: !!d.active,
-      assigned: d.assigned ?? null,
-      // Contas que este computador pode usar (Contas → Computadores permitidos), em ordem; [] = nenhuma.
-      allowedAccounts: access.allowedAccountsList(st, { id: d.id }),
-    }));
+    return (Array.isArray(list) ? list : []).filter(isObj).map((d) => {
+      const active = !!d.active;
+      // Presença (do motor: engine.presenceOf). Motor que não manda os campos: conectado = ativo e a presença sai daí.
+      const connected = !!(d.connected ?? d.active);
+      return {
+        id: d.id,
+        name: d.name ?? null,
+        platform: d.platform ?? null,
+        googleEmail: d.googleEmail ?? null,
+        createdAt: d.createdAt ?? null,
+        lastSeen: d.lastSeen ?? null, // último batimento (uso)
+        lastContact: d.lastContact ?? d.lastSeen ?? null, // último pedido autenticado, de qualquer rota
+        active,
+        connected,
+        presence: PRESENCES.has(d.presence) ? d.presence : active ? "active" : connected ? "connected" : "none",
+        assigned: d.assigned ?? null,
+        // Contas que este serviço pode usar (Contas → Serviços permitidos), em ordem; [] = nenhuma.
+        allowedAccounts: access.allowedAccountsList(st, { id: d.id }),
+      };
+    });
   }
 
   function warningsFor(accounts, devices, g, t) {
@@ -473,7 +486,7 @@ function createWeb(deps) {
     for (const a of accounts) {
       const who = `conta ${a.number}${a.email ? ` (${a.email})` : ""}`;
       // Como renovar: o botão "Entrar de novo" no cartão da conta (login pela assinatura com o e-mail dela).
-      const renew = `clique em “Entrar de novo” no cartão da conta ${a.number} (ou entre com ela no Claude Code de um computador do administrador).`;
+      const renew = `clique em “Entrar de novo” no cartão da conta ${a.number} (ou entre com ela no Claude Code de um serviço do administrador).`;
       if (a.dead) {
         out.push({
           kind: "account_dead",
@@ -497,17 +510,17 @@ function createWeb(deps) {
     if (!g.enabled) {
       out.push({
         kind: "google_off",
-        text: "O login com Google está desligado neste servidor: computadores novos só conectam com código de conexão e ninguém entra de novo no painel até ele voltar.",
+        text: "O login com Google está desligado neste servidor: serviços novos só conectam com código de conexão e ninguém entra de novo no painel até ele voltar.",
       });
     }
     if (!devices.length) {
       out.push({
         kind: "no_devices",
-        text: "Nenhum computador conectado: conecte um pelo VS Code (Swap Plus: Conectar ao servidor → Entrar com Google) ou gere um código de conexão.",
+        text: "Nenhum serviço conectado: conecte um pelo VS Code (Swap Plus: Conectar ao servidor → Entrar com Google) ou gere um código de conexão.",
       });
     }
     if (!accounts.length) {
-      out.push({ kind: "no_accounts", text: "Nenhuma conta Claude no servidor ainda: conecte um computador e envie os logins dele." });
+      out.push({ kind: "no_accounts", text: "Nenhuma conta Claude no servidor ainda: conecte um serviço e envie os logins dele." });
     }
     try {
       const es = typeof engine.status === "function" ? engine.status() : null;
@@ -559,7 +572,7 @@ function createWeb(deps) {
         assignedDevices: devices
           .filter((d) => d.assigned !== null && Number(d.assigned) === Number(a.number))
           .map((d) => ({ id: d.id, name: d.name })),
-        // Computadores permitidos: null = todos (inclusive os que conectarem depois); [id...] = só esses.
+        // Serviços permitidos: null = todos (inclusive os que conectarem depois); [id...] = só esses.
         devices: access.accountDevicesFor(st, a.number),
       };
     });
@@ -692,25 +705,25 @@ function createWeb(deps) {
 
   /**
    * PUT /web/api/accounts/:n/devices { devices: null | [deviceId, ...] } → engine.setAccountDevices.
-   * null (escrito) = todos os computadores; [] = nenhum. Corpo sem `devices` → 400. Quem perdeu a permissão
+   * null (escrito) = todos os serviços; [] = nenhum. Corpo sem `devices` → 400. Quem perdeu a permissão
    * sai da conta na hora (o motor troca). → { ok, number, devices, state }
    */
   async function putAccountDevices({ params, body, sess, me }) {
     const n = Number(params[0]);
     needAccount(n);
     if (!hasOwn(body, "devices")) {
-      throw bad('envie { "devices": null } (todos os computadores) ou { "devices": ["id-do-computador", ...] } ([] = nenhum)');
+      throw bad('envie { "devices": null } (todos os serviços) ou { "devices": ["id-do-serviço", ...] } ([] = nenhum)');
     }
     let r;
     try {
       r = await engine.setAccountDevices(n, body.devices);
     } catch (e) {
-      // Lista inválida (não é lista nem null, id inválido, computador que não existe, repetido): a mensagem do motor.
-      if (e && e.code === "invalid") throw new HttpError(400, "invalid", String(e.message || "lista de computadores inválida").slice(0, 300));
+      // Lista inválida (não é lista nem null, id inválido, serviço que não existe, repetido): a mensagem do motor.
+      if (e && e.code === "invalid") throw new HttpError(400, "invalid", String(e.message || "lista de serviços inválida").slice(0, 300));
       throw e; // not_found → 404 (a conta sumiu no meio)
     }
     const devices = r && hasOwn(r, "devices") ? r.devices : null;
-    await note(`Computadores da conta ${n} ajustados pelo painel (${me}): ${access.devicesLabel(store.state, devices)}`);
+    await note(`Serviços da conta ${n} ajustados pelo painel (${me}): ${access.devicesLabel(store.state, devices)}`);
     return done(sess, { number: n, devices });
   }
 
@@ -719,22 +732,22 @@ function createWeb(deps) {
     return hasOwn(devs, id) && isObj(devs[id]) ? devs[id] : null;
   }
 
-  /** PATCH /web/api/devices/:id { name } → renomeia o computador (1 a 40 caracteres, sem caracteres de controle). */
+  /** PATCH /web/api/devices/:id { name } → renomeia o serviço (1 a 40 caracteres, sem caracteres de controle). */
   async function patchDevice({ params, body, sess, me }) {
     const id = params[0];
     const dev = deviceById(id);
-    if (!dev) throw new HttpError(404, "not_found", "computador não encontrado");
+    if (!dev) throw new HttpError(404, "not_found", "serviço não encontrado");
     if (!hasOwn(body, "name")) throw bad('envie { "name": "novo nome" }');
     if (typeof body.name !== "string") throw bad("name precisa ser texto");
     const name = body.name.trim();
     const len = [...name].length;
-    if (len < 1 || len > DEVICE_NAME_MAX) throw bad(`o nome do computador precisa ter de 1 a ${DEVICE_NAME_MAX} caracteres`);
-    if (DEVICE_NAME_BAD.test(name)) throw bad("o nome do computador não pode ter quebra de linha, tabulação nem caracteres de controle");
+    if (len < 1 || len > DEVICE_NAME_MAX) throw bad(`o nome do serviço precisa ter de 1 a ${DEVICE_NAME_MAX} caracteres`);
+    if (DEVICE_NAME_BAD.test(name)) throw bad("o nome do serviço não pode ter quebra de linha, tabulação nem caracteres de controle");
     const old = dev.name;
     if (old !== name) {
       dev.name = name;
-      await note(`Computador "${old}" renomeado para "${name}" pelo painel (${me})`, id);
-      log.info(`[painel] computador ${id} renomeado pelo painel (${me})`);
+      await note(`Serviço "${old}" renomeado para "${name}" pelo painel (${me})`, id);
+      log.info(`[painel] serviço ${id} renomeado pelo painel (${me})`);
     }
     return done(sess, { id, name });
   }
@@ -742,15 +755,15 @@ function createWeb(deps) {
   async function switchDevice({ params, body, sess, me }) {
     const id = params[0];
     const dev = deviceById(id);
-    if (!dev) throw new HttpError(404, "not_found", "computador não encontrado");
+    if (!dev) throw new HttpError(404, "not_found", "serviço não encontrado");
     const n = parseSwitchNumber(body.number);
     const r = (await engine.switchDevice(id, n, "painel")) || {};
     if (r.switched) {
       const to = r.to ?? n;
       await note(
         to !== null && to !== undefined
-          ? `Computador "${dev.name}" passou para a conta ${to} pelo painel (${me})`
-          : `Computador "${dev.name}" trocou de conta pelo painel (${me})`,
+          ? `Serviço "${dev.name}" passou para a conta ${to} pelo painel (${me})`
+          : `Serviço "${dev.name}" trocou de conta pelo painel (${me})`,
         id
       );
     }
@@ -1000,7 +1013,7 @@ function createWeb(deps) {
     { m: "POST", p: /^\/web\/api\/claude-login\/finish$/, body: true, fn: panel(claudeLoginFinish, change) },
   ];
 
-  /** Caminhos do painel (respostas com o webReplacer; 401 contam no limite do painel, não no dos computadores). */
+  /** Caminhos do painel (respostas com o webReplacer; 401 contam no limite do painel, não no dos serviços). */
   const ownsPath = (p) => p === "/" || p.startsWith("/static/") || p.startsWith("/web/");
 
   return {

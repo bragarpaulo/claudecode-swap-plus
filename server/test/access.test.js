@@ -1,5 +1,5 @@
 "use strict";
-// Testes de server/src/access.js: quais computadores podem usar cada conta Claude
+// Testes de server/src/access.js: quais serviços podem usar cada conta Claude
 // (state.accountDevices["<n>"] = null | [deviceId...]; WEB-SPEC 2.3).
 // Funções puras: o estado é montado à mão (mesmo formato do cofre), sem cofre, sem rede.
 //
@@ -49,7 +49,7 @@ function device(id, extra = {}) {
   return { id, name: id, platform: "darwin", googleEmail: null, tokenHash: "h", createdAt: 1, lastSeen: 1, assigned: null, lastSwitchAt: 0, models: [], ...extra };
 }
 
-/** Computadores do dono: Mac e Windows (Google), Linux (pareado por código). */
+/** Serviços do dono: Mac e Windows (Google), Linux (pareado por código). */
 const MAC = () => device("mac", { name: "Mac", googleEmail: "donoexemplo@gmail.com" });
 const WIN = () => device("win", { name: "Windows", platform: "win32", googleEmail: "donoexemplo@gmail.com" });
 const LINUX = () => device("linux", { name: "Linux", platform: "linux" });
@@ -147,7 +147,7 @@ test("normalizeEmail é a emailKey do google.js", () => {
   }
 });
 
-test("canUse: padrão = todos os computadores; lista = só os da lista; [] = nenhum", () => {
+test("canUse: padrão = todos os serviços; lista = só os da lista; [] = nenhum", () => {
   const st = makeState();
   const { mac, win, linux } = st.devices;
   for (const d of [mac, win, linux]) for (const n of [1, 2, 3]) assert.equal(canUse(st, d, n), true, "sem tabela no cofre");
@@ -164,12 +164,12 @@ test("canUse: padrão = todos os computadores; lista = só os da lista; [] = nen
   assert.equal(canUse(st, mac, 2), true);
   assert.equal(canUse(st, win, 2), true);
   assert.equal(canUse(st, linux, 2), false);
-  for (const d of [mac, win, linux]) assert.equal(canUse(st, d, 3), false, "lista vazia = nenhum computador");
+  for (const d of [mac, win, linux]) assert.equal(canUse(st, d, 3), false, "lista vazia = nenhum serviço");
   assert.equal(canUse(st, mac, "1"), true, "número em texto (como vem da URL)");
   assert.equal(canUse(st, win, "1"), false);
 });
 
-test("canUse: só a permissão; número inválido = não; sem computador = sem restrição", () => {
+test("canUse: só a permissão; número inválido = não; sem serviço = sem restrição", () => {
   const st = makeState({ accountDevices: { 1: ["mac"] } });
   const { mac, win } = st.devices;
   assert.equal(canUse(st, win, 99), true, "conta sem entrada (nem existe): não confere existência, isso é do motor");
@@ -200,7 +200,7 @@ test("canUse: valor estragado fecha (ninguém); tabela estragada = sem restriç�
   }
 });
 
-test("accountsAllowedFor: null quando nenhuma conta exclui o computador; senão Set das contas do cofre", () => {
+test("accountsAllowedFor: null quando nenhuma conta exclui o serviço; senão Set das contas do cofre", () => {
   const st = makeState();
   const { mac, win, linux } = st.devices;
   assert.equal(accountsAllowedFor(st, mac), null, "sem tabela");
@@ -215,7 +215,7 @@ test("accountsAllowedFor: null quando nenhuma conta exclui o computador; senão 
   // entrada de conta que não existe mais não conta
   const st2 = makeState({ accountDevices: { 9: ["mac"] } });
   assert.equal(accountsAllowedFor(st2, st2.devices.win), null);
-  assert.equal(accountsAllowedFor(st2, null), null, "sem computador");
+  assert.equal(accountsAllowedFor(st2, null), null, "sem serviço");
   assert.equal(accountsAllowedFor(makeState({ accounts: [], accountDevices: {} }), st2.devices.win), null, "sem contas");
 });
 
@@ -231,7 +231,7 @@ test("allowedAccountsList: lista em ordem para o painel (sempre lista)", () => {
   assert.deepEqual(allowedAccountsList(st, mac), []);
 });
 
-test("accountDevicesFor: null = todos; lista só com computadores que existem; estragado = []", () => {
+test("accountDevicesFor: null = todos; lista só com serviços que existem; estragado = []", () => {
   const st = makeState({ accountDevices: { 1: ["win", "sumiu", "mac"], 2: null, 3: "lixo" } });
   assert.deepEqual(accountDevicesFor(st, 1), ["win", "mac"]);
   assert.deepEqual(accountDevicesFor(st, "1"), ["win", "mac"]);
@@ -292,7 +292,7 @@ test("filterRecordsForDevice: conta do cofre que falta no records e não é perm
   assert.deepEqual(filterRecordsForDevice({ 9: { disabled: false } }, st, mac), { 2: { disabled: true }, 9: { disabled: true } });
   // chave que não é número de conta fica como veio
   assert.deepEqual(filterRecordsForDevice({ x: { a: 1 } }, st, mac), { x: { a: 1 }, 2: { disabled: true } });
-  // nenhum computador em nenhuma conta: todas desativadas
+  // nenhum serviço em nenhuma conta: todas desativadas
   st.accountDevices = { 1: [], 2: [], 3: [] };
   const out = filterRecordsForDevice(recordsOf(st), st, mac);
   assert.deepEqual(Object.keys(out).sort(), ["1", "2", "3"]);
@@ -321,7 +321,7 @@ test("filterRecordsForDevice + decide() do rules.js: nunca troca para conta não
   d = decide({ ...args, records: filterRecordsForDevice(recordsOf(st), st, mac) });
   assert.equal(d.kind, "blocked", "nenhuma outra permitida: fica parado em vez de usar uma não permitida");
 
-  // Como no engine.decideDevice: contas de outros computadores ativos bloqueadas e, se travar, a reserva
+  // Como no engine.decideDevice: contas de outros serviços ativos bloqueadas e, se travar, a reserva
   // "dividir é melhor que parar" com o MESMO base filtrado → pode dividir a 3, nunca abrir a 2.
   setAccountDevices(st, 3, null);
   const base = filterRecordsForDevice(recordsOf(st), st, mac);
@@ -376,19 +376,19 @@ test("setAccountDevices: validação e nada muda com erro", () => {
     assert.throws(() => setAccountDevices(st, n, null), isErr("not_found"), String(n));
   }
   for (const ruim of [undefined, "mac", 1, {}, { 0: "mac" }, true, new Set(["mac"])]) {
-    assert.throws(() => setAccountDevices(st, 1, ruim), isErr("invalid", /lista de ids de computadores/), String(ruim));
+    assert.throws(() => setAccountDevices(st, 1, ruim), isErr("invalid", /lista de ids de serviços/), String(ruim));
   }
   for (const item of ["", 1, null, undefined, true, ["mac"], {}]) {
-    assert.throws(() => setAccountDevices(st, 1, ["mac", item]), isErr("invalid", /id de computador inválido/), String(item));
+    assert.throws(() => setAccountDevices(st, 1, ["mac", item]), isErr("invalid", /id de serviço inválido/), String(item));
   }
-  assert.throws(() => setAccountDevices(st, 1, ["mac", "sumiu"]), isErr("invalid", /o computador "sumiu" não existe/));
+  assert.throws(() => setAccountDevices(st, 1, ["mac", "sumiu"]), isErr("invalid", /o serviço "sumiu" não existe/));
   assert.throws(() => setAccountDevices(st, 1, ["__proto__"]), isErr("invalid", /não existe/));
-  assert.throws(() => setAccountDevices(st, 1, ["win", "mac", "win"]), isErr("invalid", /o computador "win" aparece repetido/));
+  assert.throws(() => setAccountDevices(st, 1, ["win", "mac", "win"]), isErr("invalid", /o serviço "win" aparece repetido/));
   assert.equal(JSON.stringify(st), antes, "com erro nada muda");
 
   assert.throws(() => setAccountDevices(null, 1, null), isErr("invalid"));
   assert.throws(() => setAccountDevices("estado", 1, null), isErr("invalid"));
-  // conta/computador com a chave mas sem objeto (estragado) não contam como existentes
+  // conta/serviço com a chave mas sem objeto (estragado) não contam como existentes
   const st2 = makeState();
   st2.accounts["4"] = null;
   st2.devices.velho = null;
@@ -396,7 +396,7 @@ test("setAccountDevices: validação e nada muda com erro", () => {
   assert.throws(() => setAccountDevices(st2, 1, ["velho"]), isErr("invalid", /não existe/));
 });
 
-test("computador que conecta depois só usa as contas com 'Todos'", () => {
+test("serviço que conecta depois só usa as contas com 'Todos'", () => {
   const st = makeState();
   setAccountDevices(st, 1, ["mac"]);
   setAccountDevices(st, 2, ["mac", "win"]);
@@ -443,7 +443,7 @@ test("onDeviceRemoved: tira o id de todas as listas; lista vazia continua vazia 
   delete st.devices.mac;
   assert.deepEqual(onDeviceRemoved(st, "mac"), [1, 2]);
   assert.deepEqual(st.accountDevices, { 1: [], 2: ["win"], 3: null, 4: "lixo", 5: ["win"] });
-  assert.equal(canUse(st, st.devices.win, 1), false, "a conta 1 ficou sem computador");
+  assert.equal(canUse(st, st.devices.win, 1), false, "a conta 1 ficou sem serviço");
   assert.equal(canUse(st, st.devices.linux, 1), false);
 
   // o Mac conecta de novo: é outro id, não herda nada
@@ -462,12 +462,12 @@ test("onDeviceRemoved: tira o id de todas as listas; lista vazia continua vazia 
 
 test("devicesLabel: texto para o histórico", () => {
   const st = makeState();
-  assert.equal(devicesLabel(st, null), "todos os computadores");
-  assert.equal(devicesLabel(st, undefined), "todos os computadores");
-  assert.equal(devicesLabel(st, []), "nenhum computador");
+  assert.equal(devicesLabel(st, null), "todos os serviços");
+  assert.equal(devicesLabel(st, undefined), "todos os serviços");
+  assert.equal(devicesLabel(st, []), "nenhum serviço");
   assert.equal(devicesLabel(st, ["mac"]), '"Mac"');
   assert.equal(devicesLabel(st, ["mac", "win"]), '"Mac" e "Windows"');
   assert.equal(devicesLabel(st, ["mac", "win", "linux"]), '"Mac", "Windows" e "Linux"');
-  assert.equal(devicesLabel(st, ["sumiu"]), '"sumiu"', "sem o computador, mostra o id");
+  assert.equal(devicesLabel(st, ["sumiu"]), '"sumiu"', "sem o serviço, mostra o id");
   assert.equal(devicesLabel(null, ["mac"]), '"mac"');
 });

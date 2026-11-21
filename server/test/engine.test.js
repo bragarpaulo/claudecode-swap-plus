@@ -268,7 +268,7 @@ function dayTime(ms) {
   return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-const RELOGIN_TAIL = "entre de novo com ela no Claude Code de qualquer computador conectado.";
+const RELOGIN_TAIL = "entre de novo com ela no Claude Code de qualquer serviço conectado.";
 
 // ------------------------------------------------------------------ renovação
 
@@ -737,7 +737,7 @@ test("canUploadLogins: pareado por código sim; com Google só o administrador (
   assert.deepEqual(await engine.addLogin({ ...fake.login("ana@x.com"), deviceId: "adm" }), { number: 1, created: true });
   assert.deepEqual(await engine.addLogin({ ...fake.login("caio@x.com"), deviceId: "cod" }), { number: 2, created: true });
 
-  // a lista mudou (ADMIN_EMAILS sem o dono + reinício): o computador dele com Google deixa de poder
+  // a lista mudou (ADMIN_EMAILS sem o dono + reinício): o serviço dele com Google deixa de poder
   engine.setAdminCheck(null);
   assert.equal(pode("adm"), false);
   await assert.rejects(engine.addLogin({ ...fake.login("ana@x.com"), deviceId: "adm" }), (e) => e.code === "not_admin");
@@ -791,7 +791,7 @@ test("addLogin: refresh token morto não substitui um login bom; falha temporár
   const gen = acc.gen;
   const hist = store.state.history.length;
 
-  // Login de outro computador com o acesso ainda valendo, mas o refresh token já morreu
+  // Login de outro serviço com o acesso ainda valendo, mas o refresh token já morreu
   // (renovado em outro lugar). Antes passava, porque só renovava quando o acesso estava vencendo.
   const morto = fake.login("ana@x.com");
   fake.refreshTokens.get(morto.claudeAiOauth.refreshToken).spent = true;
@@ -1095,7 +1095,7 @@ test("linhas próprias por conta: validação (50–100 ou null), nada muda quan
   assert.equal(store.state.history[0].text, "Conta 1 voltou às regras gerais");
 });
 
-test("addLogin: número preferido (o mesmo do computador) quando está livre; ocupado → próximo", async (t) => {
+test("addLogin: número preferido (o mesmo do serviço) quando está livre; ocupado → próximo", async (t) => {
   const { engine, fake, store } = setup(t);
   assert.deepEqual(await engine.addLogin({ ...fake.login("um@x.com"), number: 4 }), { number: 4, created: true });
   assert.equal(store.state.nextNumber, 5);
@@ -1725,9 +1725,9 @@ test("addLogin: identidade errada descoberta depois de renovar → identity_mism
   assert.equal(fake.refreshTokens.get(l2.claudeAiOauth.refreshToken).spent, false);
 });
 
-// ------------------------------------------------------------------ computadores permitidos por conta (access.js, WEB-SPEC 2.3)
+// ------------------------------------------------------------------ serviços permitidos por conta (access.js, WEB-SPEC 2.3)
 
-test("computadores permitidos: conta restrita a outro computador nunca é atribuída nem entregue (troca automática ligada ou desligada)", async (t) => {
+test("serviços permitidos: conta restrita a outro serviço nunca é atribuída nem entregue (troca automática ligada ou desligada)", async (t) => {
   const { engine, fake, store, disk } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -1745,14 +1745,14 @@ test("computadores permitidos: conta restrita a outro computador nunca é atribu
   const best = await engine.switchDevice("d1", null); // "melhor conta": só entre as liberadas
   assert.deepEqual([best.switched, best.to], [false, 2]);
 
-  // Computador numa conta que não está liberada para ele (estado antigo): troca antes de entregar.
+  // Serviço numa conta que não está liberada para ele (estado antigo): troca antes de entregar.
   d1.assigned = 1;
   assert.equal(engine.stateFor("d1").credential, null, "o estado não mostra a credencial da conta não liberada");
   const c = await engine.credentialFor("d1");
   assert.equal(c.number, 2);
   assert.equal(c.claudeAiOauth.accessToken, store.state.accounts["2"].cred.accessToken);
   assert.equal(d1.assigned, 2);
-  assert.equal(store.state.history[0].text, "Trocou da conta 1 para a conta 2: a conta 1 não está liberada para este computador");
+  assert.equal(store.state.history[0].text, "Trocou da conta 1 para a conta 2: a conta 1 não está liberada para este serviço");
 
   // Troca automática desligada: a permissão vale do mesmo jeito (é permissão, não preferência).
   await engine.setRules({ autoSwitch: false });
@@ -1763,7 +1763,7 @@ test("computadores permitidos: conta restrita a outro computador nunca é atribu
   await engine.setAccountDevices(2, ["d2"]);
   assert.equal(d1.assigned, null);
   const alert = store.state.history.find((h) => h.kind === "alert" && h.device === "d1");
-  assert.equal(alert.text, "Nenhuma conta disponível para PC d1 (a conta 2 não está liberada para este computador)");
+  assert.equal(alert.text, "Nenhuma conta disponível para PC d1 (a conta 2 não está liberada para este serviço)");
   assert.equal(await engine.credentialFor("d1"), null);
   assert.equal((await engine.heartbeat("d1", {})).device.assigned, null);
   assert.equal(engine.stateFor("d1").credential, null);
@@ -1773,7 +1773,7 @@ test("computadores permitidos: conta restrita a outro computador nunca é atribu
   assert.equal(d2.assigned, 1);
 });
 
-test("computadores permitidos: troca automática (inclusive a reserva 'dividir') e limitHit só escolhem contas liberadas", async (t) => {
+test("serviços permitidos: troca automática (inclusive a reserva 'dividir') e limitHit só escolhem contas liberadas", async (t) => {
   const { engine, fake, clock, store } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -1805,7 +1805,7 @@ test("computadores permitidos: troca automática (inclusive a reserva 'dividir')
   assert.deepEqual([r.switched, r.to, d1.assigned], [true, 3, 3]);
 });
 
-test("computadores permitidos: switchDevice para conta não liberada → not_allowed (409) e nada muda", async (t) => {
+test("serviços permitidos: switchDevice para conta não liberada → not_allowed (409) e nada muda", async (t) => {
   const { engine, fake, clock, store, disk } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -1819,7 +1819,7 @@ test("computadores permitidos: switchDevice para conta não liberada → not_all
       (e) =>
         e.code === "not_allowed" &&
         ERROR_STATUS[e.code] === 409 &&
-        e.message.startsWith("a conta 2 não está liberada para este computador") &&
+        e.message.startsWith("a conta 2 não está liberada para este serviço") &&
         e.message.includes('"PC d1"')
     );
   }
@@ -1827,7 +1827,7 @@ test("computadores permitidos: switchDevice para conta não liberada → not_all
   assert.equal(store.state.history.length, h0, "nada no histórico");
   assert.equal(disk().devices.d1.assigned, 1);
 
-  // Para o computador liberado funciona; os erros de antes continuam.
+  // Para o serviço liberado funciona; os erros de antes continuam.
   const r = await engine.switchDevice("d2", 2);
   assert.deepEqual([r.switched, r.to, d2.assigned], [true, 2, 2]);
   await assert.rejects(engine.switchDevice("d1", 9), (e) => e.code === "not_found");
@@ -1835,7 +1835,7 @@ test("computadores permitidos: switchDevice para conta não liberada → not_all
   await assert.rejects(engine.switchDevice("d1", 2), (e) => e.code === "dead_account");
 });
 
-test("computadores permitidos: limitHit numa conta que deixou de ser liberada sai dela (mesmo com a troca automática desligada)", async (t) => {
+test("serviços permitidos: limitHit numa conta que deixou de ser liberada sai dela (mesmo com a troca automática desligada)", async (t) => {
   const { engine, fake, clock, store } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -1844,19 +1844,19 @@ test("computadores permitidos: limitHit numa conta que deixou de ser liberada sa
   const d1 = addDevice(engine, "d1", { assigned: 1, lastSeen: clock.t, lastSwitchBy: "manual" });
   addDevice(engine, "d2");
   await engine.setRules({ autoSwitch: false });
-  store.state.accountDevices = { 1: ["d2"] }; // a regra mudou sem o motor trocar o computador (ex.: cofre mexido)
+  store.state.accountDevices = { 1: ["d2"] }; // a regra mudou sem o motor trocar o serviço (ex.: cofre mexido)
 
   const r = await engine.limitHit("d1", "limite semanal");
   assert.deepEqual([r.switched, r.to, d1.assigned], [true, 2, 2]);
-  assert.equal(r.text, "Trocou da conta 1 para a conta 2: a conta 1 não está liberada para este computador");
+  assert.equal(r.text, "Trocou da conta 1 para a conta 2: a conta 1 não está liberada para este serviço");
 
   store.state.accountDevices = { 1: ["d2"], 2: [] };
   const r2 = await engine.limitHit("d1", "limite semanal");
   assert.deepEqual([r2.switched, d1.assigned], [false, null]);
-  assert.equal(r2.text, "Nenhuma conta disponível para PC d1 (a conta 2 não está liberada para este computador)");
+  assert.equal(r2.text, "Nenhuma conta disponível para PC d1 (a conta 2 não está liberada para este serviço)");
 });
 
-test("computadores permitidos: setAccountDevices grava, registra, troca na hora quem perdeu a permissão e tira a conta de quem está parado", async (t) => {
+test("serviços permitidos: setAccountDevices grava, registra, troca na hora quem perdeu a permissão e tira a conta de quem está parado", async (t) => {
   const { engine, fake, clock, store, disk } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -1881,7 +1881,7 @@ test("computadores permitidos: setAccountDevices grava, registra, troca na hora 
   assert.equal(d2.assigned, 2);
   assert.ok(store.state.history.some((h) => h.text === 'Conta 1 liberada para "Windows"'));
   const sw = store.state.history.find((h) => h.device === "d1" && h.kind === "switch");
-  assert.equal(sw.text, "Trocou da conta 1 para a conta 2: a conta 1 não está liberada para este computador");
+  assert.equal(sw.text, "Trocou da conta 1 para a conta 2: a conta 1 não está liberada para este serviço");
   let onDisk = disk();
   assert.deepEqual(onDisk.accountDevices, { 1: ["d2"] });
   assert.equal(onDisk.devices.d1.assigned, 2);
@@ -1895,24 +1895,24 @@ test("computadores permitidos: setAccountDevices grava, registra, troca na hora 
   await engine.setAccountDevices(1, ["d2"]);
   assert.equal(store.state.history.length, n0);
 
-  // Nenhum computador ([]): quem estava nela sai; a lista vazia fica gravada.
+  // Nenhum serviço ([]): quem estava nela sai; a lista vazia fica gravada.
   await engine.switchDevice("d2", 1);
   assert.deepEqual(await engine.setAccountDevices(1, []), { number: 1, devices: [] });
   assert.equal(d2.assigned, 2);
-  assert.ok(store.state.history.some((h) => h.text === "Conta 1 não está liberada para nenhum computador"));
+  assert.ok(store.state.history.some((h) => h.text === "Conta 1 não está liberada para nenhum serviço"));
   assert.deepEqual(disk().accountDevices, { 1: [] });
   assert.equal(access.canUse(store.state, d2, 1), false);
 
-  // Todos de novo (null): a entrada some; computador que conectar depois também pode usar.
+  // Todos de novo (null): a entrada some; serviço que conectar depois também pode usar.
   assert.deepEqual(await engine.setAccountDevices(1, null), { number: 1, devices: null });
   onDisk = disk();
   assert.equal(Object.prototype.hasOwnProperty.call(onDisk.accountDevices || {}, "1"), false);
-  assert.ok(store.state.history.some((h) => h.text === "Conta 1 liberada para todos os computadores"));
+  assert.ok(store.state.history.some((h) => h.text === "Conta 1 liberada para todos os serviços"));
   const d4 = addDevice(engine, "d4");
   assert.equal(access.canUse(store.state, d4, 1), true);
 });
 
-test("computadores permitidos: remover a conta apaga a lista dela; conta nova com o mesmo número começa liberada para todos", async (t) => {
+test("serviços permitidos: remover a conta apaga a lista dela; conta nova com o mesmo número começa liberada para todos", async (t) => {
   const { engine, fake, store, disk } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -1925,7 +1925,7 @@ test("computadores permitidos: remover a conta apaga a lista dela; conta nova co
   assert.deepEqual(store.state.accountDevices, { 2: ["d1", "d2"] });
   assert.deepEqual(disk().accountDevices, { 2: ["d1", "d2"] });
 
-  // Número 1 reaproveitado (o computador que mandou o login conhecia a conta como 1): liberada para todos.
+  // Número 1 reaproveitado (o serviço que mandou o login conhecia a conta como 1): liberada para todos.
   assert.deepEqual(await engine.addLogin({ ...fake.login("caio@x.com"), number: 1 }), { number: 1, created: true });
   assert.equal(access.accountDevicesFor(store.state, 1), null);
   assert.equal(access.canUse(store.state, d2, 1), true);
@@ -1941,7 +1941,7 @@ test("computadores permitidos: remover a conta apaga a lista dela; conta nova co
   assert.deepEqual(store.state.accountDevices["2"], ["d1", "d2"]);
 });
 
-test("computadores permitidos: credentialFor confere de novo depois da renovação (a conta deixou de ser liberada no meio)", async (t) => {
+test("serviços permitidos: credentialFor confere de novo depois da renovação (a conta deixou de ser liberada no meio)", async (t) => {
   const { engine, fake, clock, store, disk } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -1949,7 +1949,7 @@ test("computadores permitidos: credentialFor confere de novo depois da renovaç�
   const d1 = addDevice(engine, "d1", { assigned: 1, lastSeen: clock.t, lastSwitchBy: "manual" });
   addDevice(engine, "d2");
 
-  // 1) A regra muda enquanto a renovação da conta 1 está no ar (sem o motor trocar o computador).
+  // 1) A regra muda enquanto a renovação da conta 1 está no ar (sem o motor trocar o serviço).
   const g = gate();
   let arrived;
   const seen = new Promise((r) => (arrived = r));
@@ -1966,7 +1966,7 @@ test("computadores permitidos: credentialFor confere de novo depois da renovaç�
   const acc1 = store.state.accounts["1"];
   assert.equal(acc1.gen, 2, "a renovação da conta 1 terminou");
   assert.equal(disk().accounts["1"].cred.refreshToken, acc1.cred.refreshToken, "e foi gravada");
-  assert.ok(store.state.history.some((h) => h.device === "d1" && h.text === "Trocou da conta 1 para a conta 2: a conta 1 não está liberada para este computador"));
+  assert.ok(store.state.history.some((h) => h.device === "d1" && h.text === "Trocou da conta 1 para a conta 2: a conta 1 não está liberada para este serviço"));
 
   // 2) Pelo motor (setAccountDevices) durante a renovação da conta 2, sem outra conta liberada: nada é entregue.
   clock.t += 8 * HOUR - 10 * MIN;
@@ -1987,7 +1987,7 @@ test("computadores permitidos: credentialFor confere de novo depois da renovaç�
   const acc2 = store.state.accounts["2"];
   assert.equal(acc2.gen, gen2 + 1);
   assert.equal(disk().accounts["2"].cred.refreshToken, acc2.cred.refreshToken, "o login renovado foi gravado mesmo sem entregar");
-  assert.ok(store.state.history.some((h) => h.kind === "alert" && h.text === "Nenhuma conta disponível para PC d1 (a conta 2 não está liberada para este computador)"));
+  assert.ok(store.state.history.some((h) => h.kind === "alert" && h.text === "Nenhuma conta disponível para PC d1 (a conta 2 não está liberada para este serviço)"));
 });
 
 // ------------------------------------------------------------------ storeFreshLogin (login recém-emitido pelo painel)
@@ -2108,7 +2108,7 @@ test("storeFreshLogin: refresh token já gasto → stale_login; cofre sem gravar
   assert.equal(fake.count("refresh"), 1, "só a renovação do addLogin do começo");
 });
 
-// ------------------------------------------------------------------ regra "Computadores" (devicePlacement)
+// ------------------------------------------------------------------ regra "Serviços" (devicePlacement)
 
 test("modelo preferido (Fable): “aproveitar ao máximo” não troca uma conta com Fable por uma sem (caso de 18/11 00:29–00:34)", async (t) => {
   const { engine, fake, store, clock } = setup(t);
@@ -2129,7 +2129,7 @@ test("modelo preferido (Fable): “aproveitar ao máximo” não troca uma conta
   const mac = store.state.devices.mac;
   const win = store.state.devices.win;
   assert.deepEqual([mac.assigned, win.assigned], [2, 2], "conta nova: a que tem Fable vem primeiro (mesmo zerando o semanal depois)");
-  // Os dois computadores dão sinal a cada minuto (de verdade, a cada 30 s).
+  // Os dois serviços dão sinal a cada minuto (de verdade, a cada 30 s).
   const passar = async (min) => {
     for (let i = 0; i < min; i++) {
       clock.t += 60000;
@@ -2159,7 +2159,7 @@ test("modelo preferido (Fable): “aproveitar ao máximo” não troca uma conta
   assert.equal(engine.bestAccountFor(null), 1);
 });
 
-test("computadores juntos: os ativos ficam na mesma conta (a do topo da fila) e trocam juntos pela linha (modelos de todos)", async (t) => {
+test("serviços juntos: os ativos ficam na mesma conta (a do topo da fila) e trocam juntos pela linha (modelos de todos)", async (t) => {
   const { engine, fake, store } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -2179,9 +2179,9 @@ test("computadores juntos: os ativos ficam na mesma conta (a do topo da fila) e 
   const res = await engine.setRules({ rules: { devicePlacement: "together" } });
   assert.equal(res.rules.devicePlacement, "together");
   assert.deepEqual([d1.assigned, d2.assigned], [2, 2]);
-  assert.equal(store.state.history[0].text, "Trocou da conta 1 para a conta 2: computadores juntos na mesma conta");
+  assert.equal(store.state.history[0].text, "Trocou da conta 1 para a conta 2: serviços juntos na mesma conta");
   assert.equal(store.state.history[0].device, "d2");
-  assert.equal(store.state.history[1].text, "Computadores juntos: todos na mesma conta (a do topo da fila), trocando juntos");
+  assert.equal(store.state.history[1].text, "Serviços juntos: todos na mesma conta (a do topo da fila), trocando juntos");
   assert.equal(engine.stateFor("d1").rules.devicePlacement, "together");
 
   // O ciclo não separa (nada de "conta ocupada" nem spreadOut).
@@ -2195,7 +2195,7 @@ test("computadores juntos: os ativos ficam na mesma conta (a do topo da fila) e 
   const h = store.state.history[0];
   assert.equal(h.kind, "switch");
   assert.equal(h.device, null);
-  assert.equal(h.text, "Computadores trocados juntos para a conta 1: sessão em 95% (linha 90%) — PC d1 e PC d2");
+  assert.equal(h.text, "Serviços trocados juntos para a conta 1: sessão em 95% (linha 90%) — PC d1 e PC d2");
   assert.deepEqual([d1.lastSwitchBy, d2.lastSwitchBy], ["auto", "auto"]);
   await engine.tick();
   assert.deepEqual([d1.assigned, d2.assigned], [1, 1], "estável");
@@ -2209,10 +2209,10 @@ test("computadores juntos: os ativos ficam na mesma conta (a do topo da fila) e 
   d2.models = [];
   await engine.tick();
   assert.deepEqual([d1.assigned, d2.assigned], [2, 2], "Fable na linha: o grupo inteiro troca, mesmo com os dois no Opus");
-  assert.equal(store.state.history[0].text, "Computadores trocados juntos para a conta 2: Fable em 97% (linha 95%) — PC d1 e PC d2");
+  assert.equal(store.state.history[0].text, "Serviços trocados juntos para a conta 2: Fable em 97% (linha 95%) — PC d1 e PC d2");
 });
 
-test("computadores juntos: limitHit de um computador troca o grupo inteiro na hora", async (t) => {
+test("serviços juntos: limitHit de um serviço troca o grupo inteiro na hora", async (t) => {
   const { engine, fake, clock, store } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -2225,7 +2225,7 @@ test("computadores juntos: limitHit de um computador troca o grupo inteiro na ho
 
   const r = await engine.limitHit("d1", "limite da sessão de 5h");
   assert.deepEqual([r.switched, r.to], [true, 2]);
-  assert.equal(r.text, "Computadores trocados juntos na hora para a conta 2: a conta 1 bateu o limite da sessão de 5h — PC d1 e PC d2");
+  assert.equal(r.text, "Serviços trocados juntos na hora para a conta 2: a conta 1 bateu o limite da sessão de 5h — PC d1 e PC d2");
   assert.deepEqual([d1.assigned, d2.assigned, d3.assigned], [2, 2, 1]);
   assert.deepEqual([d1.lastSwitchBy, d2.lastSwitchBy], ["limit", "limit"]);
   assert.equal(store.state.history[0].kind, "switch");
@@ -2240,7 +2240,7 @@ test("computadores juntos: limitHit de um computador troca o grupo inteiro na ho
   assert.deepEqual([d1.assigned, d2.assigned], [1, 2]);
 });
 
-test("computadores juntos: switchDevice (painel ou computador) troca o grupo inteiro", async (t) => {
+test("serviços juntos: switchDevice (painel ou serviço) troca o grupo inteiro", async (t) => {
   const { engine, fake, clock, store } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -2255,7 +2255,7 @@ test("computadores juntos: switchDevice (painel ou computador) troca o grupo int
 
   let r = await engine.switchDevice("d1", 3, "painel");
   assert.deepEqual([r.switched, r.from, r.to], [true, 1, 3]);
-  assert.equal(r.text, "Computadores trocados juntos para a conta 3: troca manual pelo painel — PC d1 e PC d2");
+  assert.equal(r.text, "Serviços trocados juntos para a conta 3: troca manual pelo painel — PC d1 e PC d2");
   assert.deepEqual([d1.assigned, d2.assigned, d3.assigned], [3, 3, 1]);
   assert.deepEqual([d1.lastSwitchBy, d2.lastSwitchBy], ["painel", "group"]);
   assert.equal(store.state.history[0].kind, "switch");
@@ -2265,9 +2265,9 @@ test("computadores juntos: switchDevice (painel ou computador) troca o grupo int
   await engine.tick();
   assert.deepEqual([d1.assigned, d2.assigned], [3, 3]);
 
-  // Pelo computador (extensão).
+  // Pelo serviço (extensão).
   r = await engine.switchDevice("d2", 2);
-  assert.equal(r.text, "Computadores trocados juntos para a conta 2: troca manual pelo computador PC d2 — PC d1 e PC d2");
+  assert.equal(r.text, "Serviços trocados juntos para a conta 2: troca manual pelo serviço PC d2 — PC d1 e PC d2");
   assert.deepEqual([d1.assigned, d2.assigned], [2, 2]);
   assert.equal(store.state.history[0].kind, "manual");
   assert.equal(store.state.history[0].device, "d2");
@@ -2275,14 +2275,14 @@ test("computadores juntos: switchDevice (painel ou computador) troca o grupo int
   // Melhor conta: sem contas "ocupadas" no modo juntos.
   r = await engine.switchDevice("d1", null);
   assert.equal(r.to, 1);
-  assert.equal(r.text, "Computadores trocados juntos para a conta 1: troca manual pelo computador PC d1 (melhor conta) — PC d1 e PC d2");
+  assert.equal(r.text, "Serviços trocados juntos para a conta 1: troca manual pelo serviço PC d1 (melhor conta) — PC d1 e PC d2");
   assert.deepEqual([d1.assigned, d2.assigned], [1, 1]);
 
   r = await engine.switchDevice("d1", 1);
   assert.deepEqual([r.switched, r.text], [false, "já está na conta 1"]);
 });
 
-test("computadores juntos: conta não liberada para um computador nunca é forçada nele", async (t) => {
+test("serviços juntos: conta não liberada para um serviço nunca é forçada nele", async (t) => {
   const { engine, fake, store } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -2320,7 +2320,7 @@ test("computadores juntos: conta não liberada para um computador nunca é forç
   assert.ok(!store.state.history.some((h) => h.device === "d2" && /para a conta 1\b/.test(h.text)));
 });
 
-test("computadores juntos: quem volta a ficar ativo entra na conta do grupo; Separados volta a separar", async (t) => {
+test("serviços juntos: quem volta a ficar ativo entra na conta do grupo; Separados volta a separar", async (t) => {
   const { engine, fake, clock, store } = setup(t);
   await engine.addLogin(fake.login("ana@x.com"));
   await engine.addLogin(fake.login("bia@x.com"));
@@ -2334,10 +2334,10 @@ test("computadores juntos: quem volta a ficar ativo entra na conta do grupo; Sep
   const d2 = addDevice(engine, "d2", { assigned: 3, lastSeen: clock.t - 30 * MIN, lastSwitchAt: clock.t - MIN, lastSwitchBy: "auto" });
   await engine.heartbeat("d2", {});
   assert.deepEqual([d1.assigned, d2.assigned], [2, 2]);
-  assert.equal(store.state.history[0].text, "Trocou da conta 3 para a conta 2: computadores juntos na mesma conta");
+  assert.equal(store.state.history[0].text, "Trocou da conta 3 para a conta 2: serviços juntos na mesma conta");
   assert.equal(store.state.history[0].device, "d2");
 
-  // Computador novo também entra na conta do grupo.
+  // Serviço novo também entra na conta do grupo.
   const d3 = addDevice(engine, "d3");
   await engine.heartbeat("d3", {});
   assert.equal(d3.assigned, 2);
@@ -2349,7 +2349,7 @@ test("computadores juntos: quem volta a ficar ativo entra na conta do grupo; Sep
   assert.equal(d1.assigned, 2);
   assert.equal(d2.assigned, 1);
   assert.match(store.state.history[0].text, /^Trocou da conta 2 para a conta 1: a conta 2 já está em uso em PC d1$/);
-  assert.ok(store.state.history.some((h) => h.text === "Computadores separados: cada um na sua conta"));
+  assert.ok(store.state.history.some((h) => h.text === "Serviços separados: cada um na sua conta"));
   await engine.tick();
   assert.deepEqual([d1.assigned, d2.assigned], [2, 1], "estável, cada um na sua");
 });
@@ -2370,7 +2370,7 @@ function noticeSpy() {
 
 const RENEW = (n, email) =>
   `Para renovar: abra https://swap.exemplo.com → Contas → conta ${n} → Entrar de novo, e entre com ${email} na página da Claude; ` +
-  "copie o código e cole no painel. (Ou faça /login no Claude Code de um computador do administrador.)";
+  "copie o código e cole no painel. (Ou faça /login no Claude Code de um serviço do administrador.)";
 
 /** O próximo horário marcado do resumo semanal (dia da semana e hora LOCAIS) depois de `from`. */
 function nextWeekly(from, day = 1, hour = 8) {
@@ -2414,6 +2414,7 @@ test("avisos por e-mail: login que vence → UM aviso por login, quando falta me
   const [n1] = expiring();
   assert.equal(n1.subject, `Swap Plus: login da conta 1 vence ${dayTime(END)}`);
   assert.ok(n1.text.startsWith(`O login da conta 1 (apelido “Trabalho”, e-mail ana@x.com) no Swap Plus vence em ${dayTime(END)} (faltam `), n1.text);
+  assert.ok(n1.text.includes("Depois disso o servidor não consegue mais renovar o acesso dela, e os serviços deixam de usá-la.\n\n"), n1.text);
   assert.ok(n1.text.includes(RENEW(1, "ana@x.com")), n1.text);
   assert.deepEqual(Object.keys(n1).sort(), ["subject", "text"]);
   assert.equal(store.state.accounts["1"].loginMailedFor, END, "o vencimento avisado fica na conta (vai para o cofre)");
@@ -2619,6 +2620,7 @@ test("avisos por e-mail: conta que morre → 1 aviso na hora, com o motivo; mort
   assert.ok(d1.text.startsWith(`O login da conta 1 (e-mail ana@x.com) parou de valer em ${dayTime(clock.t)}.`), d1.text);
   assert.match(d1.text, /Motivo: a Anthropic recusou a renovação/);
   assert.ok(!d1.text.includes("ficou sem resposta"));
+  assert.ok(d1.text.includes("O servidor não renova mais esta conta, e os serviços que estavam nela passam para outra.\n\n"), d1.text);
   assert.ok(d1.text.includes(RENEW(1, "ana@x.com")), d1.text);
 
   // Já morta: nada de novo (nem renovando, nem no ciclo, nem marcando de novo).
@@ -2777,4 +2779,179 @@ test("avisos por e-mail com o notify.js de verdade: o aviso vira arquivo em DATA
   const on = setup(t, { notify: createNotifier({ dir: dataDir, env: {} }) }).engine;
   assert.deepEqual(on.status().notices, { enabled: true, dir: folder });
   assert.deepEqual(setup(t).engine.status().notices, { enabled: false, dir: null }, "sem notify: desligado");
+});
+
+test("textos do motor para quem não tem registro ou não tem conta: “serviço desconhecido” e “nenhuma conta atribuída a este serviço”", async (t) => {
+  const { engine } = setup(t);
+  await assert.rejects(engine.heartbeat("nao-existe", {}), (e) => e.code === "unknown_device" && ERROR_STATUS[e.code] === 404 && e.message === "serviço desconhecido");
+  addDevice(engine, "d1");
+  assert.deepEqual(await engine.limitHit("d1", "limite semanal"), { switched: false, text: "nenhuma conta atribuída a este serviço" });
+});
+
+// ------------------------------------------------------------------ presença dos serviços (ativo / conectado / aguardando contato / sem contato)
+
+/** Os campos de presença do serviço `id` na lista do motor (a mesma do painel e do GET /v1/state). */
+function presenceRow(engine, id) {
+  const d = engine.devicesList().find((x) => x.id === id);
+  return { active: d.active, connected: d.connected, presence: d.presence, lastContact: d.lastContact };
+}
+
+test("presença: touch (um pedido autenticado qualquer) deixa o serviço conectado — sem ativar, sem sujar o motor e sem ir para o cofre", async (t) => {
+  const { engine, fake, clock, store, disk } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  const d1 = addDevice(engine, "d1", { assigned: 1, lastSeen: clock.t - HOUR }); // usou há 1 h
+  addDevice(engine, "d2"); // nunca apareceu (lastSeen 0)
+  clock.t += 10 * MIN; // o servidor já está no ar há mais de 5 min: ninguém está só "aguardando contato"
+  await engine.save();
+  const before = JSON.stringify(disk());
+  const mem = JSON.stringify(store.state);
+  assert.deepEqual(presenceRow(engine, "d1"), { active: false, connected: false, presence: "none", lastContact: d1.lastSeen });
+  assert.deepEqual(presenceRow(engine, "d2"), { active: false, connected: false, presence: "none", lastContact: null });
+
+  engine.touch("d1");
+  assert.equal(engine.dirty, false, "o contato não suja o cofre");
+  assert.equal(JSON.stringify(store.state), mem, "nem escreve no registro do serviço (o lastSeen fica como estava)");
+  assert.deepEqual(presenceRow(engine, "d1"), { active: false, connected: true, presence: "connected", lastContact: clock.t });
+  assert.equal(engine.isActive(d1), false, "contato não é uso: o serviço não conta como ativo");
+  assert.equal(engine.status().activeDevices, 0);
+  const mine = engine.stateFor("d1").devices.find((x) => x.id === "d1");
+  assert.deepEqual([mine.active, mine.connected, mine.presence, mine.lastContact], [false, true, "connected", clock.t], "o StateResponse leva os mesmos campos");
+
+  // Gravar o cofre inteiro de novo: nada do contato vai junto.
+  await store.save();
+  assert.equal(JSON.stringify(disk()), before);
+  assert.ok(!/contact|presence/i.test(JSON.stringify(disk())), "nenhum campo de contato ou presença no disco");
+
+  // Só de serviço que existe (o mapa não cresce com lixo); desconectado, o contato sai da memória.
+  engine.touch("nao-existe");
+  engine.touch(null);
+  engine.touch(42);
+  assert.deepEqual([...engine.contacts.keys()], ["d1"]);
+  engine.forgetContact("d1");
+  engine.forgetContact("nao-existe");
+  assert.equal(engine.contacts.size, 0);
+  assert.deepEqual(presenceRow(engine, "d1"), { active: false, connected: false, presence: "none", lastContact: d1.lastSeen });
+});
+
+test("presença: serviço só conectado (sem batimento) não ocupa conta e segue fora das decisões, como quem está sem contato", async (t) => {
+  const { engine, fake, clock, store } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  await engine.addLogin(fake.login("bia@x.com"));
+  setUsage(engine, 1);
+  setUsage(engine, 2);
+  const d1 = addDevice(engine, "d1", { name: "Mac", assigned: 1, lastSeen: clock.t, lastSwitchBy: "manual" }); // em uso
+  const d2 = addDevice(engine, "d2", { name: "Hermes", assigned: 2, lastSeen: clock.t - HOUR }); // ocioso: só lê o estado
+  const idleSince = d2.lastSeen;
+  engine.touch("d2");
+  assert.equal(presenceRow(engine, "d1").presence, "active");
+  assert.equal(presenceRow(engine, "d2").presence, "connected");
+
+  // Para as decisões ele não está em uso: a conta dele não fica ocupada nem conta como "conta de serviço ativo".
+  assert.deepEqual([...engine.othersAccounts("d1")], [], "a conta 2 (do Hermes ocioso) continua livre para o Mac");
+  assert.deepEqual([...engine.activeAccountNumbers()], [1]);
+  assert.equal(engine.status().activeDevices, 1);
+
+  // Os ciclos decidem só para os ativos: nada muda para o conectado, mesmo com os contatos chegando.
+  const h0 = store.state.history.length;
+  for (let i = 0; i < 3; i++) {
+    clock.t += 2 * MIN;
+    d1.lastSeen = clock.t; // o Mac segue em uso (batimento)
+    engine.touch("d2"); // o Hermes só lê o estado
+    await engine.tick();
+  }
+  assert.deepEqual([d1.assigned, d2.assigned], [1, 2]);
+  assert.equal(store.state.history.length, h0, "nada no histórico");
+  assert.equal(d2.lastSeen, idleSince, "os contatos não mexem no lastSeen");
+  assert.equal(presenceRow(engine, "d2").presence, "connected");
+
+  // Perdeu a permissão da conta em que estava: um ativo trocaria na hora; o conectado só fica sem conta e recebe
+  // outra quando voltar a usar (igual a quem está sem contato).
+  await engine.setAccountDevices(2, ["d1"]);
+  assert.equal(d2.assigned, null);
+  assert.ok(!store.state.history.some((h) => h.device === "d2" && h.kind === "switch"), "não houve troca na hora");
+  engine.touch("d2");
+  assert.equal(d2.assigned, null, "contato não atribui conta: isso é do batimento (ou do pedido da credencial)");
+  assert.equal((await engine.heartbeat("d2", {})).device.assigned, 1);
+  assert.equal(presenceRow(engine, "d2").presence, "active");
+});
+
+test("presença: batimento → ativo; depois só contatos a cada 2 min → conectado (sem buraco na passagem); silêncio → sem contato", async (t) => {
+  const { engine, fake, clock } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  const d1 = addDevice(engine, "d1");
+  clock.t += 10 * MIN; // o servidor já está no ar há mais de 5 min
+  assert.deepEqual(presenceRow(engine, "d1"), { active: false, connected: false, presence: "none", lastContact: null }, "ainda não apareceu");
+
+  await engine.heartbeat("d1", {});
+  const beat = clock.t;
+  assert.deepEqual(presenceRow(engine, "d1"), { active: true, connected: true, presence: "active", lastContact: beat });
+
+  // O uso acabou: daqui em diante o serviço só lê o estado, a cada 2 min (como o cliente do Hermes ocioso).
+  const seen = [];
+  let last = beat;
+  for (let min = 1; min <= 20; min++) {
+    clock.t += MIN;
+    if (min % 2 === 0) {
+      engine.touch("d1");
+      last = clock.t;
+    }
+    const p = presenceRow(engine, "d1");
+    assert.equal(p.lastContact, last, `minuto ${min}`);
+    assert.equal(p.connected, true, `minuto ${min}: enquanto os contatos chegam, nunca fica "sem contato"`);
+    seen.push(p.presence);
+  }
+  assert.deepEqual(seen, [...Array(5).fill("active"), ...Array(15).fill("connected")], "ativo até 5 min depois do batimento; daí em diante, conectado");
+  assert.equal(d1.lastSeen, beat, "os contatos não mexem no lastSeen");
+
+  // Silêncio: até 5 min depois do último contato ainda conta; passou disso, sem contato (com a hora do último).
+  clock.t = last + 5 * MIN;
+  assert.equal(presenceRow(engine, "d1").presence, "connected");
+  clock.t += 1;
+  assert.deepEqual(presenceRow(engine, "d1"), { active: false, connected: false, presence: "none", lastContact: last });
+
+  // Voltou a usar: ativo de novo.
+  await engine.heartbeat("d1", {});
+  assert.deepEqual(presenceRow(engine, "d1"), { active: true, connected: true, presence: "active", lastContact: clock.t });
+});
+
+test("presença: depois de um reinício (motor novo no mesmo cofre) o contato recomeça do lastSeen; quem ainda não chamou fica “aguardando contato” por 5 min", async (t) => {
+  const { engine, fake, clock, store } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  clock.t += HOUR;
+  const idle = addDevice(engine, "ocioso", { lastSeen: clock.t - 30 * MIN }); // usou há 30 min; desde então só lê o estado
+  const busy = addDevice(engine, "em-uso", { lastSeen: clock.t - MIN }); // batimento há 1 min
+  const gone = addDevice(engine, "sumido", { lastSeen: clock.t - 3 * DAY }); // não fala com o servidor há dias
+  addDevice(engine, "novo"); // nunca apareceu
+  engine.touch("ocioso");
+  assert.equal(presenceRow(engine, "ocioso").presence, "connected");
+  assert.equal(presenceRow(engine, "sumido").presence, "none");
+  await engine.save();
+
+  // Reinício: os contatos estavam só na memória.
+  clock.t += 20 * SEC;
+  const boot = clock.t;
+  const quiet = { info() {}, warn() {}, error() {}, log() {} };
+  const e2 = new Engine({ store, anthropic: engine.anthropic, now: () => clock.t, log: quiet, env: {} });
+  assert.deepEqual(presenceRow(e2, "ocioso"), { active: false, connected: false, presence: "waiting", lastContact: idle.lastSeen });
+  assert.deepEqual(presenceRow(e2, "em-uso"), { active: true, connected: true, presence: "active", lastContact: busy.lastSeen });
+  assert.deepEqual(presenceRow(e2, "sumido"), { active: false, connected: false, presence: "waiting", lastContact: gone.lastSeen }, "o servidor ainda não tem como saber: espera");
+  assert.deepEqual(presenceRow(e2, "novo"), { active: false, connected: false, presence: "waiting", lastContact: null });
+
+  // O ocioso lê o estado de 2 em 2 min: volta a "conectado" no primeiro pedido depois do reinício.
+  clock.t = boot + 2 * MIN;
+  e2.touch("ocioso");
+  assert.deepEqual(presenceRow(e2, "ocioso"), { active: false, connected: true, presence: "connected", lastContact: clock.t });
+
+  // O que estava em uso e parou sem chamar de novo deixa de ser ativo e, nos 5 min do reinício, também espera.
+  clock.t = boot + 4 * MIN + 30 * SEC; // batimento há 5 min 50 s
+  assert.equal(presenceRow(e2, "em-uso").presence, "waiting");
+
+  // 5 min depois de subir, quem não chamou está sem contato.
+  clock.t = boot + 5 * MIN - 1;
+  assert.equal(presenceRow(e2, "sumido").presence, "waiting");
+  clock.t = boot + 5 * MIN;
+  assert.deepEqual(presenceRow(e2, "sumido"), { active: false, connected: false, presence: "none", lastContact: gone.lastSeen });
+  assert.deepEqual(presenceRow(e2, "novo"), { active: false, connected: false, presence: "none", lastContact: null });
+  assert.equal(presenceRow(e2, "em-uso").presence, "none");
+  assert.equal(presenceRow(e2, "ocioso").presence, "connected", "o contato dele foi há 3 min");
 });

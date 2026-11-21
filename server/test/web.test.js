@@ -5,7 +5,7 @@
 // do painel de mentira numa pasta temporária (config.webDir) e um engine falso que trabalha no
 // próprio cofre e "vaza" segredos de propósito (o painel não pode deixar sair).
 // O painel é só do administrador (ADMIN_EMAILS; aqui, por padrão, ana@exemplo.com). As contas liberadas
-// (allow) só conectam computadores.
+// (allow) só conectam serviços.
 // Rodar no servidor:  node --test server/test/*.test.js     (TEST_LOG=1 mostra os logs)
 
 const test = require("node:test");
@@ -37,7 +37,7 @@ const UA_IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleW
 const MIN = 60 * 1000;
 const DAY = 24 * 60 * MIN;
 const ADMIN = "ana@exemplo.com"; // ADMIN_EMAILS padrão do setup()
-const NOT_ADMIN_TEXT = "Esta conta pode conectar computadores, mas o painel é só do administrador.";
+const NOT_ADMIN_TEXT = "Esta conta pode conectar serviços, mas o painel é só do administrador.";
 
 const INDEX_HTML = '<!doctype html>\n<html lang="pt-BR"><head><title>Swap Plus</title><link rel="stylesheet" href="/static/app.css"></head><body><script src="/static/app.js"></script></body></html>\n';
 const APP_JS = "console.log('painel do Swap Plus');\n";
@@ -57,6 +57,9 @@ class FakeEngine {
     this.calls = [];
     this.pausedUntil = null;
     this.setLoginError = null;
+    // Presença por serviço ({ id: { lastContact, connected, presence } }). Vazio = como um motor antigo, que não
+    // manda esses campos: o painel completa pelo `active`.
+    this.presence = {};
   }
   get st() {
     return this.store.state;
@@ -96,6 +99,7 @@ class FakeEngine {
       current: d.id === currentId,
       active: this.now() - d.lastSeen <= 5 * MIN,
       tokenHash: d.tokenHash, // "vazamento": o painel não pode deixar sair
+      ...(this.presence[d.id] || {}),
     }));
   }
   publicList(deviceId) {
@@ -149,7 +153,7 @@ class FakeEngine {
     this.rec("switchDevice", deviceId, number, by);
     const d = this.st.devices[deviceId];
     if (number !== null && number !== undefined && !access.canUse(this.st, d, number)) {
-      throw Object.assign(new Error(`a conta ${number} não está liberada para este computador ("${d.name}")`), { code: "not_allowed" });
+      throw Object.assign(new Error(`a conta ${number} não está liberada para este serviço ("${d.name}")`), { code: "not_allowed" });
     }
     const from = d.assigned ?? null;
     const to = number ?? 2;
@@ -576,7 +580,7 @@ async function webLogin(ctx, email = "ana@exemplo.com", { ua = UA, cookie, heade
 }
 
 /**
- * Um computador (VS Code) conectando com Google: /v1/login/start → link → Google falso (entra com `email`) →
+ * Um serviço (VS Code) conectando com Google: /v1/login/start → link → Google falso (entra com `email`) →
  * retorno → poll. → { page (página final no navegador), poll (resposta do poll), token? }
  */
 async function deviceLogin(ctx, email, name = "Notebook") {
@@ -604,7 +608,7 @@ test("painel: login com Google (tipo web) → cookie sp_sess → /web/api/me; no
   const ctx = await setup(t); // ana é a administradora (ADMIN_EMAILS); ela não precisa estar na lista de liberadas
 
   const b = await webLogin(ctx, "ana@exemplo.com");
-  // /web/login: 302 para o Google com PKCE + state, mesmo cliente e mesmo retorno dos computadores
+  // /web/login: 302 para o Google com PKCE + state, mesmo cliente e mesmo retorno dos serviços
   const q = Object.fromEntries(b.toGoogle.searchParams);
   assert.equal(b.toGoogle.origin + b.toGoogle.pathname, ctx.fake.authUrl);
   assert.equal(q.client_id, CLIENT_ID);
@@ -687,7 +691,7 @@ test("painel: conta não liberada → página de recusa e nenhuma sessão; retor
   assert.match(b.page.text, /href="\/web\/login"/, "botão para entrar com outra conta");
   assert.equal(cookieFrom(b.page, "sp_sess"), null);
   assert.deepEqual(ctx.store.state.webSessions, {});
-  assert.deepEqual(ctx.store.state.devices, {}, "login do painel não cria computador");
+  assert.deepEqual(ctx.store.state.devices, {}, "login do painel não cria serviço");
   assert.ok(ctx.logs.some((l) => l.includes("intruso@fora.com") && l.includes("não está liberada")));
   // recarregar mostra a mesma recusa
   const again = await call(ctx, "GET", b.callbackPath);
@@ -870,12 +874,49 @@ test("painel: cada rota chama o engine certo; PanelState no formato da WEB-SPEC;
   assert.equal(st.autoSwitch, true);
   assert.equal(st.devices.length, 2);
   for (const d of st.devices) {
-    assert.deepEqual(Object.keys(d).sort(), ["active", "allowedAccounts", "assigned", "createdAt", "googleEmail", "id", "lastSeen", "name", "platform"]);
+    assert.deepEqual(Object.keys(d).sort(), [
+      "active",
+      "allowedAccounts",
+      "assigned",
+      "connected",
+      "createdAt",
+      "googleEmail",
+      "id",
+      "lastContact",
+      "lastSeen",
+      "name",
+      "platform",
+      "presence",
+    ]);
     assert.deepEqual(d.allowedAccounts, [1, 2, 3], "sem restrição: todas as contas");
   }
-  assert.ok(st.accounts.every((a) => a.devices === null), "sem restrição: todos os computadores");
+  assert.ok(st.accounts.every((a) => a.devices === null), "sem restrição: todos os serviços");
   assert.equal(st.devices.find((d) => d.id === "d1").active, true);
   assert.equal(st.devices.find((d) => d.id === "d2").active, false);
+  // Presença. Este engine não manda lastContact/connected/presence (como um motor antigo): o painel completa pelo
+  // `active` — conectado = ativo, presença "active" ou "none", último contato = lastSeen.
+  const presenca = (state, id) => {
+    const d = state.devices.find((x) => x.id === id);
+    return [d.active, d.connected, d.presence, d.lastContact];
+  };
+  assert.deepEqual(presenca(st, "d1"), [true, true, "active", T]);
+  assert.deepEqual(presenca(st, "d2"), [false, false, "none", T - 3600 * 1000]);
+  // Com os campos do motor, eles saem como vieram (e só eles: a lista de campos é fechada).
+  const comPresenca = async (p) => {
+    E.presence = { d2: p };
+    const x = await call(ctx, "GET", "/web/api/state", { s });
+    assert.equal(x.status, 200, x.text);
+    assert.deepEqual(Object.keys(x.json.devices.find((d) => d.id === "d2")).sort(), Object.keys(st.devices[0]).sort());
+    return presenca(x.json, "d2");
+  };
+  assert.deepEqual(await comPresenca({ lastContact: T - 2 * MIN, connected: true, presence: "connected", contatos: "não sai" }), [false, true, "connected", T - 2 * MIN]);
+  assert.deepEqual(await comPresenca({ lastContact: T - 3600 * 1000, connected: false, presence: "waiting" }), [false, false, "waiting", T - 3600 * 1000]);
+  assert.deepEqual(await comPresenca({ lastContact: T - 9 * MIN, connected: false, presence: "none" }), [false, false, "none", T - 9 * MIN]);
+  // Só "conectado", sem a presença: sai do que veio. Presença que o painel não conhece: também.
+  assert.deepEqual(await comPresenca({ lastContact: T - MIN, connected: true }), [false, true, "connected", T - MIN]);
+  assert.deepEqual(await comPresenca({ connected: true, presence: "dormindo" }), [false, true, "connected", T - 3600 * 1000]);
+  assert.deepEqual(await comPresenca({ presence: 7 }), [false, false, "none", T - 3600 * 1000]);
+  E.presence = {};
   assert.deepEqual(st.allowedEmails, [], "o administrador não depende da lista");
   assert.deepEqual(st.google, { enabled: true, callbackUrl: CALLBACK });
   const hTroca = st.history.find((h) => h.kind === "switch");
@@ -885,6 +926,7 @@ test("painel: cada rota chama o engine certo; PanelState no formato da WEB-SPEC;
   assert.deepEqual(kinds, ["account_dead:3", "login_expiring:1"]);
   for (const w of st.warnings) assert.ok(typeof w.text === "string" && w.text.length > 10);
   assert.match(st.warnings.find((w) => w.kind === "login_expiring").text, /vence em 2 dias/);
+  for (const w of st.warnings) assert.ok(w.text.endsWith(`clique em “Entrar de novo” no cartão da conta ${w.account} (ou entre com ela no Claude Code de um serviço do administrador).`), w.text);
   // o engine "vazou" cred, refreshToken e tokenHash: nada disso sai
   assert.ok(!/"cred"\s*:/.test(r.text) && !r.text.includes(REFRESH_SECRETO) && !r.text.includes(ACESSO));
   assert.ok(st.accounts.every((a) => !("cred" in a) && !("refreshToken" in a)));
@@ -949,7 +991,7 @@ test("painel: cada rota chama o engine certo; PanelState no formato da WEB-SPEC;
   assert.deepEqual(ctx.store.state.history[0], {
     ts: ctx.store.state.history[0].ts,
     kind: "info",
-    text: `Computador "Notebook" passou para a conta 2 pelo painel (${me})`,
+    text: `Serviço "Notebook" passou para a conta 2 pelo painel (${me})`,
     device: "d1",
     deviceName: "Notebook",
   });
@@ -962,6 +1004,7 @@ test("painel: cada rota chama o engine certo; PanelState no formato da WEB-SPEC;
   assert.equal(r.status, 400);
   r = await call(ctx, "POST", "/web/api/devices/nao-existe/switch", { s, body: { number: 1 } });
   assert.equal(r.status, 404);
+  assert.deepEqual(r.json, { error: "not_found", message: "serviço não encontrado" });
 
   // ----- DELETE /web/api/accounts/:n → removeAccount -----
   r = await call(ctx, "DELETE", "/web/api/accounts/3", { s });
@@ -977,9 +1020,10 @@ test("painel: cada rota chama o engine certo; PanelState no formato da WEB-SPEC;
   assert.equal(r.status, 200, r.text);
   assert.equal(ctx.store.state.devices.d2, undefined);
   assert.equal(cofreEmDisco(ctx).devices.d2, undefined, "gravado");
-  assert.ok(ctx.store.state.history.some((h) => h.text === `Computador "iMac" desconectado (revogado pelo painel por ${me})`));
+  assert.ok(ctx.store.state.history.some((h) => h.text === `Serviço "iMac" desconectado (revogado pelo painel por ${me})`));
   r = await call(ctx, "DELETE", "/web/api/devices/d2", { s });
   assert.equal(r.status, 404);
+  assert.deepEqual(r.json, { error: "not_found", message: "serviço não encontrado" }, "a mesma mensagem das outras rotas do serviço");
 
   // ----- POST /web/api/allowed → mesma lógica do admin allow -----
   r = await call(ctx, "POST", "/web/api/allowed", { s, body: { email: " Bia@Exemplo.COM " } });
@@ -1059,7 +1103,7 @@ test("e-mail: emailKey normaliza só para comparar (minúsculas; Gmail sem ponto
   assert.equal(c.resticPassFile, "/run/secrets/restic_swap_plus_pass");
 });
 
-test("painel: só o administrador entra; conta liberada não-admin vê 'painel só do administrador' mas conecta computador", async (t) => {
+test("painel: só o administrador entra; conta liberada não-admin vê 'painel só do administrador' mas conecta serviço", async (t) => {
   const ctx = await setup(t); // ADMIN_EMAILS = ana@exemplo.com
   await allow(ctx, "bia@exemplo.com");
 
@@ -1076,6 +1120,8 @@ test("painel: só o administrador entra; conta liberada não-admin vê 'painel s
   const b = await webLogin(ctx, "bia@exemplo.com");
   assertPage(b.page, 403);
   assert.ok(b.page.text.includes(NOT_ADMIN_TEXT), b.page.text);
+  // o caminho para conectar usa o nome novo do cartão da extensão ("Conexão")
+  assert.ok(b.page.text.includes("Para conectar um serviço: no VS Code, abra o Swap Plus e clique em Entrar com Google no cartão “Conexão”."), b.page.text);
   assert.match(b.page.text, /href="\/web\/login"/, "botão para entrar com outra conta");
   assert.equal(cookieFrom(b.page, "sp_sess"), null);
   assert.equal(cookieFrom(b.page, "sp_login").value, "", "o cookie do login é apagado");
@@ -1086,13 +1132,13 @@ test("painel: só o administrador entra; conta liberada não-admin vê 'painel s
   assertPage(again, 403);
   assert.ok(again.text.includes(NOT_ADMIN_TEXT), "recarregar mostra a mesma recusa");
 
-  // mas bia conecta computador pelo VS Code
+  // mas bia conecta serviço pelo VS Code
   const pcBia = await deviceLogin(ctx, "bia@exemplo.com", "PC da Bia");
   assertPage(pcBia.page, 200);
   assert.match(pcBia.page.text, /Pronto! Conectado\./);
   assert.equal(pcBia.poll.status, "ok");
   assert.equal(ctx.store.state.devices[pcBia.poll.deviceId].googleEmail, "bia@exemplo.com");
-  // a administradora também conecta computador, sem estar na lista
+  // a administradora também conecta serviço, sem estar na lista
   const pcAna = await deviceLogin(ctx, ADMIN, "Mac da Ana");
   assert.equal(pcAna.poll.status, "ok");
   // quem não está em lugar nenhum não conecta
@@ -1100,7 +1146,7 @@ test("painel: só o administrador entra; conta liberada não-admin vê 'painel s
   assertPage(pcCris.page, 403);
   assert.deepEqual(pcCris.poll, { status: "denied", email: "cris@exemplo.com" });
 
-  // tirar a bia: não conecta computadores novos; o que ela já conectou continua
+  // tirar a bia: não conecta serviços novos; o que ela já conectou continua
   r = await call(ctx, "DELETE", "/web/api/allowed/bia%40exemplo.com", { s: ana });
   assert.equal(r.status, 200, r.text);
   assert.equal(r.json.removed, true);
@@ -1109,7 +1155,7 @@ test("painel: só o administrador entra; conta liberada não-admin vê 'painel s
   assert.deepEqual(r.json.state.allowedEmails, []);
   assert.ok(ctx.store.state.history.some((h) => h.text.startsWith("Conta Google bia@exemplo.com tirada da lista") && h.text.endsWith(`pelo painel (${ADMIN})`)));
   r = await call(ctx, "GET", "/v1/state", { headers: { authorization: `Bearer ${pcBia.token}` }, origin: null });
-  assert.equal(r.status, 200, "o computador já conectado continua (revogar é à parte)");
+  assert.equal(r.status, 200, "o serviço já conectado continua (revogar é à parte)");
   const pcBia2 = await deviceLogin(ctx, "bia@exemplo.com", "Outro PC da Bia");
   assert.deepEqual(pcBia2.poll, { status: "denied", email: "bia@exemplo.com" });
 
@@ -1152,7 +1198,7 @@ test("painel: deny do administrador → 409 (painel e CLI), mesmo escrito de out
   assert.deepEqual(ctx.store.state.allowedEmails, ["donoexemplo@gmail.com"]);
 });
 
-test('e-mail normalizado: "Dono.Exemplo+x@googlemail.com" bate com donoexemplo@gmail.com (painel, lista, repetidos, computadores, deny)', async (t) => {
+test('e-mail normalizado: "Dono.Exemplo+x@googlemail.com" bate com donoexemplo@gmail.com (painel, lista, repetidos, serviços, deny)', async (t) => {
   const ctx = await setup(t, { env: { ADMIN_EMAILS: "donoexemplo@gmail.com" } });
 
   // login do painel: o Google devolve o e-mail escrito de outro jeito → é o administrador
@@ -1166,7 +1212,7 @@ test('e-mail normalizado: "Dono.Exemplo+x@googlemail.com" bate com donoexemplo@g
   assert.deepEqual(r.json.me, { email: "dono.exemplo+x@googlemail.com", admin: true });
   assert.deepEqual(r.json.adminEmails, ["donoexemplo@gmail.com"]);
 
-  // login de computador do administrador (escrito de outro jeito), sem estar na lista
+  // login de serviço do administrador (escrito de outro jeito), sem estar na lista
   const pcAdm = await deviceLogin(ctx, "d.o.n.o.e.x.e.m.p.l.o@gmail.com", "Mac do dono");
   assert.equal(pcAdm.poll.status, "ok");
 
@@ -1179,7 +1225,7 @@ test('e-mail normalizado: "Dono.Exemplo+x@googlemail.com" bate com donoexemplo@g
   assert.equal(r.json.added, false, "mesma conta Gmail");
   assert.deepEqual(ctx.store.state.allowedEmails, ["maria.silva@gmail.com"]);
 
-  // computador da Maria com o e-mail sem ponto: liberado
+  // serviço da Maria com o e-mail sem ponto: liberado
   const pc = await deviceLogin(ctx, "MariaSilva@gmail.com", "PC da Maria");
   assert.equal(pc.poll.status, "ok");
   // painel da Maria: liberada, mas não administradora
@@ -1187,7 +1233,7 @@ test('e-mail normalizado: "Dono.Exemplo+x@googlemail.com" bate com donoexemplo@g
   assertPage(bm.page, 403);
   assert.ok(bm.page.text.includes(NOT_ADMIN_TEXT));
 
-  // deny escrito de outro jeito tira a conta e acha o computador dela
+  // deny escrito de outro jeito tira a conta e acha o serviço dela
   r = await call(ctx, "DELETE", `/web/api/allowed/${encodeURIComponent("Maria.Silva+x@googlemail.com")}`, { s: b.s });
   assert.equal(r.status, 200, r.text);
   assert.equal(r.json.removed, true);
@@ -1209,14 +1255,15 @@ test('e-mail normalizado: "Dono.Exemplo+x@googlemail.com" bate com donoexemplo@g
   assert.ok(ctx.store.state.webSessions[b.s.id], "a sessão do administrador continua");
 });
 
-test("sem ADMIN_EMAILS → painel desligado (página explicando, /web/login e /web/api 503, aviso no log); os computadores seguem", async (t) => {
+test("sem ADMIN_EMAILS → painel desligado (página explicando, /web/login e /web/api 503, aviso no log); os serviços seguem", async (t) => {
   const ctx = await setup(t, { env: { ADMIN_EMAILS: "" } });
-  assert.ok(ctx.logs.some((l) => l.includes("ADMIN_EMAILS") && l.includes("DESLIGADO")), "aviso no log");
+  assert.ok(ctx.logs.some((l) => l.includes("ADMIN_EMAILS") && l.includes("DESLIGADO") && l.includes("(os serviços seguem funcionando)")), "aviso no log");
 
   let r = await call(ctx, "GET", "/");
   assertPage(r, 503);
   assert.match(r.text, /Painel desligado/);
   assert.match(r.text, /ADMIN_EMAILS/);
+  assert.match(r.text, /Os serviços conectados continuam funcionando normalmente\./);
   r = await call(ctx, "GET", "/web/login");
   assertPage(r, 503);
   assert.match(r.text, /ADMIN_EMAILS/);
@@ -1237,7 +1284,7 @@ test("sem ADMIN_EMAILS → painel desligado (página explicando, /web/login e /w
   ctx.store.state.webSessions.velha = { tokenHash: sha256("y"), email: ADMIN, createdAt: T, lastSeen: T, expiresAt: T + DAY, ua: null, ip: null, csrf: "c" };
   assert.equal(await ctx.app.sweepWebSessions(), 1);
 
-  // os computadores continuam: conta liberada conecta pelo VS Code
+  // os serviços continuam: conta liberada conecta pelo VS Code
   await allow(ctx, ADMIN);
   const pc = await deviceLogin(ctx, ADMIN, "Notebook");
   assert.equal(pc.poll.status, "ok");
@@ -1246,6 +1293,21 @@ test("sem ADMIN_EMAILS → painel desligado (página explicando, /web/login e /w
   const lixo = await setup(t, { env: { ADMIN_EMAILS: "nao-e-email" } });
   assert.ok(lixo.logs.some((l) => l.includes("nao-e-email") && l.includes("ignorada")));
   assertPage(await call(lixo, "GET", "/"), 503);
+});
+
+test("avisos do painel sem serviços, sem contas e com o login com Google desligado: os textos falam em “serviço”", async (t) => {
+  const ctx = await setup(t, { google: false });
+  // Sem o Google não dá para entrar pelo navegador: a sessão do administrador é criada direto.
+  const { token } = ctx.app.web.createSession({ email: ADMIN, ip: "127.0.0.1", ua: UA });
+  ctx.tokens.push(token);
+  ctx.store.state.accounts = {};
+  const r = await call(ctx, "GET", "/web/api/state", { s: { token } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(Object.fromEntries(r.json.warnings.map((w) => [w.kind, w.text])), {
+    google_off: "O login com Google está desligado neste servidor: serviços novos só conectam com código de conexão e ninguém entra de novo no painel até ele voltar.",
+    no_devices: "Nenhum serviço conectado: conecte um pelo VS Code (Swap Plus: Conectar ao servidor → Entrar com Google) ou gere um código de conexão.",
+    no_accounts: "Nenhuma conta Claude no servidor ainda: conecte um serviço e envie os logins dele.",
+  });
 });
 
 test("sessão de quem deixou de ser administrador (ADMIN_EMAILS mudou e o servidor reiniciou) → 401", async (t) => {
@@ -1557,7 +1619,7 @@ test("painel de verdade (server/web), 2.5.2: sem o grupo “Fora da troca”, se
   const { fold, searchFilter } = new Function("filters", `${foldSrc[0]}${filterSrc[0]}return { fold, searchFilter };`)(filters);
   assert.equal(fold("Serviço  JOSÉ Antônio – Ação"), "servico  jose antonio – acao");
   const itens = [
-    { n: 1, t: ["Conta 7", "ana@exemplo.com", "em uso em 2 computadores", "5º na fila"] },
+    { n: 1, t: ["Conta 7", "ana@exemplo.com", "em uso em 2 serviços", "5º na fila"] },
     { n: 2, t: ["Conta 9", "bia@exemplo.com", "7º na fila", "sem leitura de uso", "Serviço de Rotinas"] },
     { n: 3, t: ["Conta 12", "José Antônio", "fora da troca", null] },
   ];
@@ -1567,7 +1629,8 @@ test("painel de verdade (server/web), 2.5.2: sem o grupo “Fora da troca”, se
   };
   assert.deepEqual(busca(""), [1, 2, 3]);
   assert.deepEqual(busca("   "), [1, 2, 3]);
-  assert.deepEqual(busca("SERVICO"), [2], "sem diferença de maiúsculas e acentos");
+  assert.deepEqual(busca("SERVICO"), [1, 2], "sem diferença de maiúsculas e acentos (acha “serviços” e “Serviço”)");
+  assert.deepEqual(busca("SERVICO DE ROTINAS"), [2], "sem diferença de maiúsculas e acentos");
   assert.deepEqual(busca("jose antonio"), [3]);
   assert.deepEqual(busca("fila conta"), [1, 2], "várias palavras: todas, em qualquer ordem e campo");
   assert.deepEqual(busca("exemplo fora"), [], "todas precisam aparecer");
@@ -1610,13 +1673,184 @@ test("painel de verdade (server/web), 2.5.2: sem o grupo “Fora da troca”, se
   assert.match(celular, /\.utable td\[data-label\]::before \{ content: attr\(data-label\) ": "/);
 });
 
+// 2.5.3: a presença dos serviços — quatro situações com os textos exatos, o resumo, a ordem, a busca e as bolinhas.
+// Lê os arquivos de verdade e roda aqui o trecho de presença do app.js (são funções sem tela).
+test("painel de verdade (server/web), 2.5.3: presença dos serviços (ativo agora, conectado, aguardando contato, sem contato) nos textos, no resumo, na ordem e na busca", () => {
+  const webDir = path.join(__dirname, "..", "web");
+  const html = fs.readFileSync(path.join(webDir, "index.html"), "utf8").replace(/\r\n/g, "\n");
+  const js = fs.readFileSync(path.join(webDir, "app.js"), "utf8").replace(/\r\n/g, "\n");
+  const css = fs.readFileSync(path.join(webDir, "app.css"), "utf8").replace(/\r\n/g, "\n");
+
+  const ini = js.indexOf("\n  // ------------------------------------------------------------ presença dos serviços");
+  const fim = js.indexOf("\n  // ------------------------------------------------------------ ", ini + 10);
+  assert.ok(ini > 0 && fim > ini, "não achei o trecho de presença no app.js");
+  // O que o trecho usa do resto do app.js: hasOwn, fmtWhen (aqui um de mentira, para ver qual data ele recebe) e devName.
+  const hasOwn = (o, k) => o !== null && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, k);
+  const fmtWhen = (v) => (v ? `<${v}>` : null);
+  const devName = (d) => d.name || "Serviço sem nome";
+  const P = new Function("hasOwn", "fmtWhen", "devName", `${js.slice(ini, fim)}\nreturn { PRESENCE, presenceOf, presenceParts, presenceText, byPresence, servicesSummary };`)(hasOwn, fmtWhen, devName);
+
+  // A situação é a que o servidor manda (presence). Servidor antigo, sem o campo (ou com um valor estranho): sai de active/connected.
+  assert.deepEqual(Object.keys(P.PRESENCE), ["active", "connected", "waiting", "none"]);
+  for (const p of ["active", "connected", "waiting", "none"]) assert.equal(P.presenceOf({ presence: p, active: p !== "active" }), p);
+  assert.equal(P.presenceOf({ active: true }), "active");
+  assert.equal(P.presenceOf({ active: false, connected: true }), "connected");
+  assert.equal(P.presenceOf({ active: false }), "none");
+  assert.equal(P.presenceOf({ presence: "dormindo", active: false, connected: true }), "connected");
+  assert.equal(P.presenceOf({ presence: "constructor" }), "none");
+
+  // Os textos, exatos.
+  const d = (presence, extra = {}) => ({ name: "X", presence, ...extra });
+  assert.equal(P.presenceText(d("active", { lastContact: 222 })), "ativo agora");
+  assert.equal(P.presenceText(d("connected", { lastContact: 222 })), "conectado · sem uso agora");
+  assert.equal(P.presenceText(d("waiting", { lastContact: 222 })), "aguardando contato · o servidor reiniciou há pouco");
+  assert.equal(P.presenceText(d("none", { lastContact: 222, lastSeen: 111 })), "sem contato · visto <222>", "a data é a do último contato, não a do último uso");
+  assert.equal(P.presenceText(d("none", { lastSeen: 111 })), "sem contato · visto <111>", "servidor antigo, sem lastContact: o lastSeen");
+  assert.equal(P.presenceText(d("none", { lastContact: null, lastSeen: null })), "sem contato · ainda não apareceu");
+  assert.deepEqual(P.presenceParts(d("active")), { p: "active", main: "ativo agora", detail: null });
+  assert.deepEqual(P.presenceParts(d("connected")), { p: "connected", main: "conectado", detail: "sem uso agora" });
+  assert.deepEqual(P.presenceParts(d("none", { lastContact: 5 })), { p: "none", main: "sem contato", detail: "visto <5>" });
+
+  // O resumo: grupo vazio não aparece; singular e plural combinam; um serviço só não leva o número dentro.
+  const n = (...ps) => ps.map((p, i) => ({ name: `S${i}`, presence: p }));
+  assert.equal(P.servicesSummary(n("active", "active", "active", "connected", "none")), "5 serviços (3 ativos agora, 1 conectado, 1 sem contato)");
+  assert.equal(P.servicesSummary(n("active")), "1 serviço (ativo agora)");
+  assert.equal(P.servicesSummary(n("connected")), "1 serviço (conectado)");
+  assert.equal(P.servicesSummary(n("waiting")), "1 serviço (aguardando contato)");
+  assert.equal(P.servicesSummary(n("none")), "1 serviço (sem contato)");
+  assert.equal(P.servicesSummary(n("connected", "connected")), "2 serviços (2 conectados)");
+  assert.equal(P.servicesSummary(n("none", "active", "none")), "3 serviços (1 ativo agora, 2 sem contato)");
+  assert.equal(P.servicesSummary(n("none", "waiting", "active", "waiting", "connected", "connected")), "6 serviços (1 ativo agora, 2 conectados, 2 aguardando contato, 1 sem contato)");
+  assert.equal(P.servicesSummary([{ active: true }, { active: false }]), "2 serviços (1 ativo agora, 1 sem contato)", "servidor antigo");
+  assert.equal(P.servicesSummary([]), "nenhum serviço");
+
+  // A ordem da aba: ativos, conectados, aguardando contato, sem contato; dentro de cada grupo, por nome.
+  const lista = [
+    { name: "Zeta", presence: "none" },
+    { name: "Beta", presence: "waiting" },
+    { name: "Alfa", presence: "none" },
+    { name: "Hermes", presence: "connected" },
+    { name: "Mac", presence: "active" },
+    { name: "Ábaco", presence: "active" },
+    { name: "Delta", presence: "connected" },
+  ];
+  assert.deepEqual([...lista].sort(P.byPresence).map((x) => x.name), ["Ábaco", "Mac", "Delta", "Hermes", "Beta", "Alfa", "Zeta"]);
+
+  // A tela usa essas funções: no resumo, na ordem, na busca, na bolinha e nos dois lugares do contato (linha e cartão).
+  assert.match(js, /\n      servicesSummary\(devices\(\)\),\n/, "resumo");
+  assert.match(js, /const list = \[\.\.\.devices\(\)\]\.sort\(byPresence\);/, "ordem da aba");
+  const palavras = /\n  function serviceWords\(d\) \{[\s\S]*?\n  \}\n/.exec(js);
+  assert.ok(palavras && /\n      presenceText\(d\),\n/.test(palavras[0]), "a busca dos serviços olha o texto da situação");
+  const linha = /\n  function serviceRow\(d, o\) \{[\s\S]*?\n  \}\n/.exec(js);
+  assert.ok(linha && /const pr = presenceParts\(d\);/.test(linha[0]) && /text: pr\.main/.test(linha[0]) && /class: "when", text: pr\.detail/.test(linha[0]), "linha do serviço: situação e detalhe");
+  assert.match(linha[0], /class: "dot" \+ \(dot \? ` \$\{dot\}` : ""\)/, "a bolinha leva a cor da situação");
+  assert.match(js, /h\("dd", \{ class: pr\.p === "active" \? "oktext" : null, text: presenceText\(d\) \}\)/, "cartão aberto: o texto inteiro");
+
+  // Uma bolinha para cada situação, nos dois temas: verde (ativo), azul (conectado), contorno cinza (aguardando) e
+  // a cinza cheia de sempre (sem contato).
+  assert.deepEqual(Object.values(P.PRESENCE).map((x) => x.dot), ["on", "conn", "wait", ""]);
+  assert.match(css, /\n\.dot \{[^}]*background: var\(--soft\)/);
+  assert.match(css, /\n\.dot\.on \{[^}]*background: var\(--okfill\)/);
+  assert.match(css, /\n\.dot\.conn \{[^}]*background: var\(--conn\)/);
+  assert.match(css, /\n\.dot\.wait \{[^}]*background: transparent;[^}]*box-shadow: inset 0 0 0 2px var\(--soft\)/);
+  const temaClaro = css.indexOf("@media (prefers-color-scheme: light)");
+  const base = css.indexOf("/* ------------------------------------------------------------ base */");
+  assert.ok(temaClaro > 0 && base > temaClaro);
+  assert.match(css.slice(0, temaClaro), /\n  --conn: #[0-9a-f]{6};/, "azul do conectado no tema escuro");
+  assert.match(css.slice(temaClaro, base), /\n    --conn: #[0-9a-f]{6};/, "azul do conectado no tema claro");
+
+  // A legenda das quatro situações, na aba Serviços, com a mesma bolinha de cada uma.
+  const aba = html.slice(html.indexOf('<section class="sec" id="sec-computadores"'), html.indexOf('<section class="sec" id="sec-usuarios"'));
+  for (const [dot, nome] of [["dot on", "ativo agora"], ["dot conn", "conectado · sem uso agora"], ["dot wait", "aguardando contato"], ["dot", "sem contato"]]) {
+    assert.ok(aba.includes(`<span class="${dot}" aria-hidden="true"></span><b>${nome}</b>`), `legenda: ${nome}`);
+  }
+
+  // A palavra "parado" saiu do painel.
+  for (const [nome, texto] of [["index.html", html], ["app.js", js], ["app.css", css]]) {
+    assert.ok(!/\bparad[oa]s?\b/i.test(texto), `${nome}: sobrou “parado”`);
+  }
+
+  // Histórico: a etiqueta do tipo leva o próprio tipo como classe ("kind info", "kind device"…). A grade de dados do
+  // cartão da conta também se chama "info": o estilo dela vale só para o <dl> (senão a etiqueta "Info" ganha borda e espaço).
+  assert.match(js, /h\("span", \{ class: "kind " \+ kind\.replace\(/);
+  assert.match(css, /\ndl\.info \{\n  display: grid;/);
+  assert.ok(!/(^|[\n,}]\s*)\.info\s*[,{]/.test(css), "app.css: seletor .info solto (pega a etiqueta “Info” do Histórico)");
+});
+
+// 2.5.3: tudo o que está conectado ao Swap é um "serviço". A palavra antiga só fica nos identificadores (id da seção,
+// âncora, chaves do código) e onde é mesmo a máquina em que a pessoa está sentada.
+test("painel e servidor de verdade, 2.5.3: “serviço” no lugar de “computador” (a palavra antiga só nos identificadores e na máquina da pessoa)", () => {
+  const webDir = path.join(__dirname, "..", "web");
+  const srcDir = path.join(__dirname, "..", "src");
+  const ler = (dir, nome) => fs.readFileSync(path.join(dir, nome), "utf8").replace(/\r\n/g, "\n");
+  const html = ler(webDir, "index.html");
+  const js = ler(webDir, "app.js");
+
+  // Rótulos fixos do painel.
+  assert.match(html, /<legend>Serviços<\/legend>\n\s*<p class="hint">Vale para os serviços ativos agora\./, 'regra "Serviços: Separados / Juntos"');
+  assert.match(html, /<span class="name">Separados <span class="tag">padrão<\/span><\/span>/);
+  assert.match(html, /<span class="name">Juntos<\/span>/);
+  assert.match(html, /<h3>Conectar um serviço<\/h3>/);
+  assert.equal((js.match(/h\("legend", \{ text: "Serviços permitidos" \}\)/g) || []).length, 2, "Ajustes desta conta › Serviços permitidos");
+  assert.match(js, /fact\("Serviços permitidos", permitted,/);
+  assert.match(js, /fact\("Serviços nela",/);
+  assert.match(js, /devs\.length === 1 \? "Em 1 serviço" : `Em \$\{devs\.length\} serviços`/, 'linha da conta: "Em 1 serviço" / "Em N serviços"');
+  assert.match(js, /\n    device: "Serviço",\n/, "tipo do histórico");
+  assert.match(js, /const devName = \(d\) => \(d && d\.name\) \|\| "Serviço sem nome";/);
+
+  // O que manda a pessoa para a extensão usa os nomes novos dela: comando "Swap Plus: Configurações" e cartão "Conexão".
+  assert.ok(html.includes("(comando “Swap Plus: Configurações”) e, no cartão “Conexão”, clique em <b>Entrar com Google</b>"));
+  assert.ok(html.includes("(no mesmo cartão “Conexão”)"));
+  assert.ok(js.includes("clique em “Entrar com Google” no cartão “Conexão”"));
+  assert.ok(ler(srcDir, "server.js").includes("clique em Entrar com Google no cartão “Conexão”."));
+  const fontes = fs.readdirSync(srcDir).filter((f) => f.endsWith(".js")).map((f) => [`src/${f}`, ler(srcDir, f)]);
+  const tudo = [["web/index.html", html], ["web/app.js", js], ["web/app.css", ler(webDir, "app.css")], ...fontes];
+  for (const [nome, texto] of tudo) {
+    assert.ok(!/Configurar trocas automáticas|cartão “Servidor”/.test(texto), `${nome}: sobrou o nome antigo da tela ou do cartão da extensão`);
+  }
+
+  // A palavra antiga, arquivo por arquivo: tirando o que pode ficar (identificadores e a máquina da pessoa), não sobra nada.
+  const PODE = {
+    "web/index.html": [
+      // ids e âncoras da aba (não mudam: endereços e ?next= antigos continuam valendo)
+      '"computadores"',
+      "tab-computadores",
+      "sec-computadores",
+      "h-computadores",
+      "count-computadores",
+      "qx-computadores",
+      "qn-computadores",
+      "q-computadores",
+      // a máquina em que a pessoa está
+      "No computador, abra o VS Code",
+      "um arquivo no seu computador",
+    ],
+    "web/app.js": ['"computadores"', 'computadores: ""', 'computadores: "devices"', "filters.computadores", "count-computadores", '"#computadores"', "no computador, abra o VS Code"],
+    "src/server.js": ['"geral", "computadores", "regras"'], // nomes de aba aceitos em /web/login?next=
+    "src/web.js": ["um arquivo no seu computador"], // o conselho do kit de recuperação
+  };
+  for (const [nome, texto] of tudo) {
+    let resto = texto;
+    for (const p of PODE[nome] || []) {
+      assert.ok(resto.includes(p), `${nome}: não achei o trecho permitido “${p}”`);
+      resto = resto.split(p).join("");
+    }
+    const sobras = resto.split("\n").filter((l) => /computador/i.test(l)).map((l) => l.trim().slice(0, 140));
+    assert.deepEqual(sobras, [], `${nome}: “computador” onde devia ser “serviço”`);
+  }
+  // ...e os identificadores não mudaram de nome (endereços #computadores e ?next=computadores continuam valendo).
+  assert.match(html, /<section class="sec" id="sec-computadores" data-sec="computadores" aria-labelledby="h-computadores">/);
+  assert.match(js, /const SECTIONS = \["contas", "computadores", "usuarios"\];/);
+  assert.match(ler(srcDir, "server.js"), /const PANEL_SECTIONS = new Set\(\["geral", "computadores", "regras", "acesso", "historico"\]\);/);
+});
+
 test("versão: server.js e engine.js dizem a mesma (é a do rodapé do painel)", () => {
   const { VERSION } = require("../src/server");
   assert.match(VERSION, /^\d+\.\d+\.\d+$/);
   assert.equal(require("../src/engine").VERSION, VERSION);
 });
 
-test("painel: 60 respostas 401 em 10 min bloqueiam só o painel (os computadores seguem); /web/login 20 por IP", async (t) => {
+test("painel: 60 respostas 401 em 10 min bloqueiam só o painel (os serviços seguem); /web/login 20 por IP", async (t) => {
   const ctx = await setup(t);
   const { s } = await webLogin(ctx, "ana@exemplo.com");
   const devToken = crypto.randomBytes(32).toString("base64url");
@@ -1633,7 +1867,7 @@ test("painel: 60 respostas 401 em 10 min bloqueiam só o painel (os computadores
   assert.ok(Number(r.headers["retry-after"]) > 0);
   r = await call(ctx, "GET", "/web/api/state", { s });
   assert.equal(r.status, 429, "o painel fica bloqueado para o IP inteiro");
-  // os computadores não são afetados (contador à parte)
+  // os serviços não são afetados (contador à parte)
   r = await call(ctx, "GET", "/v1/health");
   assert.equal(r.status, 200);
   r = await call(ctx, "GET", "/v1/state", { headers: { authorization: `Bearer ${devToken}` } });
@@ -1655,7 +1889,7 @@ test("painel: 60 respostas 401 em 10 min bloqueiam só o painel (os computadores
   assert.ok(Number(r.headers["retry-after"]) > 0);
   r = await call(px, "GET", "/web/login", { headers: de("203.0.113.6") });
   assert.equal(r.status, 302);
-  // os logins do painel não ocupam a vez dos computadores
+  // os logins do painel não ocupam a vez dos serviços
   r = await call(px, "POST", "/v1/login/start", { body: { name: "PC", platform: "linux" }, origin: null, headers: de("198.51.100.1") });
   assert.equal(r.status, 200, r.text);
   // o IP guardado na sessão é o do cliente (X-Forwarded-For)
@@ -1702,7 +1936,7 @@ test("admin: login-expires chama engine.setLoginExpiresAt; invalid → 400, not_
   assert.equal(r.json.accounts.find((a) => a.number === 2).loginExpiresAt, ms);
 });
 
-test("painel: computadores permitidos por conta (PUT /web/api/accounts/:n/devices) e PanelState com devices/allowedAccounts", async (t) => {
+test("painel: serviços permitidos por conta (PUT /web/api/accounts/:n/devices) e PanelState com devices/allowedAccounts", async (t) => {
   const ctx = await setup(t);
   const E = ctx.engine;
   const T = ctx.clock.t;
@@ -1715,7 +1949,7 @@ test("painel: computadores permitidos por conta (PUT /web/api/accounts/:n/device
   const acc = (r, n) => r.json.state.accounts.find((a) => a.number === n);
   const dev = (r, id) => r.json.state.devices.find((d) => d.id === id);
 
-  // Começo: todas as contas para todos os computadores.
+  // Começo: todas as contas para todos os serviços.
   let r = await call(ctx, "GET", "/web/api/state", { s });
   assert.equal(r.status, 200, r.text);
   assert.ok(r.json.accounts.every((a) => a.devices === null));
@@ -1732,22 +1966,22 @@ test("painel: computadores permitidos por conta (PUT /web/api/accounts/:n/device
   assert.equal(acc(r, 2).devices, null);
   assert.deepEqual(dev(r, "d1").allowedAccounts, [1, 2, 3]);
   assert.deepEqual(dev(r, "d2").allowedAccounts, [2, 3]);
-  assert.equal(ctx.store.state.history[0].text, `Computadores da conta 1 ajustados pelo painel (${me}): "Mac"`);
+  assert.equal(ctx.store.state.history[0].text, `Serviços da conta 1 ajustados pelo painel (${me}): "Mac"`);
   assert.deepEqual(cofreEmDisco(ctx).accountDevices, { 1: ["d1"] }, "gravado");
 
-  // Nenhum computador ([]) e de volta a todos (null escrito).
+  // Nenhum serviço ([]) e de volta a todos (null escrito).
   r = await call(ctx, "PUT", "/web/api/accounts/2/devices", { s, body: { devices: [] } });
   assert.equal(r.status, 200, r.text);
   assert.deepEqual(r.json.devices, []);
   assert.deepEqual(acc(r, 2).devices, []);
   assert.deepEqual(dev(r, "d2").allowedAccounts, [3]);
-  assert.equal(ctx.store.state.history[0].text, `Computadores da conta 2 ajustados pelo painel (${me}): nenhum computador`);
+  assert.equal(ctx.store.state.history[0].text, `Serviços da conta 2 ajustados pelo painel (${me}): nenhum serviço`);
   r = await call(ctx, "PUT", "/web/api/accounts/2/devices", { s, body: { devices: null } });
   assert.equal(r.status, 200, r.text);
   assert.equal(r.json.devices, null);
   assert.equal(acc(r, 2).devices, null);
   assert.deepEqual(dev(r, "d2").allowedAccounts, [2, 3]);
-  assert.equal(ctx.store.state.history[0].text, `Computadores da conta 2 ajustados pelo painel (${me}): todos os computadores`);
+  assert.equal(ctx.store.state.history[0].text, `Serviços da conta 2 ajustados pelo painel (${me}): todos os serviços`);
 
   // Erros: sem a chave devices → 400 (null precisa vir escrito); lista inválida → 400 com a mensagem do motor;
   // conta que não existe → 404; sem Origin / sem CSRF → 403. Nada muda.
@@ -1780,10 +2014,10 @@ test("painel: computadores permitidos por conta (PUT /web/api/accounts/:n/device
   r = await call(ctx, "POST", "/web/api/devices/d2/switch", { s, body: { number: 1 } });
   assert.equal(r.status, 409, r.text);
   assert.equal(r.json.error, "not_allowed");
-  assert.match(r.json.message, /não está liberada para este computador/);
+  assert.match(r.json.message, /não está liberada para este serviço/);
   assert.equal(ctx.store.state.devices.d2.assigned, null);
 
-  // Desconectar o Mac tira ele da lista (que fica vazia: nenhum computador, nunca "todos").
+  // Desconectar o Mac tira ele da lista (que fica vazia: nenhum serviço, nunca "todos").
   r = await call(ctx, "DELETE", "/web/api/devices/d1", { s });
   assert.equal(r.status, 200, r.text);
   assert.deepEqual(acc(r, 1).devices, []);
@@ -1791,7 +2025,7 @@ test("painel: computadores permitidos por conta (PUT /web/api/accounts/:n/device
   assert.deepEqual(cofreEmDisco(ctx).accountDevices, { 1: [] });
 });
 
-test("painel: renomear computador (PATCH /web/api/devices/:id { name }): 1 a 40 caracteres, sem controle; histórico", async (t) => {
+test("painel: renomear serviço (PATCH /web/api/devices/:id { name }): 1 a 40 caracteres, sem controle; histórico", async (t) => {
   const ctx = await setup(t);
   const T = ctx.clock.t;
   ctx.store.state.devices = { d2: dispositivo("d2", "Windows", T) };
@@ -1807,7 +2041,7 @@ test("painel: renomear computador (PATCH /web/api/devices/:id { name }): 1 a 40 
   assert.equal(r.json.state.devices.find((d) => d.id === "d2").name, "PC da sala");
   assert.equal(cofreEmDisco(ctx).devices.d2.name, "PC da sala", "gravado");
   const h = ctx.store.state.history[0];
-  assert.deepEqual(h, { ts: h.ts, kind: "info", text: `Computador "Windows" renomeado para "PC da sala" pelo painel (${me})`, device: "d2", deviceName: "PC da sala" });
+  assert.deepEqual(h, { ts: h.ts, kind: "info", text: `Serviço "Windows" renomeado para "PC da sala" pelo painel (${me})`, device: "d2", deviceName: "PC da sala" });
 
   // Inválidos → 400 e nada muda.
   const ruins = ["", "   ", "x".repeat(41), "com\nquebra", "com\ttab", "nul\u0000", "‮esrever", 123, null, ["a"]];
@@ -1818,6 +2052,11 @@ test("painel: renomear computador (PATCH /web/api/devices/:id { name }): 1 a 40 
   r = await call(ctx, "PATCH", "/web/api/devices/d2", { s, body: {} });
   assert.equal(r.status, 400);
   assert.equal(ctx.store.state.devices.d2.name, "PC da sala");
+  // As mensagens falam em "serviço" (o painel mostra a mensagem do servidor como aviso).
+  r = await call(ctx, "PATCH", "/web/api/devices/d2", { s, body: { name: "x".repeat(41) } });
+  assert.equal(r.json.message, "o nome do serviço precisa ter de 1 a 40 caracteres");
+  r = await call(ctx, "PATCH", "/web/api/devices/d2", { s, body: { name: "com\nquebra" } });
+  assert.equal(r.json.message, "o nome do serviço não pode ter quebra de linha, tabulação nem caracteres de controle");
 
   // 40 caracteres (acento conta como um) servem; o mesmo nome de novo não repete no histórico.
   const quarenta = "é".repeat(40);
@@ -1829,9 +2068,10 @@ test("painel: renomear computador (PATCH /web/api/devices/:id { name }): 1 a 40 
   assert.equal(r.status, 200, r.text);
   assert.equal(ctx.store.state.history.length, n0);
 
-  // Computador que não existe → 404; sem Origin / sem CSRF / sem sessão → recusado.
+  // Serviço que não existe → 404; sem Origin / sem CSRF / sem sessão → recusado.
   r = await call(ctx, "PATCH", "/web/api/devices/nao-existe", { s, body: { name: "X" } });
   assert.equal(r.status, 404);
+  assert.deepEqual(r.json, { error: "not_found", message: "serviço não encontrado" });
   r = await call(ctx, "PATCH", "/web/api/devices/d2", { s, body: { name: "Y" }, origin: null });
   assert.equal(r.status, 403);
   r = await call(ctx, "PATCH", "/web/api/devices/d2", { s, body: { name: "Y" }, csrf: null });

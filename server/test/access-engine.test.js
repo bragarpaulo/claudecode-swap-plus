@@ -1,5 +1,5 @@
 "use strict";
-// Integração da regra "cada conta Claude → em quais computadores pode ser usada" (access.js, WEB-SPEC 2.3)
+// Integração da regra "cada conta Claude → em quais serviços pode ser usada" (access.js, WEB-SPEC 2.3)
 // com o motor de verdade (engine.js) e a API (server.js): cofre de verdade numa pasta temporária (chave gerada
 // aqui), pedidos HTTP de verdade em 127.0.0.1 e uma Anthropic que não pode ser chamada (as contas têm acesso
 // valendo 8 h: nada precisa renovar).
@@ -19,7 +19,8 @@ const { createApp, loadConfig } = require("../src/server");
 const { Engine } = require("../src/engine");
 
 const PUBLIC_URL = "https://swap.exemplo.com";
-const HOUR = 60 * 60 * 1000;
+const MIN = 60 * 1000;
+const HOUR = 60 * MIN;
 const silentLog = { log() {}, info() {}, debug() {}, warn() {}, error() {} };
 const testLog = process.env.TEST_LOG ? console : silentLog;
 
@@ -96,19 +97,21 @@ function close(server) {
   });
 }
 
-async function setup(t) {
+/** clock ({ t: ms }, opcional): relógio do motor e do servidor, para o teste andar no tempo; sem ele, o de verdade. */
+async function setup(t, { clock = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-acesso-"));
   const keyFile = path.join(dir, "chave-mestra");
   fs.writeFileSync(keyFile, crypto.randomBytes(32).toString("hex"), { mode: 0o600 });
   const store = new Store({ dir: path.join(dir, "dados"), keyFile });
   store.load();
-  const t0 = Date.now();
+  const now = clock ? () => clock.t : Date.now;
+  const t0 = now();
   store.state.accounts = { 1: conta(1, "ana@exemplo.com", t0), 2: conta(2, "bia@exemplo.com", t0) };
   await store.save();
   const anthropic = noAnthropic();
-  const engine = new Engine({ store, anthropic, log: testLog, env: {} });
+  const engine = new Engine({ store, anthropic, now, log: testLog, env: {} });
   const config = loadConfig({ TLS_MODE: "off", DATA_DIR: dir, PUBLIC_URL });
-  const app = createApp({ store, engine, config, log: testLog });
+  const app = createApp({ store, engine, config, now, log: testLog });
   const api = await listen(app.api);
   const admin = await listen(app.admin);
   t.after(async () => {
@@ -172,7 +175,7 @@ async function pairDevice(ctx, name) {
   return r.json;
 }
 
-test("API + motor: conta só de um computador — o outro não recebe nem troca para ela (409); desconectar e remover conta limpam as listas", async (t) => {
+test("API + motor: conta só de um serviço — o outro não recebe nem troca para ela (409); desconectar e remover conta limpam as listas", async (t) => {
   const ctx = await setup(t);
   const mac = await pairDevice(ctx, "Mac");
   const win = await pairDevice(ctx, "Windows");
@@ -196,7 +199,7 @@ test("API + motor: conta só de um computador — o outro não recebe nem troca 
   r = await api("POST", "/v1/switch", { token: win.token, body: { number: 1 } });
   assert.equal(r.status, 409, r.text);
   assert.equal(r.json.error, "not_allowed");
-  assert.match(r.json.message, /^a conta 1 não está liberada para este computador/);
+  assert.match(r.json.message, /^a conta 1 não está liberada para este serviço/);
   assert.equal(ctx.store.state.devices[win.deviceId].assigned, 2);
 
   // O Mac pode.
@@ -212,8 +215,8 @@ test("API + motor: conta só de um computador — o outro não recebe nem troca 
   assert.deepEqual(ctx.store.state.accountDevices, { 1: [] });
   assert.deepEqual(cofreEmDisco(ctx).accountDevices, { 1: [] }, "gravado no cofre");
   assert.ok(
-    ctx.store.state.history.some((h) => h.kind === "alert" && h.text.startsWith('A conta 1 não está liberada para nenhum computador agora ("Mac" era o único)')),
-    "avisa no histórico que a conta ficou sem computador"
+    ctx.store.state.history.some((h) => h.kind === "alert" && h.text.startsWith('A conta 1 não está liberada para nenhum serviço agora ("Mac" era o único)')),
+    "avisa no histórico que a conta ficou sem serviço"
   );
   r = await api("POST", "/v1/switch", { token: win.token, body: { number: 1 } });
   assert.equal(r.status, 409, r.text);
@@ -244,12 +247,12 @@ test("API + motor: conta só de um computador — o outro não recebe nem troca 
   assert.equal(r.status, 200, r.text);
   assert.deepEqual(ctx.store.state.accountDevices, { 2: [] });
   assert.deepEqual(cofreEmDisco(ctx).accountDevices, { 2: [] });
-  assert.ok(ctx.store.state.history.some((h) => h.kind === "alert" && h.text.startsWith('A conta 2 não está liberada para nenhum computador agora ("Windows" era o único)')));
+  assert.ok(ctx.store.state.history.some((h) => h.kind === "alert" && h.text.startsWith('A conta 2 não está liberada para nenhum serviço agora ("Windows" era o único)')));
 
   assert.equal(ctx.anthropic.calls, 0, "nada falou com a Anthropic");
 });
 
-test("API + motor: desconectar um computador que não está em lista nenhuma não mexe nas listas nem avisa", async (t) => {
+test("API + motor: desconectar um serviço que não está em lista nenhuma não mexe nas listas nem avisa", async (t) => {
   const ctx = await setup(t);
   const mac = await pairDevice(ctx, "Mac");
   const win = await pairDevice(ctx, "Windows");
@@ -261,4 +264,66 @@ test("API + motor: desconectar um computador que não está em lista nenhuma nã
   assert.equal(r.status, 200, r.text);
   assert.deepEqual(ctx.store.state.accountDevices, { 1: [mac.deviceId] });
   assert.equal(alerts(), a0);
+});
+
+// Presença de ponta a ponta: o token aceito na API (server.js) → engine.touch → engine.devicesList → PanelState (web.js).
+test("API + motor: presença — ler o estado sem batimento marca contato; o painel vê ativo, conectado e sem contato; nada disso vai para o cofre", async (t) => {
+  const clock = { t: Date.now() };
+  const ctx = await setup(t, { clock });
+  const api = (method, p, opts) => request(ctx, ctx.api, method, p, opts);
+  const vscode = await pairDevice(ctx, "VS Code do Paulo");
+  const hermes = await pairDevice(ctx, "Hermes (servidor)");
+  const robo = await pairDevice(ctx, "Robô");
+  const pareado = clock.t;
+  // Os serviços como o painel recebe: o PanelState de verdade (web.js) em cima do motor de verdade.
+  const painel = () => Object.fromEntries(ctx.app.web.panelState({ s: { email: "dono@exemplo.com" } }).devices.map((d) => [d.name, d]));
+  const visto = (d) => [d.presence, d.active, d.connected, d.lastContact];
+
+  // Quem acabou de conectar conta como ativo por 5 min (o pareamento marca o lastSeen). 10 min depois, sem falar nada:
+  assert.deepEqual(visto(painel()["Hermes (servidor)"]), ["active", true, true, pareado]);
+  clock.t += 10 * MIN;
+  for (const nome of ["VS Code do Paulo", "Hermes (servidor)", "Robô"]) assert.deepEqual(visto(painel()[nome]), ["none", false, false, pareado], nome);
+
+  // O VS Code em uso manda o batimento; o Hermes ocioso só lê o estado; o robô não fala.
+  let r = await api("POST", "/v1/heartbeat", { token: vscode.token, body: { models: [] } });
+  assert.equal(r.status, 200, r.text);
+  r = await api("GET", "/v1/state", { token: hermes.token });
+  assert.equal(r.status, 200, r.text);
+  const eu = r.json.devices.find((d) => d.current);
+  assert.deepEqual([eu.id, ...visto(eu)], [hermes.deviceId, "connected", false, true, clock.t], "a resposta do próprio pedido já traz a presença");
+  let p = painel();
+  assert.deepEqual(visto(p["VS Code do Paulo"]), ["active", true, true, clock.t]);
+  assert.deepEqual(visto(p["Hermes (servidor)"]), ["connected", false, true, clock.t]);
+  assert.deepEqual(visto(p["Robô"]), ["none", false, false, pareado]);
+  assert.equal(p["Hermes (servidor)"].lastSeen, pareado, "ler o estado não mexe no lastSeen (uso)");
+  assert.equal(ctx.store.state.devices[hermes.deviceId].assigned, null, "nem dá (ou ocupa) uma conta");
+  assert.equal(ctx.engine.status().activeDevices, 1, "para as decisões só o VS Code está em uso");
+
+  // Pedido com token bom que é recusado depois (404: a conta não existe) também é contato; token errado não é de ninguém.
+  r = await api("POST", "/v1/switch", { token: robo.token, body: { number: 99 } });
+  assert.equal(r.status, 404, r.text);
+  assert.deepEqual(visto(painel()["Robô"]), ["connected", false, true, clock.t]);
+  const contatos = ctx.engine.contacts.size;
+  r = await api("GET", "/v1/state", { token: "x".repeat(43) });
+  assert.equal(r.status, 401, r.text);
+  assert.equal(ctx.engine.contacts.size, contatos);
+
+  // No cofre: o lastSeen do Hermes continua o do pareamento e nenhum campo de presença foi gravado.
+  await ctx.store.save();
+  const disco = cofreEmDisco(ctx);
+  assert.equal(disco.devices[hermes.deviceId].lastSeen, pareado);
+  assert.ok(!/"(lastContact|presence|connected|contacts)"\s*:/.test(JSON.stringify(disco)));
+
+  // Mais de 5 min sem o Hermes falar: sem contato, com a hora do último pedido dele.
+  const ultimo = clock.t;
+  clock.t += 5 * MIN + 1;
+  assert.deepEqual(visto(painel()["Hermes (servidor)"]), ["none", false, false, ultimo]);
+
+  // Desconectado: sai da lista do painel e o contato dele sai da memória do motor.
+  assert.equal(ctx.engine.contacts.has(hermes.deviceId), true);
+  r = await request(ctx, ctx.admin, "DELETE", `/admin/devices/${hermes.deviceId}`);
+  assert.equal(r.status, 200, r.text);
+  assert.equal(ctx.engine.contacts.has(hermes.deviceId), false);
+  assert.deepEqual(Object.keys(painel()).sort(), ["Robô", "VS Code do Paulo"]);
+  assert.equal(ctx.anthropic.calls, 0, "nada falou com a Anthropic");
 });

@@ -1,10 +1,10 @@
 "use strict";
-// Swap Plus Servidor — API HTTP(S) para os computadores, pareamento e admin local.
+// Swap Plus Servidor — API HTTP(S) para os serviços, pareamento e admin local.
 // Ponto de entrada: node server/src/server.js (na imagem: /app/server/src/server.js).
 //
 // - API (PORT): HTTPS com certificado próprio (TLS_MODE=self, o cliente fixa a
 //   impressão digital) ou HTTP puro atrás de um proxy que faz o TLS (TLS_MODE=off).
-//   Cada computador se autentica com o token de dispositivo recebido no pareamento;
+//   Cada serviço se autentica com o token de dispositivo recebido no pareamento;
 //   o servidor guarda só o sha256 dele.
 // - Admin local (127.0.0.1:ADMIN_PORT, sem senha): só alcançável de dentro do
 //   container. Gera o código de pareamento, mostra o estado, revoga dispositivos.
@@ -12,17 +12,17 @@
 // - O refresh token nunca sai daqui: nem em resposta, nem em log. Access tokens
 //   só saem em GET /v1/credential (é para isso que ele existe) e nunca vão para log.
 // - Login com Google (opcional, além do código de pareamento): o dono libera quais
-//   contas Google podem conectar computadores (cli.js allow <email>). Fluxo de
+//   contas Google podem conectar serviços (cli.js allow <email>). Fluxo de
 //   "login de dispositivo" em /v1/login/* e /auth/google/* (detalhes em google.js).
 //   code, tokens, id_token e client_secret nunca vão para log.
 // - Painel web (mesma porta e origem, WEB-SPEC.md): GET / (página), /static/*, /web/login
 //   (login com Google do tipo "web", aqui) e /web/logout + /web/api/* (sessão por cookie e CSRF,
 //   em web.js). Só o ADMINISTRADOR entra no painel: ADMIN_EMAILS (variável de ambiente, lida na
 //   subida, sem jeito de mudar pelo painel nem pela API). Sem ADMIN_EMAILS o painel fica desligado.
-//   As contas Google liberadas (allow) só conectam computadores; o administrador também conecta,
+//   As contas Google liberadas (allow) só conectam serviços; o administrador também conecta,
 //   sem precisar estar na lista. E-mails são comparados por emailKey() (google.js): minúsculas e,
 //   no Gmail, sem pontos e sem "+algo".
-// - Só os computadores do ADMINISTRADOR enviam logins (POST /v1/logins; canUploadLogins): conectados com Google
+// - Só os serviços do ADMINISTRADOR enviam logins (POST /v1/logins; canUploadLogins): conectados com Google
 //   com e-mail de ADMIN_EMAILS, ou pareados por código (o código só sai da linha de comando/painel do administrador).
 //   Os outros recebem 403 not_admin (sem chegar ao motor nem à Anthropic) e usam as contas do servidor.
 // - Avisos por e-mail ao dono (notify.js): o main() monta o createNotifier(DATA_DIR) e passa ao motor, que grava os
@@ -48,7 +48,7 @@ const {
 const { createWeb, webReplacer, uaSummary } = require("./web");
 const access = require("./access");
 
-const VERSION = "2.5.2";
+const VERSION = "2.5.3";
 const MAX_BODY = 256 * 1024; // corpo máximo aceito
 const HARD_BODY = MAX_BODY * 4; // acima disso nem lê o resto: responde 413 e fecha
 const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -76,7 +76,7 @@ const DEFAULT_RESTIC_PASS_FILE = "/run/secrets/restic_swap_plus_pass"; // senha 
 const STOP_ENGINE_WAIT_MS = 52 * 1000; // cobre uma renovação lenta (até 45 s) que já estava em voo
 const STOP_SAVE_RETRY_MS = 5 * 1000;
 const STOP_HARD_MS = 62 * 1000; // saída forçada (o compose dá 75 s: stop_grace_period)
-const NOT_ADMIN_TEXT = "Só os computadores do administrador enviam logins ao servidor. Este computador usa as contas do servidor.";
+const NOT_ADMIN_TEXT = "Só os serviços do administrador enviam logins ao servidor. Este serviço usa as contas do servidor.";
 
 const DEFAULT_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const DEFAULT_API_BASE = "https://api.anthropic.com";
@@ -435,8 +435,8 @@ function toHttpError(e) {
   if (e instanceof HttpError) return e;
   const code = e && typeof e.code === "string" && /^[a-z][a-z0-9_]{1,40}$/.test(e.code) ? e.code : null;
   if (code) {
-    // not_allowed: a conta não está liberada para este computador (engine.switchDevice) → 409, como no ERROR_STATUS do motor.
-    // not_admin: login de um computador que não é do administrador (engine.addLogin) → 403.
+    // not_allowed: a conta não está liberada para este serviço (engine.switchDevice) → 409, como no ERROR_STATUS do motor.
+    // not_admin: login de um serviço que não é do administrador (engine.addLogin) → 403.
     const status =
       code === "not_found" ? 404 : code === "not_admin" ? 403 : code === "no_account" || code === "conflict" || code === "not_allowed" ? 409 : 422;
     const message = redact(typeof e.message === "string" ? e.message : "").slice(0, 300) || "operação recusada";
@@ -605,7 +605,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
   const trustProxy = !!config.trustProxy;
   const startedAt = now();
   const limiter = createLimiter(now);
-  const webLimiter = createLimiter(now, WEB_FAIL_LIMIT); // 401 do painel: contador à parte (não bloqueia os computadores)
+  const webLimiter = createLimiter(now, WEB_FAIL_LIMIT); // 401 do painel: contador à parte (não bloqueia os serviços)
   const google = isObj(config.google) ? config.google : { enabled: false, offReason: "login com Google não configurado" };
   const logins = new LoginSessions({ now });
   const rates = createRateCounter(now);
@@ -616,14 +616,14 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
   const badAdmins = [...new Set([...(Array.isArray(config.adminEmailsInvalid) ? config.adminEmailsInvalid : []), ...adminParsed.invalid])];
   if (badAdmins.length) log.warn(`[painel] ADMIN_EMAILS: entrada(s) que não são e-mail, ignorada(s): ${badAdmins.join(", ")}`);
   if (!adminEmails.length) {
-    log.warn("[painel] ADMIN_EMAILS não definido: o painel web fica DESLIGADO (os computadores seguem funcionando). Defina ADMIN_EMAILS=seu-email@gmail.com no compose e reinicie.");
+    log.warn("[painel] ADMIN_EMAILS não definido: o painel web fica DESLIGADO (os serviços seguem funcionando). Defina ADMIN_EMAILS=seu-email@gmail.com no compose e reinicie.");
   }
   const isAdmin = (email) => {
     const k = emailKey(email);
     return !!k && adminKeys.has(k);
   };
   /**
-   * O computador pode enviar logins (POST /v1/logins)? Só os do administrador: conectado com Google com e-mail de
+   * O serviço pode enviar logins (POST /v1/logins)? Só os do administrador: conectado com Google com e-mail de
    * ADMIN_EMAILS (desta subida: quem sai da lista deixa de poder depois do reinício) ou pareado por código
    * (googleEmail nulo: o código só sai da linha de comando/painel do administrador). Mesma regra do engine.canUploadLogins.
    */
@@ -773,22 +773,23 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     }
     // Uso único: some antes de qualquer await.
     st.pairing = null;
-    const name = cleanText(body.name, 60) || "computador";
+    const name = cleanText(body.name, 60) || "serviço";
     const platform = cleanText(body.platform, 20) || "desconhecido";
     const { id, token } = createDevice({ name, platform, googleEmail: null });
     ctx.name = name;
-    pushHistory("device", `Computador "${name}" conectado`, id);
+    pushHistory("device", `Serviço "${name}" conectado`, id);
     await store.save();
-    log.info(`[pareamento] computador "${name}" (${platform}) conectado, id ${id}, de ${ip}`);
+    log.info(`[pareamento] serviço "${name}" (${platform}) conectado, id ${id}, de ${ip}`);
     return { deviceId: id, token };
   }
 
   /**
-   * Depois de `delete st.devices[id]` (e antes de gravar): tira o computador das listas "Computadores permitidos"
-   * das contas (access.js). Lista que fica vazia continua vazia (nenhum computador — nunca vira "todos"); se isso
+   * Depois de `delete st.devices[id]` (e antes de gravar): tira o serviço das listas "Serviços permitidos"
+   * das contas (access.js). Lista que fica vazia continua vazia (nenhum serviço — nunca vira "todos"); se isso
    * acontecer, avisa no histórico (quiet: sem aviso, para desfazer o que nunca chegou a valer). → contas que mudaram
    */
   function forgetDevice(st, id, name, { quiet = false } = {}) {
+    if (typeof engine.forgetContact === "function") engine.forgetContact(id); // o contato dele (presença) sai da memória do motor
     const changed = access.onDeviceRemoved(st, id);
     if (!quiet) {
       for (const n of changed) {
@@ -796,7 +797,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
         if (Array.isArray(left) && left.length === 0) {
           pushHistory(
             "alert",
-            `A conta ${n} não está liberada para nenhum computador agora ("${name || id}" era o único); libere outro no painel (Contas → Computadores permitidos)`,
+            `A conta ${n} não está liberada para nenhum serviço agora ("${name || id}" era o único); libere outro no painel (Contas → Serviços permitidos)`,
             null
           );
         }
@@ -807,10 +808,10 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
 
   async function revokeDevice(id, motivo) {
     const st = state();
-    if (!hasOwn(st.devices, id)) throw new HttpError(404, "not_found", "dispositivo não encontrado");
+    if (!hasOwn(st.devices, id)) throw new HttpError(404, "not_found", "serviço não encontrado");
     const d = st.devices[id];
     delete st.devices[id];
-    pushHistory("device", `Computador "${d.name}" desconectado (${motivo})`, id);
+    pushHistory("device", `Serviço "${d.name}" desconectado (${motivo})`, id);
     forgetDevice(st, id, d && d.name);
     await store.save();
     log.info(`[dispositivos] "${d.name}" (${id}) ${motivo}`);
@@ -819,7 +820,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
 
   // ----- contas Google liberadas -----
 
-  // ----- contas Google: administrador (ADMIN_EMAILS) e liberadas (lista allowedEmails, só computadores) -----
+  // ----- contas Google: administrador (ADMIN_EMAILS) e liberadas (lista allowedEmails, só serviços) -----
 
   const allowedList = () => state().allowedEmails;
   /** Está na lista de contas liberadas (comparação pela emailKey: minúsculas e, no Gmail, sem pontos e sem "+algo")? */
@@ -827,7 +828,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     const k = emailKey(email);
     return !!k && allowedList().some((e) => emailKey(e) === k);
   };
-  /** Pode conectar computadores com o Google: o administrador ou uma conta liberada. */
+  /** Pode conectar serviços com o Google: o administrador ou uma conta liberada. */
   const canConnect = (email) => isAdmin(email) || isAllowed(email);
 
   function googleInfo() {
@@ -842,7 +843,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
   }
 
   /**
-   * Libera a conta Google a conectar computadores (o painel continua só do administrador). by: quem fez, para o
+   * Libera a conta Google a conectar serviços (o painel continua só do administrador). by: quem fez, para o
    * histórico (ex.: "pelo painel (x@y)"). Guarda o e-mail como veio (aparado, minúsculas); repetido pela emailKey
    * não entra de novo. O administrador não precisa (nem entra) na lista: { added: false, admin: true }.
    */
@@ -855,15 +856,15 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     if (added) {
       list.push(email);
       list.sort();
-      pushHistory("info", `Conta Google ${email} liberada (conectar computadores pelo VS Code)${by ? ` ${by}` : ""}`, null);
+      pushHistory("info", `Conta Google ${email} liberada (conectar serviços pelo VS Code)${by ? ` ${by}` : ""}`, null);
       await store.save();
-      log.info(`[google] conta Google ${email} liberada para conectar computadores${by ? ` ${by}` : ""}`);
+      log.info(`[google] conta Google ${email} liberada para conectar serviços${by ? ` ${by}` : ""}`);
     }
     return { ok: true, email, added, admin: false, google: googleInfo() };
   }
 
   /**
-   * Tira a conta Google da lista (todas as formas dela, pela emailKey): não conecta computadores novos; os já
+   * Tira a conta Google da lista (todas as formas dela, pela emailKey): não conecta serviços novos; os já
    * conectados continuam. O administrador não sai por aqui (ele não depende da lista): 409 "admin".
    */
   async function denyEmail(raw, by = null) {
@@ -885,12 +886,12 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     const panelSessions = web.dropSessionsOf(email);
     if (removed || panelSessions) {
       const shown = removed ? gone.join(", ") : email;
-      if (removed) pushHistory("info", `Conta Google ${shown} tirada da lista (não conecta computadores novos)${by ? ` ${by}` : ""}`, null);
+      if (removed) pushHistory("info", `Conta Google ${shown} tirada da lista (não conecta serviços novos)${by ? ` ${by}` : ""}`, null);
       await store.save();
       if (removed) log.info(`[google] conta Google ${shown} retirada da lista${by ? ` ${by}` : ""}`);
       if (panelSessions) log.info(`[painel] ${panelSessions} sessão(ões) do painel de ${email} encerrada(s)`);
     }
-    // Os computadores já conectados com ela continuam (cada um se desconecta à parte: revoke <id>).
+    // Os serviços já conectados com ela continuam (cada um se desconecta à parte: revoke <id>).
     const devices = Object.values(state().devices)
       .filter((d) => isObj(d) && sameEmail(d.googleEmail, email))
       .map((d) => ({ id: d.id, name: d.name }));
@@ -918,7 +919,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
   }
 
   /**
-   * Tira as sessões vencidas. Se uma venceu com o computador já criado e o VS Code não buscou
+   * Tira as sessões vencidas. Se uma venceu com o serviço já criado e o VS Code não buscou
    * o acesso (ninguém tem o token), o dispositivo órfão é desfeito.
    */
   async function sweepLogins() {
@@ -931,7 +932,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
       if (!d || !sameHash(sha256hex(r.token), d.tokenHash)) continue;
       delete st.devices[r.deviceId];
       changed = true;
-      pushHistory("device", `Computador "${d.name}" desconectado (o VS Code não buscou o acesso a tempo depois do login com Google)`, r.deviceId);
+      pushHistory("device", `Serviço "${d.name}" desconectado (o VS Code não buscou o acesso a tempo depois do login com Google)`, r.deviceId);
       forgetDevice(st, r.deviceId, d.name);
       log.warn(`[google] "${d.name}" (${r.deviceId}) desfeito: o VS Code não buscou o acesso a tempo`);
     }
@@ -945,7 +946,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     if (!google.enabled) throw googleOffJson();
     rateLimit("loginStart", ip, false);
     await sweepLogins();
-    const name = cleanText(body.name, 60) || "computador";
+    const name = cleanText(body.name, 60) || "serviço";
     const platform = cleanText(body.platform, 20) || "desconhecido";
     const made = logins.create({ name, platform, ip });
     if (!made) {
@@ -991,7 +992,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     rateLimit("googleStart", ip, true);
     await sweepLogins();
     const s = logins.get(query.get("s") || "");
-    // Login do painel vai direto do /web/login para o Google: este link é só dos computadores.
+    // Login do painel vai direto do /web/login para o Google: este link é só dos serviços.
     if (!s || s.kind !== "device") {
       throw pageError(404, "expired", "Link vencido", ["Este link de login venceu ou não existe.", "Volte ao VS Code e comece de novo."], "aviso");
     }
@@ -1037,7 +1038,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     );
   }
 
-  /** Conta liberada (conecta computadores) que não é administrador: o painel não abre para ela. */
+  /** Conta liberada (conecta serviços) que não é administrador: o painel não abre para ela. */
   function panelNotAdminPage(email) {
     return pageReply(
       403,
@@ -1047,8 +1048,8 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
         heading: "Painel só do administrador",
         lines: [
           ["Você entrou com a conta Google ", { b: email }, "."],
-          "Esta conta pode conectar computadores, mas o painel é só do administrador.",
-          "Para conectar um computador: no VS Code, abra o Swap Plus e clique em Entrar com Google no cartão “Servidor”.",
+          "Esta conta pode conectar serviços, mas o painel é só do administrador.",
+          "Para conectar um serviço: no VS Code, abra o Swap Plus e clique em Entrar com Google no cartão “Conexão”.",
         ],
         links: [{ href: "/web/login", text: "Entrar com outra conta" }],
       },
@@ -1076,7 +1077,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     ], "aviso");
 
   /**
-   * Parte comum do retorno (computador e painel): erro vindo do Google, troca do code e conferência
+   * Parte comum do retorno (serviço e painel): erro vindo do Google, troca do code e conferência
    * do id_token. → e-mail confirmado, ou lança a página de erro (a sessão continua esperando: dá para
    * tentar de novo).
    */
@@ -1151,7 +1152,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     }
   }
 
-  /** Retorno do login de um computador (VS Code): cria o dispositivo; o VS Code busca o token pelo poll. */
+  /** Retorno do login de um serviço (VS Code): cria o dispositivo; o VS Code busca o token pelo poll. */
   async function deviceCallback(s, { query, ip }) {
     if (s.result) return finalPage(s);
     const email = await confirmWithGoogle(s, query);
@@ -1159,14 +1160,14 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     if (logins.get(s.id) !== s) throw loginVencido();
     if (s.result) return finalPage(s);
 
-    // Computadores: o administrador (ADMIN_EMAILS) ou uma conta da lista de liberadas.
+    // Serviços: o administrador (ADMIN_EMAILS) ou uma conta da lista de liberadas.
     if (!canConnect(email)) {
       logins.settle(s, { denied: email });
-      log.warn(`[google] a conta Google ${email} não está liberada (computador "${s.name}", de ${ip})`);
+      log.warn(`[google] a conta Google ${email} não está liberada (serviço "${s.name}", de ${ip})`);
       return deniedPage(email);
     }
     const { id: deviceId, token } = createDevice({ name: s.name, platform: s.platform, googleEmail: email });
-    pushHistory("device", `Computador "${s.name}" conectado com a conta Google ${email}`, deviceId);
+    pushHistory("device", `Serviço "${s.name}" conectado com a conta Google ${email}`, deviceId);
     try {
       await store.save();
     } catch (e) {
@@ -1175,7 +1176,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
       throw e;
     }
     logins.settle(s, { deviceId, token, email });
-    log.info(`[google] computador "${s.name}" (${s.platform}) conectado com a conta Google ${email}, id ${deviceId}, de ${ip}`);
+    log.info(`[google] serviço "${s.name}" (${s.platform}) conectado com a conta Google ${email}, id ${deviceId}, de ${ip}`);
     return successPage(s.name, email);
   }
 
@@ -1199,11 +1200,11 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
 
     if (!web.panelOn) throw web.panelOffError();
     if (!isAdmin(email)) {
-      const notAdmin = isAllowed(email); // liberada: conecta computadores, mas o painel é só do administrador
+      const notAdmin = isAllowed(email); // liberada: conecta serviços, mas o painel é só do administrador
       logins.settle(s, { denied: email, notAdmin });
       log.warn(
         notAdmin
-          ? `[painel] ${email} pode conectar computadores, mas não é administrador: painel recusado (de ${ip})`
+          ? `[painel] ${email} pode conectar serviços, mas não é administrador: painel recusado (de ${ip})`
           : `[painel] a conta Google ${email} não está liberada para o painel (de ${ip})`
       );
       return notAdmin ? panelNotAdminPage(email) : panelDeniedPage(email);
@@ -1284,7 +1285,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
 
   async function credential({ device }) {
     const c = await engine.credentialFor(device.id);
-    if (!c) throw new HttpError(409, "no_account", "nenhuma conta atribuída a este computador ainda");
+    if (!c) throw new HttpError(409, "no_account", "nenhuma conta atribuída a este serviço ainda");
     const o = isObj(c.claudeAiOauth) ? c.claudeAiOauth : {};
     // Lista fechada de campos: o que não estiver aqui não sai (refreshToken nunca).
     return {
@@ -1303,13 +1304,13 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     };
   }
 
-  // "Login recusado" no histórico: no máximo uma vez por computador por dia (fuso do servidor). Só na memória.
+  // "Login recusado" no histórico: no máximo uma vez por serviço por dia (fuso do servidor). Só na memória.
   const loginRefusedOn = new Map(); // deviceId → "AAAA-MM-DD"
 
-  /** POST /v1/logins de um computador que não é do administrador: log (sem token), histórico 1x/dia e o 403. */
+  /** POST /v1/logins de um serviço que não é do administrador: log (sem token), histórico 1x/dia e o 403. */
   function refuseLogin(device) {
     const conta = device.googleEmail ? ` (conta Google ${cleanText(String(device.googleEmail), 254)})` : "";
-    log.warn(`[logins] login recusado de "${device.name}"${conta}: só os computadores do administrador (ADMIN_EMAILS) enviam logins`);
+    log.warn(`[logins] login recusado de "${device.name}"${conta}: só os serviços do administrador (ADMIN_EMAILS) enviam logins`);
     const day = localDay(now());
     if (loginRefusedOn.get(device.id) !== day) {
       for (const [id, d] of loginRefusedOn) if (d !== day) loginRefusedOn.delete(id);
@@ -1376,7 +1377,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     return stateOf(device);
   }
 
-  /** Corpo { rules?, autoSwitch? } → engine.setRules (mesma regra para a API dos computadores e o painel). */
+  /** Corpo { rules?, autoSwitch? } → engine.setRules (mesma regra para a API dos serviços e o painel). */
   async function applyRules(body) {
     const hasRules = hasOwn(body, "rules");
     const hasAuto = hasOwn(body, "autoSwitch");
@@ -1575,7 +1576,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     { m: "POST", p: /^\/admin\/allow$/, body: true, fn: ({ body }) => allowEmail(body.email) },
     { m: "POST", p: /^\/admin\/deny$/, body: true, fn: ({ body }) => denyEmail(body.email) },
     { m: "POST", p: /^\/admin\/accounts\/(\d{1,6})\/login-expires$/, body: true, fn: setLoginExpires },
-    // Regras pela linha de comando do servidor (ex.: computadores juntos, troca automática).
+    // Regras pela linha de comando do servidor (ex.: serviços juntos, troca automática).
     {
       m: "PUT",
       p: /^\/admin\/rules$/,
@@ -1610,7 +1611,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
       const ip = kind === "api" ? clientIp(req, trustProxy) : normalizeIp(req.socket && req.socket.remoteAddress);
       // Rotas do navegador (login com Google, página do painel, /web/login): respostas e erros em HTML.
       const html = kind === "api" && (pathname.startsWith("/auth/") || pathname === "/" || pathname === "/web/login");
-      // Painel web: respostas filtradas pelo webReplacer e 401 no limite próprio (não bloqueia os computadores).
+      // Painel web: respostas filtradas pelo webReplacer e 401 no limite próprio (não bloqueia os serviços).
       const webPath = kind === "api" && web.ownsPath(pathname);
       const replacer = webPath ? webReplacer : responseReplacer;
       const ctx = { name: null, quiet: false };
@@ -1629,11 +1630,14 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
         if (route.auth) {
           device = authenticate(req);
           if (!device) {
-            throw new HttpError(401, "unauthorized", "token ausente ou inválido (conecte este computador de novo)", {
+            throw new HttpError(401, "unauthorized", "token ausente ou inválido (conecte este serviço de novo)", {
               "WWW-Authenticate": "Bearer",
             });
           }
           ctx.name = device.name;
+          // Presença: token aceito = contato do serviço, seja qual for a rota (só na memória do motor; o que acontecer
+          // depois — 400, 409... — não desfaz). Pedidos sem token válido, de IP bloqueado ou fora de ALLOW_IPS não chegam aqui.
+          if (typeof engine.touch === "function") engine.touch(device.id);
         }
         const body = route.body ? parseJson(await readBody(req)) : null;
         const query = parseQuery(req.url);
@@ -1739,7 +1743,7 @@ async function main() {
     process.exit(1);
   }
   const st = store.state;
-  log.info(`[cofre] ${Object.keys(st.accounts || {}).length} conta(s), ${Object.keys(st.devices || {}).length} computador(es)`);
+  log.info(`[cofre] ${Object.keys(st.accounts || {}).length} conta(s), ${Object.keys(st.devices || {}).length} serviço(s)`);
 
   // TLS
   let tls = null;
@@ -1756,7 +1760,7 @@ async function main() {
       config.fingerprint = x.fingerprint256;
       const validTo = new Date(x.validTo).getTime();
       if (validTo - Date.now() < 30 * 24 * 3600 * 1000) {
-        log.warn(`[tls] o certificado vence em ${x.validTo}; apague ${path.dirname(certFile)} e reinicie para gerar outro (os computadores precisarão de um código de conexão novo)`);
+        log.warn(`[tls] o certificado vence em ${x.validTo}; apague ${path.dirname(certFile)} e reinicie para gerar outro (os serviços precisarão de um código de conexão novo)`);
       }
     } catch (e) {
       log.error(`[tls] certificado inválido em ${certFile}: ${e.message}`);
@@ -1811,7 +1815,7 @@ async function main() {
   } else {
     log.warn(`[painel] arquivos do painel não encontrados em ${app.web.webDir}: a página / responde 503`);
   }
-  // Sessões de login vencidas (e computadores criados cujo acesso o VS Code não buscou) e sessões do painel vencidas.
+  // Sessões de login vencidas (e serviços criados cujo acesso o VS Code não buscou) e sessões do painel vencidas.
   setInterval(() => {
     app.sweepLogins().catch((e) => log.warn(`[google] limpeza das sessões de login falhou: ${redact(e && e.message)}`));
     app.sweepWebSessions().catch((e) => log.warn(`[painel] limpeza das sessões do painel falhou: ${redact(e && e.message)}`));

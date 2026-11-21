@@ -1,10 +1,13 @@
 // Painel web do Swap Plus Servidor — JS puro, sem bibliotecas.
 // CSP do servidor: só 'self' (nada de inline, eval ou innerHTML com dados). Todo texto entra por textContent.
 // Desenho 2.3 (server/WEB-SPEC.md): menus Contas · Serviços · Usuários; "Minha conta" e "Histórico" no topo.
-// Desde a 2.5.1 o menu "Computadores" aparece como "Serviços" (só o nome na tela: o id da seção e o endereço
-// "#computadores" continuam) e as contas são linhas que abrem e fecham no lugar (WEB-SPEC.md, "2.5.1").
+// Desde a 2.5.1 a aba de tudo o que está conectado se chama "Serviços" (só o nome na tela: o id da seção, "computadores",
+// e o endereço "#computadores" continuam) e as contas são linhas que abrem e fecham no lugar (WEB-SPEC.md, "2.5.1").
 // 2.5.2: contas fora da troca no fim da lista (sem grupo à parte), serviços em linhas que abrem e fecham, tabela
 // de usuários com ordenação e confirmação na própria linha, e uma busca em cada aba (WEB-SPEC.md, "2.5.2").
+// 2.5.3: a palavra da tela é "serviço" para tudo o que está conectado ao Swap (um VS Code, o cliente do Hermes, um
+// robô); a palavra antiga, a dos ids, ficou só para a máquina em que a pessoa está sentada. E cada serviço mostra a
+// presença: ativo agora, conectado (sem uso agora), aguardando contato ou sem contato.
 (function () {
   "use strict";
 
@@ -32,7 +35,7 @@
     marginPct: 5,
     intervalSec: 60,
     onModelLimit: "sameAccount",
-    devicePlacement: "separate", // "separate" | "together" (computadores juntos na mesma conta)
+    devicePlacement: "separate", // "separate" | "together" (serviços juntos na mesma conta)
   };
   // Regras que o painel edita (intervalSec é só do modo local da extensão).
   const RULE_KEYS = ["sessionPct", "weeklyPct", "modelPct", "preferModel", "strategy", "expiringHours", "cooldownMin", "marginPct", "onModelLimit", "devicePlacement"];
@@ -59,7 +62,7 @@
     login: "Login",
     dead: "Login morto",
     refresh: "Renovação",
-    device: "Computador",
+    device: "Serviço",
   };
   const PLATFORMS = { darwin: "macOS", mac: "macOS", macos: "macOS", win32: "Windows", windows: "Windows", linux: "Linux" };
   const WANT_KIT_KEY = "sp_want_kit"; // voltou do Google para ver o kit de recuperação (sessionStorage)
@@ -91,7 +94,7 @@
   // Contas com o cartão aberto na lista. A página abre com todas recolhidas (nada é gravado: recarregar fecha
   // tudo); a escolha vale enquanto a página fica aberta, inclusive nas atualizações de 30 s e com a busca.
   const acctExpanded = new Set();
-  const svcExpanded = new Set(); // o mesmo para os serviços (aba "Serviços"): ids dos computadores com o cartão aberto
+  const svcExpanded = new Set(); // o mesmo na aba "Serviços": ids dos serviços com o cartão aberto
   // Busca de cada aba: o texto digitado (só na memória; continua nas atualizações de 30 s e ao trocar de aba).
   const filters = { contas: "", computadores: "", usuarios: "" };
   // Usuários: ordem da tabela, a linha que está perguntando "Tirar?" (chave da linha) e as mensagens do último
@@ -106,8 +109,8 @@
   const ownUi = new Set(); // contas com "Usar regra padrão" desmarcado (sliders à mostra, mesmo sem linha própria gravada)
   const ownLive = new Map(); // número da conta → { campo: valor } mexido no slider e ainda não confirmado pelo servidor
   const ownTimers = new Map(); // "n:campo" → espera para salvar
-  const devChoice = new Map(); // id do computador → opção escolhida em "Trocar para"
-  const devRename = new Map(); // id do computador → nome sendo digitado (renomear aberto)
+  const devChoice = new Map(); // id do serviço → opção escolhida em "Trocar para"
+  const devRename = new Map(); // id do serviço → nome sendo digitado (renomear aberto)
   const pending = new Set(); // vistas que esperam o foco sair para redesenhar
   const drawerOpener = new Map(); // id do painel lateral → elemento que o abriu (o foco volta para ele)
 
@@ -514,7 +517,7 @@
   const devById = (id) => devices().find((d) => String(d.id) === String(id)) || null;
   const myEmail = () => String((S && S.me && S.me.email) || (me && me.email) || "").toLowerCase();
   const byNumber = (x, y) => Number(x.number) - Number(y.number);
-  const devName = (d) => (d && d.name) || "Computador sem nome";
+  const devName = (d) => (d && d.name) || "Serviço sem nome";
   const sortedDevices = () => [...devices()].sort((x, y) => devName(x).localeCompare(devName(y), "pt-BR") || String(x.id).localeCompare(String(y.id)));
 
   /**
@@ -620,7 +623,7 @@
 
   /**
    * Limites de uma leitura de uso (u), na ordem das barras: sessão 5h, semanal e os de modelo (ex.: Fable).
-   * Cada um: rótulo (label; short = o dos quadradinhos), nome por extenso, %, linha de troca, quando renova,
+   * Cada um: rótulo (label; short = o das barras pequenas do cartão do serviço), nome por extenso, %, linha de troca, quando renova,
    * idle (sem uso nas últimas 5 horas) e own (a linha é própria da conta).
    */
   function limitsOf(a, u) {
@@ -656,7 +659,7 @@
       .map((d) => (typeof d === "string" ? d : d && (d.name || d.id)))
       .filter(Boolean);
   }
-  /** Conta em uso: tem computador nela agora. */
+  /** Conta em uso: tem serviço nela agora. */
   const inUse = (a) => deviceNames(a).length > 0;
 
   function platformLabel(p) {
@@ -674,14 +677,14 @@
     return [...names].sort();
   }
 
-  /** "Computadores permitidos" da conta: null = todos, [ids] = só esses, undefined = o servidor ainda não manda. */
+  /** "Serviços permitidos" da conta: null = todos, [ids] = só esses, undefined = o servidor ainda não manda. */
   function accDevices(a) {
     if (!hasOwn(a, "devices")) return undefined;
     return Array.isArray(a.devices) ? a.devices.map(String) : null;
   }
   const hasAccDevices = () => accounts().some((a) => hasOwn(a, "devices"));
 
-  /** Contas que o computador pode usar: Set de números, ou null (= todas). */
+  /** Contas que o serviço pode usar: Set de números, ou null (= todas). */
   function allowedFor(d) {
     if (hasOwn(d, "allowedAccounts")) return Array.isArray(d.allowedAccounts) ? new Set(d.allowedAccounts.map(Number)) : null;
     if (!hasAccDevices()) return null;
@@ -713,6 +716,72 @@
       .map((a) => ({ a, k: key(a) }))
       .sort((x, y) => x.k.dead - y.k.dead || cmp(x.k.reset, y.k.reset) || cmp(x.k.used, y.k.used) || x.k.n - y.k.n)
       .map((o) => o.a);
+  }
+
+  // ------------------------------------------------------------ presença dos serviços
+  // (funções sem tela: o teste "painel de verdade ... presença" roda este trecho inteiro)
+
+  // As quatro situações de um serviço, na ordem em que aparecem na aba Serviços e no resumo. dot = a cor da bolinha;
+  // one/many = o nome no resumo ("1 conectado", "2 conectados").
+  //   active     ativo agora: mandou o batimento (uso) nos últimos 5 minutos — é o que as regras de troca olham
+  //   connected  conectado: falou com o servidor nos últimos 5 minutos, mas sem uso (ex.: o Hermes entre duas tarefas)
+  //   waiting    aguardando contato: o servidor reiniciou há menos de 5 minutos e o serviço ainda não falou com ele
+  //   none       sem contato: nenhum pedido nos últimos 5 minutos
+  const PRESENCE = {
+    active: { order: 0, dot: "on", one: "ativo agora", many: "ativos agora" },
+    connected: { order: 1, dot: "conn", one: "conectado", many: "conectados" },
+    waiting: { order: 2, dot: "wait", one: "aguardando contato", many: "aguardando contato" },
+    none: { order: 3, dot: "", one: "sem contato", many: "sem contato" },
+  };
+
+  /** A situação do serviço (o `presence` que o servidor manda). Servidor antigo, sem o campo: sai de `active`/`connected`. */
+  function presenceOf(d) {
+    if (hasOwn(PRESENCE, d.presence)) return d.presence;
+    return d.active ? "active" : d.connected ? "connected" : "none";
+  }
+
+  /**
+   * O texto da situação em duas partes (na tela: "situação · detalhe"):
+   *   ativo agora
+   *   conectado · sem uso agora
+   *   aguardando contato · o servidor reiniciou há pouco
+   *   sem contato · visto hoje 18:00        (ou "sem contato · ainda não apareceu")
+   * → { p (a situação), main, detail (ou null) }
+   */
+  function presenceParts(d) {
+    const p = presenceOf(d);
+    if (p === "active") return { p, main: "ativo agora", detail: null };
+    if (p === "connected") return { p, main: "conectado", detail: "sem uso agora" };
+    if (p === "waiting") return { p, main: "aguardando contato", detail: "o servidor reiniciou há pouco" };
+    const when = fmtWhen(d.lastContact ?? d.lastSeen);
+    return { p, main: "sem contato", detail: when ? `visto ${when}` : "ainda não apareceu" };
+  }
+
+  /** "conectado · sem uso agora" (o texto inteiro: cartão aberto, busca e leitores de tela). */
+  function presenceText(d) {
+    const x = presenceParts(d);
+    return x.detail ? `${x.main} · ${x.detail}` : x.main;
+  }
+
+  /** Ordem da aba Serviços: ativos, conectados, aguardando contato, sem contato; dentro de cada grupo, por nome. */
+  const byPresence = (x, y) => PRESENCE[presenceOf(x)].order - PRESENCE[presenceOf(y)].order || devName(x).localeCompare(devName(y), "pt-BR");
+
+  /**
+   * O resumo dos serviços: "5 serviços (3 ativos agora, 1 conectado, 1 sem contato)". Grupo sem ninguém não aparece;
+   * com um serviço só, sem o número dentro: "1 serviço (ativo agora)"; sem nenhum: "nenhum serviço".
+   */
+  function servicesSummary(devs) {
+    const n = devs.length;
+    if (!n) return "nenhum serviço";
+    const count = {};
+    for (const d of devs) {
+      const p = presenceOf(d);
+      count[p] = (count[p] || 0) + 1;
+    }
+    const groups = Object.keys(PRESENCE)
+      .filter((k) => count[k])
+      .map((k) => (n === 1 ? PRESENCE[k].one : `${count[k]} ${count[k] === 1 ? PRESENCE[k].one : PRESENCE[k].many}`));
+    return `${n === 1 ? "1 serviço" : `${n} serviços`} (${groups.join(", ")})`;
   }
 
   // ------------------------------------------------------------ redesenho com foco preservado
@@ -947,15 +1016,13 @@
   function renderSummary() {
     const accs = accounts();
     const inQ = accs.filter((a) => !a.disabled).length;
-    const devs = devices();
-    const activeDevs = devs.filter((d) => d.active).length;
     const r = rules();
     const parts = [
       accs.length === 1 ? "1 conta" : `${accs.length} contas`,
       accs.length ? (inQ === 1 ? "1 na troca" : `${inQ} na troca`) : null,
-      devs.length === 1 ? `1 computador (${activeDevs ? "ativo agora" : "parado"})` : `${devs.length} computadores (${activeDevs} ativo${activeDevs === 1 ? "" : "s"} agora)`,
+      servicesSummary(devices()),
       S.autoSwitch !== false ? "troca automática ligada" : "troca automática desligada",
-      r.devicePlacement === "together" ? "computadores juntos na mesma conta" : null,
+      r.devicePlacement === "together" ? "serviços juntos na mesma conta" : null,
       `estratégia “${STRATEGY_LABELS[r.strategy] || r.strategy}”`,
     ].filter(Boolean);
     $("summary").textContent = parts.join(" · ");
@@ -986,7 +1053,7 @@
     return h("div", { class: "emptystate card" }, h("p", { class: "emptytitle", text: title }), h("p", { class: "muted", text }));
   }
 
-  /** Barra de uso. opt.mini: versão pequena (sem a linha de "renova"), para os quadradinhos dos computadores. */
+  /** Barra de uso. opt.mini: versão pequena (sem a linha de "renova"), para o cartão aberto do serviço. */
   function meter(label, longLabel, pct, line, resetsAt, opt = {}) {
     const p = clamp(pct);
     const s = sev(p, line);
@@ -1009,7 +1076,7 @@
     );
   }
 
-  /** Barras de uso de uma conta (cheias no cartão da conta, pequenas no quadradinho do computador). */
+  /** Barras de uso de uma conta (cheias no cartão da conta, pequenas no cartão aberto do serviço). */
   function usageMeters(a, mini) {
     const f = usageOf(a);
     const box = h("div", { class: "meters" + (mini ? " minis" : "") });
@@ -1037,7 +1104,7 @@
     return box;
   }
 
-  /** Texto de "Computadores permitidos" de uma conta. */
+  /** Texto de "Serviços permitidos" de uma conta. */
   function allowedDevicesText(a) {
     const l = accDevices(a);
     if (l === undefined) return SOON;
@@ -1046,7 +1113,7 @@
     return l
       .map((id) => {
         const dv = devById(id);
-        return dv ? devName(dv) : "computador desconectado";
+        return dv ? devName(dv) : "serviço desconectado";
       })
       .join(", ");
   }
@@ -1127,9 +1194,9 @@
   /**
    * Linha da conta (o cartão recolhido), em cerca de duas linhas: nome, apelido e e-mail; UMA barra de uso, a do
    * limite mais perto de parar a conta (topLimit), com quando renova; e se participa da troca (só um indicador: o
-   * liga/desliga fica no cartão aberto). "Em N computadores" e a posição na fila aparecem como etiquetas.
+   * liga/desliga fica no cartão aberto). "Em N serviços" e a posição na fila aparecem como etiquetas.
    * Login que vence em menos de 3 dias (ou já venceu): ícone de alerta e a linha "Fazer login até …" piscando (o
-   * piscar é só CSS; para com prefers-reduced-motion). Login morto: etiqueta e linha vermelhas, paradas.
+   * piscar é só CSS; para com prefers-reduced-motion). Login morto: etiqueta e linha vermelhas, sem piscar.
    * É um botão de verdade: clicar (ou Enter/Espaço) abre e fecha o cartão ali mesmo.
    * o: { pos (posição na fila ou null), open, titleId, alert (loginAlert da conta) }.
    */
@@ -1144,7 +1211,7 @@
       { class: "rtitle" },
       al ? h("span", { class: "wico" + (bad ? " bad" : ""), "aria-hidden": "true" }) : null,
       h("span", { class: "aname", id: o.titleId }, h("span", { class: "n", text: `Conta ${n}` }), a.alias ? h("span", { class: "alias", text: `“${a.alias}”` }) : null),
-      devs.length ? badge("on", devs.length === 1 ? "Em 1 computador" : `Em ${devs.length} computadores`) : null,
+      devs.length ? badge("on", devs.length === 1 ? "Em 1 serviço" : `Em ${devs.length} serviços`) : null,
       o.pos ? badge("plain", `${o.pos}º na fila`) : null,
       al && al.kind === "dead" ? badge("dead", "Login morto") : null,
       // rascunho de "Ajustes desta conta" ainda não salvo (o cartão pode estar fechado)
@@ -1235,8 +1302,8 @@
     const info = h(
       "dl",
       { class: "info" },
-      fact("Computadores nela", devs.length ? devs.join(", ") : "nenhum agora", devs.length ? null : "muted"),
-      fact("Computadores permitidos", permitted, permitted === SOON ? "muted" : null),
+      fact("Serviços nela", devs.length ? devs.join(", ") : "nenhum agora", devs.length ? null : "muted"),
+      fact("Serviços permitidos", permitted, permitted === SOON ? "muted" : null),
       fact("Acesso atual", [accessMain, accessSub ? h("span", { class: "factsub", text: ` (${accessSub})` }) : null]),
       fact("Login vale até", loginDate ? fmtWhen(loginDate) : "sem data conhecida", loginDate ? null : "muted")
     );
@@ -1270,7 +1337,7 @@
           ok: () => {
             if (on) return `Conta ${n} de volta à troca.`;
             const cur = accById(n); // já com o estado novo: a conta em uso continua no alto da lista
-            const where = cur && inUse(cur) ? "Enquanto houver computador nela, continua no alto da lista; depois vai para o fim." : "Ela vai para o fim da lista.";
+            const where = cur && inUse(cur) ? "Enquanto houver serviço nela, continua no alto da lista; depois vai para o fim." : "Ela vai para o fim da lista.";
             return `Conta ${n} fora da troca: a troca automática não vai usá-la. ${where}`;
           },
         });
@@ -1436,7 +1503,7 @@
 
   /**
    * "Ajustes desta conta": apelido, regras de troca desta conta (salvas na hora, ver ownRulesBlock), prioridade e
-   * computadores permitidos, com rascunho (sobrevive à atualização de 30 s) e Salvar/Desfazer.
+   * serviços permitidos, com rascunho (sobrevive à atualização de 30 s) e Salvar/Desfazer.
    */
   function adjustForm(a) {
     const n = Number(a.number);
@@ -1466,12 +1533,12 @@
       "aria-describedby": id("prHint"),
     });
 
-    // --- computadores permitidos
+    // --- serviços permitidos
     let devSet;
     let readDevs = () => ({ devAll: orig.devAll, devPicked: orig.devPicked });
     let syncDevs = () => {};
     if (!devKnown) {
-      devSet = h("fieldset", { class: "subfield" }, h("legend", { text: "Computadores permitidos" }), h("p", { class: "hint", text: `Escolher os computadores de cada conta: ${SOON}.` }));
+      devSet = h("fieldset", { class: "subfield" }, h("legend", { text: "Serviços permitidos" }), h("p", { class: "hint", text: `Escolher os serviços de cada conta: ${SOON}.` }));
     } else {
       const all = sortedDevices();
       const picked = new Set(d.devPicked.filter((x) => knownIds.has(x)));
@@ -1498,8 +1565,8 @@
       devSet = h(
         "fieldset",
         { class: "subfield" },
-        h("legend", { text: "Computadores permitidos" }),
-        h("p", { class: "hint", id: id("devHint"), text: "Quais computadores podem usar esta conta (na troca automática e na troca manual)." }),
+        h("legend", { text: "Serviços permitidos" }),
+        h("p", { class: "hint", id: id("devHint"), text: "Quais serviços podem usar esta conta (na troca automática e na troca manual)." }),
         h("label", { class: "check", for: id("devall") }, rAll, h("span", { text: "Todos (inclusive os que conectarem depois)" })),
         h("label", { class: "check", for: id("devsome") }, rSome, h("span", { text: "Só estes:" })),
         all.length
@@ -1515,7 +1582,7 @@
                 )
               )
             )
-          : h("p", { class: "hint", text: "Nenhum computador conectado ainda." })
+          : h("p", { class: "hint", text: "Nenhum serviço conectado ainda." })
       );
     }
 
@@ -1580,7 +1647,7 @@
       if (Math.round(pr) !== Number(orig.priority)) patch.priority = Math.round(pr);
       const devsChanged = devKnown && !sameDevs(x);
       if (devsChanged && !x.devAll && !x.devPicked.length) {
-        toast("Computadores permitidos: marque pelo menos um computador ou escolha “Todos”.", "error");
+        toast("Serviços permitidos: marque pelo menos um serviço ou escolha “Todos”.", "error");
         return;
       }
       if (!Object.keys(patch).length && !devsChanged) {
@@ -1629,7 +1696,7 @@
       title: `Remover a Conta ${n}?`,
       text:
         `${a.email ? `${a.email}. ` : ""}O servidor apaga o login guardado desta conta` +
-        (devs.length ? ` e ${devs.length === 1 ? "o computador que está nela passa" : "os computadores que estão nela passam"} para outra conta` : "") +
+        (devs.length ? ` e ${devs.length === 1 ? "o serviço que está nela passa" : "os serviços que estão nela passam"} para outra conta` : "") +
         ". Para usar esta conta de novo, adicione-a outra vez (botão “Adicionar conta”).",
       ok: "Remover conta",
     });
@@ -1658,7 +1725,7 @@
       a.plan && a.plan.label,
       a.organizationName || a.orgName,
       a.disabled ? "fora da troca" : "participa da troca",
-      devs.length ? `em uso em ${devs.length === 1 ? "1 computador" : `${devs.length} computadores`}` : null,
+      devs.length ? `em uso em ${devs.length === 1 ? "1 serviço" : `${devs.length} serviços`}` : null,
       ...devs,
       pos ? `${pos}º na fila` : null,
       isDead(a) ? "login morto" : a.disabled ? null : "situação ok",
@@ -1671,7 +1738,7 @@
 
   /**
    * Lista de contas, numa coluna só de linhas que abrem e fecham (accountCard), sem grupo à parte. Ordem (pedido
-   * do dono): primeiro as contas em uso (com computador nelas agora), mesmo as que estão fora da troca; depois as
+   * do dono): primeiro as contas em uso (com serviço nelas agora), mesmo as que estão fora da troca; depois as
    * outras que participam, na ordem da fila; no fim, as que estão fora da troca (por número). A posição na fila
    * ("1º na fila") é a da fila, não a da lista: a conta em uso sobe sem mudar de posição.
    * A busca da aba (filters.contas) só esconde linhas: não mexe na ordem nem no que está aberto.
@@ -1684,7 +1751,7 @@
     if (!all.length) {
       paintSearch("contas", 0, 0);
       box.replaceChildren(
-        emptyState("Nenhuma conta no servidor ainda", "Clique em “Adicionar conta” (no alto, à direita) e entre com a conta Claude. Ou entre com a conta no Claude Code de um computador conectado.")
+        emptyState("Nenhuma conta no servidor ainda", "Clique em “Adicionar conta” (no alto, à direita) e entre com a conta Claude. Ou entre com a conta no Claude Code de um serviço conectado.")
       );
       return;
     }
@@ -1699,7 +1766,7 @@
     const kids = [];
     if (!inQ.length && !filters.contas.trim()) kids.push(emptyState("Nenhuma conta participa da troca agora", "Clique numa conta e ligue “Participa da troca”."));
     if (shown.length) kids.push(h("div", { class: "accounts" }, shown.map((a) => accountCard(a, pos(a)))));
-    else kids.push(h("div", { class: "emptystate card" }, noResults("contas", "cada conta (número, apelido, e-mail, plano, situação, fila e os computadores nela)")));
+    else kids.push(h("div", { class: "emptystate card" }, noResults("contas", "cada conta (número, apelido, e-mail, plano, situação, fila e os serviços nela)")));
     box.replaceChildren(...kids);
   }
 
@@ -1872,7 +1939,7 @@
     });
   }
 
-  // ------------------------------------------------------------ Serviços (os computadores conectados)
+  // ------------------------------------------------------------ Serviços (tudo o que está conectado ao Swap)
 
   const devAssigned = (d) => (d.assigned !== null && d.assigned !== undefined ? Number(d.assigned) : null);
   /** Quem conectou o serviço: a conta Google, ou "conectado por código". */
@@ -1892,7 +1959,7 @@
       devName(d),
       platformLabel(d.platform),
       devWho(d),
-      d.active ? "ativo agora" : d.lastSeen ? `parado visto ${fmtWhen(d.lastSeen) || ""}` : "parado ainda não apareceu",
+      presenceText(d),
       assigned !== null ? `Conta ${assigned}` : "sem conta",
       acc && acc.alias,
       acc && acc.email,
@@ -1902,11 +1969,11 @@
 
   /**
    * Lista de serviços, como a de contas: uma coluna de linhas que abrem e fecham (serviceCard), todas recolhidas
-   * quando a página abre (svcExpanded guarda o que está aberto). Ordem: os ativos primeiro; depois, por nome.
-   * A busca da aba (filters.computadores) só esconde linhas.
+   * quando a página abre (svcExpanded guarda o que está aberto). Ordem (byPresence): ativos, conectados, aguardando
+   * contato e sem contato; dentro de cada grupo, por nome. A busca da aba (filters.computadores) só esconde linhas.
    */
   function renderDevices(box) {
-    const list = [...devices()].sort((x, y) => Number(!!y.active) - Number(!!x.active) || devName(x).localeCompare(devName(y), "pt-BR"));
+    const list = [...devices()].sort(byPresence);
     for (const id of [...devChoice.keys()]) if (!list.some((d) => d.id === id)) devChoice.delete(id);
     for (const id of [...devRename.keys()]) if (!list.some((d) => d.id === id)) devRename.delete(id);
     for (const id of [...svcExpanded]) if (!list.some((d) => d.id === id)) svcExpanded.delete(id);
@@ -1914,8 +1981,8 @@
       paintSearch("computadores", 0, 0);
       box.replaceChildren(
         emptyState(
-          "Nenhum computador conectado ainda",
-          "Para conectar: no computador, abra o VS Code com o Swap Plus e clique em “Entrar com Google” no cartão “Servidor”. O passo a passo completo está logo abaixo, em “Conectar um computador”."
+          "Nenhum serviço conectado ainda",
+          "Para conectar: no computador, abra o VS Code com o Swap Plus e clique em “Entrar com Google” no cartão “Conexão”. O passo a passo completo está logo abaixo, em “Conectar um serviço”."
         )
       );
       return;
@@ -1927,18 +1994,21 @@
   }
 
   /**
-   * Linha do serviço (o cartão recolhido), em cerca de duas linhas: bolinha de ativo/parado e nome; sistema e
-   * quem conectou; a conta Claude em que ele está agora ("Conta N" com UMA barra, a mesma das linhas de conta —
-   * rowUsage — ou "Sem conta Claude agora"); e o contato ("ativo agora" / "parado" e quando foi visto).
+   * Linha do serviço (o cartão recolhido), em cerca de duas linhas: bolinha da situação (uma cor para cada uma:
+   * PRESENCE) e nome; sistema e quem conectou; a conta Claude em que ele está agora ("Conta N" com UMA barra, a
+   * mesma das linhas de conta — rowUsage — ou "Sem conta Claude agora"); e o contato: a situação ("ativo agora",
+   * "conectado", "aguardando contato", "sem contato") e, embaixo, o detalhe dela (presenceParts).
    * É um botão de verdade, como a linha da conta: clicar (ou Enter/Espaço) abre e fecha o cartão ali mesmo.
    * o: { id (monta os ids), name, open, assigned, acc }.
    */
   function serviceRow(d, o) {
+    const pr = presenceParts(d);
+    const dot = PRESENCE[pr.p].dot;
     const title = h(
       "span",
       { class: "rtitle" },
       // a bolinha vai dentro do nome: num nome comprido, ela fica na primeira linha dele
-      h("span", { class: "aname", id: o.id("title") }, h("span", { class: "n" }, h("span", { class: "dot" + (d.active ? " on" : ""), "aria-hidden": "true" }), o.name)),
+      h("span", { class: "aname", id: o.id("title") }, h("span", { class: "n" }, h("span", { class: "dot" + (dot ? ` ${dot}` : ""), "aria-hidden": "true" }), o.name)),
       o.acc && isDead(o.acc) ? badge("dead", "Login morto") : null,
       // nome novo digitado e ainda não salvo (o cartão pode estar fechado)
       h("span", { class: "dirty", id: o.id("rowdirty"), text: renameDirty(d) ? "Nome não salvo" : "" })
@@ -1946,11 +2016,12 @@
     let use;
     if (o.acc) use = rowUsage(o.acc, `Conta ${o.acc.number}`);
     else use = h("span", { class: "ruse none" }, h("span", { class: "rreset", text: o.assigned !== null ? `Conta ${o.assigned} (não existe mais no servidor)` : "Sem conta Claude agora" }));
-    const seen = d.active
-      ? [h("span", { class: "oktext", text: "ativo agora" })]
-      : d.lastSeen
-        ? [h("span", { text: "parado" }), h("span", { class: "visually-hidden", text: ", " }), h("span", { class: "when", text: `visto ${fmtWhen(d.lastSeen) || "—"}` })]
-        : [h("span", { text: "ainda não apareceu" })];
+    // a situação em cima e o detalhe embaixo; o " · " entre os dois é só para quem ouve a tela (o texto inteiro)
+    const seen = [
+      h("span", { class: pr.p === "active" ? "oktext" : null, text: pr.main }),
+      pr.detail ? h("span", { class: "visually-hidden", text: " · " }) : null,
+      pr.detail ? h("span", { class: "when", text: pr.detail }) : null,
+    ];
     return h(
       "button",
       {
@@ -1981,7 +2052,7 @@
     const assigned = devAssigned(d);
     const acc = assigned !== null ? accById(assigned) : null;
     const open = svcExpanded.has(d.id);
-    const seen = d.active ? "ativo agora" : d.lastSeen ? `parado · visto ${fmtWhen(d.lastSeen) || "—"}` : "ainda não apareceu";
+    const pr = presenceParts(d);
 
     // --- renomear: o botão fica no pé do cartão; clicando, o campo aparece no alto do cartão
     const renaming = devRename.has(d.id);
@@ -2005,9 +2076,9 @@
           acc.email ? h("div", { class: "email small", text: acc.email }) : null,
           usageMeters(acc, true)
         )
-      : h("div", { class: "tacc none" }, h("p", { class: "muted small", text: assigned !== null ? `Conta ${assigned} (não existe mais no servidor).` : "Nenhuma conta Claude neste computador agora." }));
+      : h("div", { class: "tacc none" }, h("p", { class: "muted small", text: assigned !== null ? `Conta ${assigned} (não existe mais no servidor).` : "Nenhuma conta Claude neste serviço agora." }));
 
-    // --- trocar (só entre as contas permitidas para este computador)
+    // --- trocar (só entre as contas permitidas para este serviço)
     const allowed = allowedFor(d);
     const pool = [...accounts()].sort(byNumber).filter((a) => !allowed || allowed.has(Number(a.number)));
     const sel = h("select", { id: id("sel"), "data-k": id("sel") });
@@ -2037,8 +2108,8 @@
           class: "hint",
           id: id("selHint"),
           text: pool.length
-            ? "Só aparecem as contas que permitem este computador (em Contas › Ajustes desta conta)."
-            : "Nenhuma conta permite este computador. Libere em Contas › Ajustes desta conta › Computadores permitidos.",
+            ? "Só aparecem as contas que permitem este serviço (em Contas › Ajustes desta conta)."
+            : "Nenhuma conta permite este serviço. Libere em Contas › Ajustes desta conta › Serviços permitidos.",
         })
       : null;
     if (hint) sel.setAttribute("aria-describedby", id("selHint"));
@@ -2065,7 +2136,7 @@
             h("dt", { text: "Usuário" }),
             h("dd", { text: devWho(d) }),
             h("dt", { text: "Contato" }),
-            h("dd", { class: d.active ? "oktext" : null, text: seen })
+            h("dd", { class: pr.p === "active" ? "oktext" : null, text: presenceText(d) })
           ),
           h("div", { class: "dctl" }, h("label", { for: id("sel"), text: "Trocar para" }), h("div", { class: "row gap wrap" }, sel, go), hint)
         ),
@@ -2113,7 +2184,7 @@
       if (!v) {
         input.setAttribute("aria-invalid", "true");
         input.focus();
-        toast("Digite um nome para o computador.", "error");
+        toast("Digite um nome para o serviço.", "error");
         return;
       }
       if (v === (d.name || "")) {
@@ -2126,7 +2197,7 @@
           paint("devices", true);
           refocus(id("ren"));
         },
-        ok: `Computador renomeado para “${v}”.`,
+        ok: `Serviço renomeado para “${v}”.`,
       });
     });
     return form;
@@ -2134,7 +2205,7 @@
 
   function switchDevice(d, value, btn) {
     const number = value === "best" ? null : Number(value);
-    const name = d.name || "o computador";
+    const name = d.name || "o serviço";
     act(btn, () => api("POST", `/web/api/devices/${encodeURIComponent(d.id)}/switch`, { number }), {
       before: () => devChoice.delete(d.id),
       ok: () => {
@@ -2146,7 +2217,7 @@
   }
 
   async function disconnectDevice(d, btn) {
-    const name = d.name || "este computador";
+    const name = d.name || "este serviço";
     const ok = await confirmBox({
       title: `Desconectar ${name}?`,
       text: "Ele para de receber o acesso das contas na hora, e o Claude Code dele pode pedir login. Para voltar, conecte de novo pelo VS Code (Entrar com Google ou código de conexão).",
@@ -2345,8 +2416,8 @@
     const el = $("rAuto");
     await act(el, () => api("PUT", "/web/api/rules", { autoSwitch: !!on }), {
       ok: on
-        ? "Troca automática ligada. Vale agora, para todos os computadores."
-        : "Troca automática desligada. Nenhum computador troca de conta sozinho.",
+        ? "Troca automática ligada. Vale agora, para todos os serviços."
+        : "Troca automática desligada. Nenhum serviço troca de conta sozinho.",
     });
     // Mostra o que ficou valendo no servidor (se o pedido falhou, o botão volta ao estado real).
     el.checked = !!S && S.autoSwitch !== false;
@@ -2399,7 +2470,7 @@
         setRulesDirty(false);
         rulesBaseSig = null; // a próxima carga preenche o formulário com o que ficou salvo
       },
-      ok: "Regras salvas. Valem para todos os computadores.",
+      ok: "Regras salvas. Valem para todos os serviços.",
     });
   }
 
@@ -2433,7 +2504,7 @@
     return m;
   }
 
-  /** Linhas da tabela: administrador(es), usuários liberados e e-mails tirados que ainda têm computador conectado. */
+  /** Linhas da tabela: administrador(es), usuários liberados e e-mails tirados que ainda têm serviço conectado. */
   function userRows() {
     if (!S) return [];
     const rows = [];
@@ -2549,10 +2620,10 @@
 
   const allowedText = (email) => (r) =>
     r && r.admin
-      ? "Essa é a conta do administrador: ela já conecta computadores e entra no painel."
+      ? "Essa é a conta do administrador: ela já conecta serviços e entra no painel."
       : r && r.added === false
         ? "Esse usuário já está liberado."
-        : `${email} liberado. Ele já pode conectar computadores pelo VS Code (Entrar com Google). O painel continua só do administrador.`;
+        : `${email} liberado. Ele já pode conectar serviços pelo VS Code (Entrar com Google). O painel continua só do administrador.`;
 
   /** "Tirar": em vez de uma janela, a própria tabela pergunta, numa faixa embaixo da linha (Tirar usuário / Cancelar). */
   function askRemoveUser(r) {
@@ -2599,14 +2670,14 @@
         ? h("span", { class: "badge on", text: ROLE_LABEL.admin })
         : r.role === "user"
           ? h("span", { class: "badge", text: ROLE_LABEL.user })
-          : h("span", { class: "badge plain", text: ROLE_LABEL.gone, title: "Saiu da lista, mas os computadores que já conectou continuam" });
+          : h("span", { class: "badge plain", text: ROLE_LABEL.gone, title: "Saiu da lista, mas os serviços que já conectou continuam" });
     const devs = r.devices.length
       ? h("span", null, h("b", { text: String(r.devices.length) }), h("span", { class: "muted", text: ` · ${r.devices.map(devName).join(", ")}` }))
       : h("span", { class: "muted", text: "nenhum" });
     let since;
     if (r.since) since = h("span", { text: fmtDay(r.since) });
     else if (r.role === "admin") since = h("span", { class: "muted", text: "definido no servidor" });
-    else if (r.firstDevice) since = h("span", null, fmtDay(r.firstDevice), h("span", { class: "muted small", text: " (1º computador)" }));
+    else if (r.firstDevice) since = h("span", null, fmtDay(r.firstDevice), h("span", { class: "muted small", text: " (1º serviço)" }));
     else since = h("span", { class: "muted", text: "—" });
     let action;
     if (r.role === "admin") {
@@ -2643,7 +2714,7 @@
         "div",
         { class: "subtext" },
         asking
-          ? h("p", null, h("b", { text: `Tirar ${r.email}?` }), " Ele não conecta mais computadores novos. Os que ele já conectou continuam funcionando; para cortar, desconecte-os em Serviços.")
+          ? h("p", null, h("b", { text: `Tirar ${r.email}?` }), " Ele não conecta mais serviços novos. Os que ele já conectou continuam funcionando; para cortar, desconecte-os em Serviços.")
           : null,
         err ? h("p", { class: "badtext", role: "alert", text: err }) : null
       ),
@@ -2694,8 +2765,8 @@
     if (rows.length) box.replaceChildren(...rows.flatMap((r) => userRow(r, mine)));
     else box.replaceChildren(h("tr", { class: "nonerow" }, h("td", { colspan: "5" }, h("div", { class: "emptystate" }, noResults("usuarios", "cada usuário (e-mail, situação e os serviços que ele conectou)")))));
     const parts = [];
-    if (!all.some((r) => r.since) && all.some((r) => r.role !== "admin")) parts.push(`A data em que cada usuário foi liberado fica ${SOON}; por enquanto aparece quando ele conectou o primeiro computador.`);
-    if (all.some((r) => r.role === "gone")) parts.push("“Não liberado”: saiu da lista, mas os computadores que já conectou continuam funcionando (desconecte-os em Serviços para cortar).");
+    if (!all.some((r) => r.since) && all.some((r) => r.role !== "admin")) parts.push(`A data em que cada usuário foi liberado fica ${SOON}; por enquanto aparece quando ele conectou o primeiro serviço.`);
+    if (all.some((r) => r.role === "gone")) parts.push("“Não liberado”: saiu da lista, mas os serviços que já conectou continuam funcionando (desconecte-os em Serviços para cortar).");
     note.textContent = parts.join(" ");
     note.classList.toggle("hidden", !parts.length);
   }
@@ -2714,7 +2785,7 @@
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return invalid("Esse e-mail não parece válido. Use o formato pessoa@gmail.com.");
     input.removeAttribute("aria-invalid");
     if (isAdminEmail(email)) {
-      return setUserNote("form", { kind: "ok", text: "Essa é a conta do administrador: ela já conecta computadores e entra no painel, sem precisar estar na lista." });
+      return setUserNote("form", { kind: "ok", text: "Essa é a conta do administrador: ela já conecta serviços e entra no painel, sem precisar estar na lista." });
     }
     if (allowedList().some((x) => sameEmail(x, email))) return setUserNote("form", { kind: "ok", text: "Esse usuário já está liberado." });
     const ok = await userAct($("btnAllow"), () => api("POST", "/web/api/allowed", { email }), { ok: allowedText(email), slot: "form" });
@@ -2731,7 +2802,7 @@
     }
     el.textContent =
       g.enabled === false
-        ? "O login com Google está desligado no servidor: ninguém consegue entrar de novo no painel nem conectar computadores com Google. Os computadores podem conectar com o código de conexão (em Serviços)."
+        ? "O login com Google está desligado no servidor: ninguém consegue entrar de novo no painel nem conectar serviços com Google. Ainda dá para conectar um serviço com o código de conexão (na aba Serviços)."
         : g.callbackUrl
           ? `Login com Google ligado. Endereço de retorno cadastrado no Google: ${g.callbackUrl}`
           : "Login com Google ligado.";
@@ -2920,7 +2991,7 @@
     box.replaceChildren(
       ...items.map((it) => {
         const kind = String(it.kind || "info");
-        const dn = it.deviceName || (it.device ? byId.get(it.device) || "computador removido" : null);
+        const dn = it.deviceName || (it.device ? byId.get(it.device) || "serviço removido" : null);
         const iso = isoOf(it.ts);
         return h(
           "li",
@@ -2929,7 +3000,7 @@
           h("span", { class: "kind " + kind.replace(/[^a-z_-]/gi, ""), text: KIND_LABELS[kind] || kind }),
           dn
             ? h("span", { class: "who", text: dn })
-            : h("span", { class: "who" }, h("span", { "aria-hidden": "true", text: "—" }), h("span", { class: "visually-hidden", text: "sem computador" })),
+            : h("span", { class: "who" }, h("span", { "aria-hidden": "true", text: "—" }), h("span", { class: "visually-hidden", text: "sem serviço" })),
           h("span", { class: "htext", text: String(it.text || "") })
         );
       })

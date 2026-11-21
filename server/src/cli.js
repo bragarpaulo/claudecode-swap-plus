@@ -20,23 +20,23 @@ const BASE = `http://127.0.0.1:${ADMIN_PORT}`;
 
 const USO = `Uso: node server/src/cli.js <comando>
 
-  pair           gera um código de conexão (vale 10 min, uso único) para ligar um computador
-  status         estado do servidor, contas e computadores
-  devices        lista os computadores conectados
-  revoke <id>    desconecta um computador (o token dele para de valer na hora);
+  pair           gera um código de conexão (vale 10 min, uso único) para ligar um serviço
+  status         estado do servidor, contas e serviços
+  devices        lista os serviços conectados
+  revoke <id>    desconecta um serviço (o token dele para de valer na hora);
                  basta o começo do id, se não houver outro igual
 
-  Login com Google (a pessoa conecta o computador com a conta Google dela):
+  Login com Google (a pessoa conecta um serviço com a conta Google dela):
   O painel web é só do ADMINISTRADOR (variável ADMIN_EMAILS no compose; muda só reiniciando).
-  O administrador também conecta computadores, sem precisar estar na lista abaixo.
-  allow <email>  libera a conta Google a conectar computadores (quantos quiser); ela NÃO entra no painel
-  deny <email>   tira a conta da lista: não conecta computadores novos; os já conectados com ela
+  O administrador também conecta serviços, sem precisar estar na lista abaixo.
+  allow <email>  libera a conta Google a conectar serviços (quantos quiser); ela NÃO entra no painel
+  deny <email>   tira a conta da lista: não conecta serviços novos; os já conectados com ela
                  continuam (para desconectar um: revoke <id>). O administrador não sai por aqui.
   allowed        mostra o administrador, as contas liberadas e se o login com Google está ligado
 
   rule <chave> <valor>       muda uma regra de troca (ex.: rule devicePlacement together;
                  rule weeklyPct 96; rule strategy max)
-  auto on|off    liga ou desliga a troca automática (vale para todos os computadores)
+  auto on|off    liga ou desliga a troca automática (vale para todos os serviços)
 
   login-expires <n> <data>   diz até quando vale o login da conta n (o painel avisa 3 dias antes);
                  data em ISO, ex.: 2026-12-01T18:00 (hora daqui) ou 2026-12-01 (meia-noite)
@@ -148,7 +148,7 @@ function shortCode(code) {
 
 async function cmdPair() {
   const r = await call("POST", "/admin/pair-code");
-  console.log("Código de conexão (vale 10 min, uso único — vale para UM computador):");
+  console.log("Código de conexão (vale 10 min, uso único — vale para UM serviço):");
   console.log("");
   console.log(r.connect);
   console.log("");
@@ -157,7 +157,7 @@ async function cmdPair() {
   console.log(`Servidor: ${r.url}`);
   if (r.fp) console.log(`Impressão digital do certificado: ${r.fp}`);
   console.log(`Código curto: ${shortCode(r.code)} (válido até ${fmtTime(r.expiresAt)})`);
-  console.log("Para outro computador, rode o pair de novo (gerar um código novo invalida o anterior).");
+  console.log("Para outro serviço, rode o pair de novo (gerar um código novo invalida o anterior).");
 }
 
 async function cmdStatus() {
@@ -180,7 +180,7 @@ async function cmdStatus() {
   const accounts = s.accounts || [];
   console.log("");
   console.log(`Contas (${accounts.length}):`);
-  if (!accounts.length) console.log("  nenhuma ainda — conecte um computador e envie os logins dele");
+  if (!accounts.length) console.log("  nenhuma ainda — conecte um serviço e envie os logins dele");
   for (const a of accounts) {
     const head = [`#${a.number} ${a.email || "?"}`];
     if (a.alias) head.push(`“${a.alias}”`);
@@ -188,7 +188,7 @@ async function cmdStatus() {
     if (a.orgName) head.push(a.orgName);
     console.log(`  ${head.join(" · ")}`);
     if (a.dead) {
-      console.log("      PRECISA DE LOGIN NOVO (faça login com essa conta num computador conectado)");
+      console.log("      PRECISA DE LOGIN NOVO (faça login com essa conta num serviço conectado)");
     } else {
       const parts = [];
       const usage = fmtUsage(a.usage);
@@ -210,7 +210,7 @@ async function cmdStatus() {
 
   const devices = s.devices || [];
   console.log("");
-  console.log(`Computadores (${devices.length}):`);
+  console.log(`Serviços (${devices.length}):`);
   if (!devices.length) console.log("  nenhum — rode: node server/src/cli.js pair");
   for (const d of devices) {
     const via = d.googleEmail ? ` · Google ${d.googleEmail}` : "";
@@ -246,11 +246,11 @@ async function cmdStatus() {
 async function cmdDevices() {
   const list = await call("GET", "/admin/devices");
   if (!list.length) {
-    console.log("Nenhum computador conectado. Para ligar um: node server/src/cli.js pair");
+    console.log("Nenhum serviço conectado. Para ligar um: node server/src/cli.js pair");
     return;
   }
   const now = Date.now();
-  console.log(`Computadores conectados (${list.length}):`);
+  console.log(`Serviços conectados (${list.length}):`);
   for (const d of list) {
     console.log(`  ${d.id}  ${d.name}`);
     console.log(
@@ -273,7 +273,7 @@ function googleLine(g) {
 /** "Administrador: x (ADMIN_EMAILS) — só ele entra no painel", ou o aviso de painel desligado. */
 function adminLine(g) {
   const list = (g && g.adminEmails) || [];
-  if (!list.length) return "Administrador: nenhum — ADMIN_EMAILS não definido: o painel web está DESLIGADO (os computadores seguem funcionando)";
+  if (!list.length) return "Administrador: nenhum — ADMIN_EMAILS não definido: o painel web está DESLIGADO (os serviços seguem funcionando)";
   return list.length === 1
     ? `Administrador: ${list[0]} (ADMIN_EMAILS, definido no servidor) — só ele entra no painel`
     : `Administradores: ${list.join(", ")} (ADMIN_EMAILS, definidos no servidor) — só eles entram no painel`;
@@ -293,12 +293,12 @@ async function cmdAllow(email) {
   if (!email) throw new CliError("diga qual: node server/src/cli.js allow pessoa@empresa.com");
   const r = await call("POST", "/admin/allow", { email });
   if (r.admin) {
-    console.log(`${r.email} é o administrador (ADMIN_EMAILS): já conecta computadores e entra no painel, sem precisar estar na lista.`);
+    console.log(`${r.email} é o administrador (ADMIN_EMAILS): já conecta serviços e entra no painel, sem precisar estar na lista.`);
     return;
   }
   console.log(
     r.added
-      ? `Conta Google ${r.email} liberada: ela pode conectar computadores (quantos quiser). O painel web continua só do administrador.`
+      ? `Conta Google ${r.email} liberada: ela pode conectar serviços (quantos quiser). O painel web continua só do administrador.`
       : `A conta Google ${r.email} já estava liberada.`
   );
   console.log("No VS Code: Ctrl/Cmd+Shift+P → Swap Plus: Conectar ao servidor → Entrar com Google.");
@@ -310,14 +310,14 @@ async function cmdDeny(email) {
   const r = await call("POST", "/admin/deny", { email });
   console.log(
     r.removed
-      ? `Conta Google ${r.email} tirada da lista: ela não conecta mais computadores novos.`
+      ? `Conta Google ${r.email} tirada da lista: ela não conecta mais serviços novos.`
       : `A conta Google ${r.email} não estava na lista.`
   );
   if (r.panelSessions) console.log(`${r.panelSessions} sessão(ões) dela no painel web encerrada(s).`);
   const devs = r.devices || [];
   if (devs.length) {
     console.log("");
-    console.log(`Computadores já conectados com ela (continuam funcionando até você desconectar):`);
+    console.log(`Serviços já conectados com ela (continuam funcionando até você desconectar):`);
     for (const d of devs) console.log(`  ${d.id}  ${d.name}`);
     console.log("Para desconectar um: node server/src/cli.js revoke <id>");
   }
@@ -331,10 +331,10 @@ async function cmdAllowed() {
   const list = g.allowedEmails || [];
   console.log("");
   if (!list.length) {
-    console.log("Nenhuma conta Google liberada para conectar computadores. Para liberar: node server/src/cli.js allow pessoa@empresa.com");
+    console.log("Nenhuma conta Google liberada para conectar serviços. Para liberar: node server/src/cli.js allow pessoa@empresa.com");
     return;
   }
-  console.log(`Contas que podem conectar computadores (${list.length}; não entram no painel):`);
+  console.log(`Contas que podem conectar serviços (${list.length}; não entram no painel):`);
   for (const e of list) console.log(`  ${e}${isAdminOf(g, e) ? "  (é o administrador: não depende da lista)" : ""}`);
 }
 
@@ -360,13 +360,13 @@ async function cmdRule(key, value) {
   if (!key || value === undefined) throw new CliError("diga a regra e o valor: node server/src/cli.js rule <chave> <valor>   (ex.: rule devicePlacement together)");
   const v = /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : value;
   const r = await call("PUT", "/admin/rules", { rules: { [key]: v } });
-  console.log(`Regra ${key} = ${JSON.stringify(r.rules[key])}. Vale agora, para todos os computadores.`);
+  console.log(`Regra ${key} = ${JSON.stringify(r.rules[key])}. Vale agora, para todos os serviços.`);
 }
 
 async function cmdAuto(onoff) {
   if (onoff !== "on" && onoff !== "off") throw new CliError("use: node server/src/cli.js auto on   (ou auto off)");
   const r = await call("PUT", "/admin/rules", { autoSwitch: onoff === "on" });
-  console.log(`Troca automática ${r.autoSwitch ? "ligada" : "desligada"} (vale para todos os computadores).`);
+  console.log(`Troca automática ${r.autoSwitch ? "ligada" : "desligada"} (vale para todos os serviços).`);
 }
 
 async function cmdRevoke(idArg) {
@@ -374,13 +374,13 @@ async function cmdRevoke(idArg) {
   const list = await call("GET", "/admin/devices");
   const exact = list.find((d) => d.id === idArg);
   const matches = exact ? [exact] : list.filter((d) => d.id.startsWith(idArg));
-  if (matches.length === 0) throw new CliError(`nenhum computador com id "${idArg}" (veja os ids com: devices)`);
+  if (matches.length === 0) throw new CliError(`nenhum serviço com id "${idArg}" (veja os ids com: devices)`);
   if (matches.length > 1) {
-    throw new CliError(`"${idArg}" serve para mais de um computador: ${matches.map((d) => `${d.id} (${d.name})`).join(", ")}`);
+    throw new CliError(`"${idArg}" serve para mais de um serviço: ${matches.map((d) => `${d.id} (${d.name})`).join(", ")}`);
   }
   const d = matches[0];
   await call("DELETE", `/admin/devices/${encodeURIComponent(d.id)}`);
-  console.log(`Computador "${d.name}" (${d.id}) desconectado. O token dele não vale mais.`);
+  console.log(`Serviço "${d.name}" (${d.id}) desconectado. O token dele não vale mais.`);
 }
 
 async function cmdResumo(arg) {

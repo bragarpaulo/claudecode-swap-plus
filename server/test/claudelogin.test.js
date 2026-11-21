@@ -857,7 +857,7 @@ test("fluxo completo: start → entrar na conta → colar o código → storeFre
     organizationUuid: "org-uuid-1",
     organizationName: "Org do Dono",
   });
-  assert.deepEqual(calls[0].keys.sort(), ["claudeAiOauth", "oauthAccount", "plan"], "sem computador (nem deviceId)");
+  assert.deepEqual(calls[0].keys.sort(), ["claudeAiOauth", "oauthAccount", "plan"], "sem serviço (nem deviceId)");
   assert.equal(args.plan, undefined);
 
   // a Anthropic falsa viu exatamente uma troca do código, com o PKCE certo

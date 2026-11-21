@@ -1,13 +1,13 @@
 "use strict";
-// Computadores permitidos por conta Claude (WEB-SPEC 2.3): cada conta Claude diz quais computadores podem usá-la.
+// Serviços permitidos por conta Claude (WEB-SPEC 2.3): cada conta Claude diz quais serviços podem usá-la.
 //
 // No cofre:   state.accountDevices = { "<número da conta>": null | [deviceId, ...] }
-//   - sem entrada (ou null) = TODOS os computadores, inclusive os que conectarem depois;
-//   - lista = só esses computadores (computador novo NÃO entra sozinho: só usa as contas com "Todos");
-//   - lista vazia = nenhum computador usa a conta;
-//   - valor estragado (nem lista nem null) = nenhum computador (fecha em vez de liberar tudo);
+//   - sem entrada (ou null) = TODOS os serviços, inclusive os que conectarem depois;
+//   - lista = só esses serviços (serviço novo NÃO entra sozinho: só usa as contas com "Todos");
+//   - lista vazia = nenhum serviço usa a conta;
+//   - valor estragado (nem lista nem null) = nenhum serviço (fecha em vez de liberar tudo);
 //   - tabela inteira ausente (cofre de antes da 2.3) = sem restrição nenhuma.
-// Vale igual para todo computador (conectado com Google ou pareado por código; administrador ou não).
+// Vale igual para todo serviço (conectado com Google ou pareado por código; administrador ou não).
 // Regras de troca: as gerais ({ ...RULE_DEFAULTS, ...state.rules }), iguais para todos — nada aqui.
 //
 // Funções puras (só leem/mudam o `state` recebido; não gravam o cofre, não registram histórico).
@@ -28,9 +28,9 @@
 //    (vale com a troca automática ligada ou desligada: é permissão, não preferência.)
 //
 // 3) assignBest(dev, why): no mapa de motivos,
-//        not_allowed: `a conta ${from} não está liberada para este computador`
+//        not_allowed: `a conta ${from} não está liberada para este serviço`
 //    e, quando `to === null`, tratar "not_allowed" igual a "removed" (dev.assigned = null + alerta
-//    "Nenhuma conta disponível para ..."), para o computador nunca ficar numa conta não permitida.
+//    "Nenhuma conta disponível para ..."), para o serviço nunca ficar numa conta não permitida.
 //
 // 4) decideDevice(dev) e limitHit(deviceId): trocar `const base = this.records();` por
 //        const base = this.recordsFor(dev);
@@ -43,7 +43,7 @@
 //
 // 6) switchDevice(deviceId, number): no ramo com número, depois dos testes de "não existe" e "morta":
 //        if (!access.canUse(this.st, dev, n)) throw fail("not_allowed",
-//          `a conta ${n} não está liberada para o computador "${dev.name || dev.id}"; libere no painel (Contas → Computadores permitidos)`);
+//          `a conta ${n} não está liberada para o serviço "${dev.name || dev.id}"; libere no painel (Contas → Serviços permitidos)`);
 //    (vale para a extensão — POST /v1/switch — e para o painel — POST /web/api/devices/:id/switch.)
 //
 // 7) credentialFor(deviceId): nunca entregar acesso de conta não permitida (a regra pode mudar durante o await):
@@ -56,16 +56,16 @@
 //        access.onAccountRemoved(this.st, n);
 //    (addLogin pode reaproveitar um número livre — wantNumber —; sem isso a conta nova herdaria a lista da antiga.)
 //
-// 9) Todo lugar que apaga um computador (`delete st.devices[id]`) chama, logo depois e antes de gravar:
+// 9) Todo lugar que apaga um serviço (`delete st.devices[id]`) chama, logo depois e antes de gravar:
 //        access.onDeviceRemoved(st, id);
-//    Hoje em server.js: revokeDevice, sweepLogins (computador órfão do login com Google) e o desfazer do
+//    Hoje em server.js: revokeDevice, sweepLogins (serviço órfão do login com Google) e o desfazer do
 //    callback do Google quando o cofre não grava. Lista que fica vazia continua vazia (nunca vira "todos").
 //
 // 10) Método novo (o painel chama este, não o access.setAccountDevices direto):
 //        async setAccountDevices(number, devices) {
 //          const value = access.setAccountDevices(this.st, number, devices);   // lança .code "not_found" / "invalid"
 //          const n = Number(number);
-//          this.pushHistory("info", `Computadores que podem usar a conta ${n}: ${access.devicesLabel(this.st, value)}`, null);
+//          this.pushHistory("info", `Serviços que podem usar a conta ${n}: ${access.devicesLabel(this.st, value)}`, null);
 //          for (const d of this.deviceList()) {
 //            if (Number(d.assigned) !== n || access.canUse(this.st, d, n)) continue;
 //            if (this.isActive(d)) this.decideDevice(d); else d.assigned = null;   // troca já (ou na próxima conexão)
@@ -76,7 +76,7 @@
 //        }
 //
 // 11) (opcional) toPublic/publicList(deviceId): `allowed: access.canUse(this.st, dev, a.number)` — campo novo
-//     (a extensão ignora campos que não conhece) para a lista do VS Code mostrar quais contas este computador pode usar.
+//     (a extensão ignora campos que não conhece) para a lista do VS Code mostrar quais contas este serviço pode usar.
 // (Opcional) store.js: `accountDevices: {}` no estado inicial; sem isso funciona igual (faltando = todos).
 //
 // =====================================================================================================
@@ -85,21 +85,21 @@
 // Rota:  PUT /web/api/accounts/:n/devices   corpo { devices: null | [deviceId, ...] }   (CSRF como as outras)
 //    { m: "PUT", p: /^\/web\/api\/accounts\/(\d{1,6})\/devices$/, body: true, fn: panel(putAccountDevices, change) }
 //    - needAccount(n) (404 como as outras rotas de conta);
-//    - corpo sem a chave `devices` → 400 (null precisa vir escrito: null = todos os computadores);
+//    - corpo sem a chave `devices` → 400 (null precisa vir escrito: null = todos os serviços);
 //    - `const devices = await engine.setAccountDevices(n, body.devices)` (erro .code "invalid" → 400 com a
-//      mensagem em português do erro); note(`Computadores da conta ${n} ajustados pelo painel (${me})`);
+//      mensagem em português do erro); note(`Serviços da conta ${n} ajustados pelo painel (${me})`);
 //      resposta done(sess, { number: n, devices }).
 // PanelState:
 //    - cada conta:       devices: access.accountDevicesFor(st, a.number)     // null = todos; [id...] = só esses
-//    - cada computador:  allowedAccounts: access.allowedAccountsList(st, d)  // [n...] (sempre lista, em ordem)
-// Tela Contas, no cartão de cada conta, "Computadores permitidos":
-//    - caixa "Todos" marcada quando devices === null (inclui os computadores que conectarem depois);
-//    - desmarcada: uma caixa por computador (nome, sistema, usuário/conta Google), marcadas as da lista; ao
-//      desmarcar "Todos", começar com todos os computadores atuais marcados (para não tirar ninguém de surpresa);
-//      nenhuma marcada → aviso "Nenhum computador pode usar esta conta";
+//    - cada serviço:     allowedAccounts: access.allowedAccountsList(st, d)  // [n...] (sempre lista, em ordem)
+// Tela Contas, no cartão de cada conta, "Serviços permitidos":
+//    - caixa "Todos" marcada quando devices === null (inclui os serviços que conectarem depois);
+//    - desmarcada: uma caixa por serviço (nome, sistema, usuário/conta Google), marcadas as da lista; ao
+//      desmarcar "Todos", começar com todos os serviços atuais marcados (para não tirar ninguém de surpresa);
+//      nenhuma marcada → aviso "Nenhum serviço pode usar esta conta";
 //    - Salvar → PUT { devices: null } (Todos) ou { devices: [id, ...] }.
-// Tela Computadores: "trocar de conta" oferece só `allowedAccounts` do computador (+ "melhor conta"); sem nenhuma
-//    → "Nenhuma conta liberada para este computador (veja Contas → Computadores permitidos)".
+// Tela Serviços: "trocar de conta" oferece só `allowedAccounts` do serviço (+ "melhor conta"); sem nenhuma
+//    → "Nenhuma conta liberada para este serviço (veja Contas → Serviços permitidos)".
 // =====================================================================================================
 
 const { emailKey } = require("./google");
@@ -128,7 +128,7 @@ function accountNumberOf(v) {
   return null;
 }
 
-/** Id do computador (texto não vazio) ou null (sem computador = sem restrição). */
+/** Id do serviço (texto não vazio) ou null (sem serviço = sem restrição). */
 function deviceIdOf(device) {
   return isObj(device) && typeof device.id === "string" && device.id ? device.id : null;
 }
@@ -138,7 +138,7 @@ function table(state) {
   return isObj(state) && isObj(state.accountDevices) ? state.accountDevices : null;
 }
 
-/** O valor guardado para a conta deixa o computador `id` usar? (null/sem entrada = todos; estragado = ninguém) */
+/** O valor guardado para a conta deixa o serviço `id` usar? (null/sem entrada = todos; estragado = ninguém) */
 function entryAllows(state, n, id) {
   const t = table(state);
   if (!t || !hasOwn(t, String(n))) return true;
@@ -177,9 +177,9 @@ function shown(v) {
 }
 
 /**
- * O computador pode usar a conta `number`? Só a permissão (não confere se a conta existe ou está viva):
- * sem entrada/null = sim; lista = só se o id do computador está nela. Número inválido = não.
- * Sem computador (null) = sim.
+ * O serviço pode usar a conta `number`? Só a permissão (não confere se a conta existe ou está viva):
+ * sem entrada/null = sim; lista = só se o id do serviço está nela. Número inválido = não.
+ * Sem serviço (null) = sim.
  */
 function canUse(state, device, number) {
   const n = accountNumberOf(number);
@@ -190,8 +190,8 @@ function canUse(state, device, number) {
 }
 
 /**
- * Contas que o computador pode usar: null = todas (nenhuma conta do cofre o exclui); senão Set com os números
- * das contas do cofre que ele pode usar (Set vazio = nenhuma). Sem computador → null.
+ * Contas que o serviço pode usar: null = todas (nenhuma conta do cofre o exclui); senão Set com os números
+ * das contas do cofre que ele pode usar (Set vazio = nenhuma). Sem serviço → null.
  */
 function accountsAllowedFor(state, device) {
   const id = deviceIdOf(device);
@@ -201,13 +201,13 @@ function accountsAllowedFor(state, device) {
   return ok.length === all.length ? null : new Set(ok);
 }
 
-/** Para o painel (PanelState, cada computador): números das contas do cofre que ele pode usar, em ordem. */
+/** Para o painel (PanelState, cada serviço): números das contas do cofre que ele pode usar, em ordem. */
 function allowedAccountsList(state, device) {
   return accountNumbers(state).filter((n) => canUse(state, device, n));
 }
 
 /**
- * Para o painel (PanelState, cada conta): null = todos os computadores; [id...] = só esses (só os que ainda
+ * Para o painel (PanelState, cada conta): null = todos os serviços; [id...] = só esses (só os que ainda
  * existem, na ordem guardada). Valor estragado → [] (ninguém, como o motor trata).
  */
 function accountDevicesFor(state, number) {
@@ -222,7 +222,7 @@ function accountDevicesFor(state, number) {
 
 /**
  * Cópia de `records` ({ "<n>": { disabled, threshold, priority, alias } }) com `disabled: true` nas contas que o
- * computador não pode usar — para o decide() do rules.js e a escolha da melhor conta. Não muda o `records`
+ * serviço não pode usar — para o decide() do rules.js e a escolha da melhor conta. Não muda o `records`
  * recebido. Conta do cofre que faltar em `records` e não for permitida ganha `{ disabled: true }`.
  */
 function filterRecordsForDevice(records, state, device) {
@@ -241,10 +241,10 @@ function filterRecordsForDevice(records, state, device) {
 }
 
 /**
- * Grava quais computadores podem usar a conta. devices: lista de ids de computadores que existem (texto, sem
- * repetidos; [] = nenhum computador) ou null (todos: apaga a entrada). → o valor gravado (lista em ordem, cópia)
+ * Grava quais serviços podem usar a conta. devices: lista de ids de serviços que existem (texto, sem
+ * repetidos; [] = nenhum serviço) ou null (todos: apaga a entrada). → o valor gravado (lista em ordem, cópia)
  * ou null. Erros (.code): "not_found" (a conta não existe); "invalid" (não é lista nem null, id inválido,
- * computador que não existe, repetido). Com erro nada muda.
+ * serviço que não existe, repetido). Com erro nada muda.
  */
 function setAccountDevices(state, number, devices) {
   if (!isObj(state)) throw fail("invalid", "estado inválido");
@@ -259,13 +259,13 @@ function setAccountDevices(state, number, devices) {
     return null;
   }
   if (!Array.isArray(devices)) {
-    throw fail("invalid", "devices precisa ser uma lista de ids de computadores ou null (todos os computadores)");
+    throw fail("invalid", "devices precisa ser uma lista de ids de serviços ou null (todos os serviços)");
   }
   const seen = new Set();
   for (const id of devices) {
-    if (typeof id !== "string" || !id) throw fail("invalid", `id de computador inválido: ${shown(id)}`);
-    if (seen.has(id)) throw fail("invalid", `o computador ${shown(id)} aparece repetido`);
-    if (!deviceExists(state, id)) throw fail("invalid", `o computador ${shown(id)} não existe (foi desconectado?)`);
+    if (typeof id !== "string" || !id) throw fail("invalid", `id de serviço inválido: ${shown(id)}`);
+    if (seen.has(id)) throw fail("invalid", `o serviço ${shown(id)} aparece repetido`);
+    if (!deviceExists(state, id)) throw fail("invalid", `o serviço ${shown(id)} não existe (foi desconectado?)`);
     seen.add(id);
   }
   const value = [...seen].sort();
@@ -284,7 +284,7 @@ function onAccountRemoved(state, number) {
 }
 
 /**
- * Computador removido: tira o id de todas as listas. Lista que fica vazia continua vazia (nenhum computador —
+ * Serviço removido: tira o id de todas as listas. Lista que fica vazia continua vazia (nenhum serviço —
  * nunca vira "todos"). → números das contas que mudaram.
  */
 function onDeviceRemoved(state, id) {
@@ -300,14 +300,14 @@ function onDeviceRemoved(state, id) {
   return changed;
 }
 
-/** Para o histórico: "todos os computadores" | "nenhum computador" | "Mac" | "Mac" e "Windows" | "A", "B" e "C". */
+/** Para o histórico: "todos os serviços" | "nenhum serviço" | "Mac" | "Mac" e "Windows" | "A", "B" e "C". */
 function devicesLabel(state, devices) {
-  if (devices === null || devices === undefined) return "todos os computadores";
+  if (devices === null || devices === undefined) return "todos os serviços";
   const devs = isObj(state) && isObj(state.devices) ? state.devices : {};
   const names = (Array.isArray(devices) ? devices : [])
     .filter((id) => typeof id === "string" && id)
     .map((id) => `"${(hasOwn(devs, id) && isObj(devs[id]) && devs[id].name) || id}"`);
-  if (!names.length) return "nenhum computador";
+  if (!names.length) return "nenhum serviço";
   if (names.length === 1) return names[0];
   return `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`;
 }

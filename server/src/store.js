@@ -67,7 +67,7 @@ function emptyState() {
     autoSwitch: true,
     history: [],
     diag: {},
-    allowedEmails: [], // contas Google que podem conectar computadores (minúsculas); o painel é só de ADMIN_EMAILS
+    allowedEmails: [], // contas Google que podem conectar serviços (minúsculas); o painel é só de ADMIN_EMAILS
     webSessions: {}, // sessões do painel web (só administrador): { id: { tokenHash, email, createdAt, lastSeen, expiresAt, ua, ip, csrf } }
   };
 }

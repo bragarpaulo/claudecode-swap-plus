@@ -129,17 +129,17 @@
             <small class="hint" id="addInfo"></small>
           </form>
         </div>
-        <p id="addOff" class="note warnbox hidden">Adicionar conta pelo painel fica disponível na próxima atualização do servidor. Por enquanto: num computador conectado, entre com a conta no Claude Code — o Swap Plus envia o login ao servidor sozinho.</p>
-        <p class="muted small">Outra forma: entrar com a conta no Claude Code de um computador conectado. O Swap Plus envia o login ao servidor sozinho.</p>
+        <p id="addOff" class="note warnbox hidden">Adicionar conta pelo painel fica disponível na próxima atualização do servidor. Por enquanto: num serviço conectado, entre com a conta no Claude Code — o Swap Plus envia o login ao servidor sozinho.</p>
+        <p class="muted small">Outra forma: entrar com a conta no Claude Code de um serviço conectado. O Swap Plus envia o login ao servidor sozinho.</p>
       </div>
 
       <details class="legend">
         <summary>Como ler a lista</summary>
         <p class="muted small">Cada conta é uma linha. Clique nela para abrir o cartão com todos os limites, os dados e os ajustes; clique de novo para fechar. A linha mostra uma barra só, a do limite mais perto de parar a conta (o de maior porcentagem entre sessão de 5 horas, semanal e modelo), quando ele renova e se a conta participa da troca.</p>
-        <p class="muted small">As contas em uso (com computador nelas agora) aparecem primeiro. Depois vêm as outras que participam da troca, na ordem da fila: primeiro a conta cujo limite semanal renova antes; em empate, a menos usada. As que não participam ficam no fim da lista, com o indicador “Fora da troca”.</p>
-        <p class="muted small">As barras mostram quanto de cada limite já foi usado; o tracinho é a linha de troca. Verde: longe da linha. Amarelo: chegando perto. Vermelho: na linha (o servidor passa o computador para outra conta).</p>
+        <p class="muted small">As contas em uso (com serviço nelas agora) aparecem primeiro. Depois vêm as outras que participam da troca, na ordem da fila: primeiro a conta cujo limite semanal renova antes; em empate, a menos usada. As que não participam ficam no fim da lista, com o indicador “Fora da troca”.</p>
+        <p class="muted small">As barras mostram quanto de cada limite já foi usado; o tracinho é a linha de troca. Verde: longe da linha. Amarelo: chegando perto. Vermelho: na linha (o servidor passa o serviço para outra conta).</p>
         <p class="muted small">“Acesso” é a chave de poucas horas que o servidor renova sozinho. “Login” é o que permite renovar: quando vence, é preciso entrar de novo com a conta. Faltando menos de 3 dias, a linha da conta pisca “Fazer login até…” com a data e a hora.</p>
-        <p class="muted small">A busca procura em tudo o que a conta mostra, inclusive o que só aparece com o cartão aberto: número, apelido, e-mail, plano, organização, situação (“em uso”, “fora da troca”, “login morto”), posição na fila e os computadores nela. Não liga para maiúsculas nem acentos; com mais de uma palavra, todas precisam aparecer (se alguma conta tem a frase inteira, ficam só essas).</p>
+        <p class="muted small">A busca procura em tudo o que a conta mostra, inclusive o que só aparece com o cartão aberto: número, apelido, e-mail, plano, organização, situação (“em uso”, “fora da troca”, “login morto”), posição na fila e os serviços nela. Não liga para maiúsculas nem acentos; com mais de uma palavra, todas precisam aparecer (se alguma conta tem a frase inteira, ficam só essas).</p>
       </details>
 
       <div class="searchbar" role="search" aria-label="Busca das contas">
@@ -159,7 +159,7 @@
       <!-- ............................................ Regras de troca (gerais) -->
       <section class="subsec" id="rulesSection" aria-labelledby="h-regras">
         <h3 id="h-regras" class="subhead">Regras de troca</h3>
-        <p class="muted small">Valem para todos os computadores. A troca automática liga e desliga na hora; as outras regras só mudam quando você clicar em “Salvar regras”.</p>
+        <p class="muted small">Valem para todos os serviços. A troca automática liga e desliga na hora; as outras regras só mudam quando você clicar em “Salvar regras”.</p>
         <p id="rulesChanged" class="note warnbox hidden" role="status">As regras foram mudadas em outro lugar enquanto você editava. “Desfazer” carrega as regras novas.</p>
 
         <form id="rulesForm" novalidate>
@@ -169,18 +169,18 @@
               <input type="checkbox" role="switch" class="sw" id="rAuto" aria-describedby="rAutoHint">
               <span id="rAutoText">Troca automática ligada</span>
             </label>
-            <p class="hint" id="rAutoHint">Desligada, nenhum computador troca de conta sozinho. A troca manual (em Serviços) continua funcionando.</p>
+            <p class="hint" id="rAutoHint">Desligada, nenhum serviço troca de conta sozinho. A troca manual (em Serviços) continua funcionando.</p>
           </fieldset>
 
           <fieldset class="card r-devices">
-            <legend>Computadores</legend>
-            <p class="hint">Vale para os computadores em uso agora. Um computador só usa contas liberadas para ele (“Computadores permitidos”, no cartão da conta): se não puder usar a conta dos outros, fica na melhor conta liberada para ele.</p>
+            <legend>Serviços</legend>
+            <p class="hint">Vale para os serviços ativos agora. Um serviço só usa contas liberadas para ele (“Serviços permitidos”, no cartão da conta): se não puder usar a conta dos outros, fica na melhor conta liberada para ele.</p>
             <div class="choices two">
               <label class="choice" for="rPlaceSeparate">
                 <input type="radio" name="devicePlacement" id="rPlaceSeparate" value="separate">
                 <span>
                   <span class="name">Separados <span class="tag">padrão</span></span>
-                  <span class="desc">Cada computador numa conta (cada um com a sua sessão de 5 h).</span>
+                  <span class="desc">Cada serviço numa conta (cada um com a sua sessão de 5 h).</span>
                 </span>
               </label>
               <label class="choice" for="rPlaceTogether">
@@ -195,7 +195,7 @@
 
           <fieldset class="card r-lines">
             <legend>Quando trocar de conta</legend>
-            <p class="hint">Quando a conta em uso num computador chegar nesta porcentagem, o servidor passa esse computador para outra conta com folga.</p>
+            <p class="hint">Quando a conta em uso num serviço chegar nesta porcentagem, o servidor passa esse serviço para outra conta com folga.</p>
             <div class="field range">
               <label for="rSession">Sessão de 5 horas</label>
               <input type="range" id="rSession" name="sessionPct" min="50" max="100" step="1" aria-describedby="rSessionHint">
@@ -223,14 +223,14 @@
                 <input type="radio" name="onModelLimit" id="rLimitSame" value="sameAccount">
                 <span>
                   <span class="name">Seguir na mesma conta</span>
-                  <span class="desc">A conta não muda. Na linha do modelo, cada computador passa o modelo padrão do Claude Code para o Opus 5.5 (as conversas novas abrem nele) e volta quando o modelo renova. A conversa já aberta para no limite: nela, escolha o Opus 5.5 no seletor de modelo.</span>
+                  <span class="desc">A conta não muda. Na linha do modelo, cada serviço passa o modelo padrão do Claude Code para o Opus 5.5 (as conversas novas abrem nele) e volta quando o modelo renova. A conversa já aberta para no limite: nela, escolha o Opus 5.5 no seletor de modelo.</span>
                 </span>
               </label>
               <label class="choice" for="rLimitSwitch">
                 <input type="radio" name="onModelLimit" id="rLimitSwitch" value="switchAccount">
                 <span>
                   <span class="name">Trocar de conta</span>
-                  <span class="desc">O servidor passa o computador para outra conta que ainda tem esse modelo, quando o uso dele chegar na linha do modelo acima: as conversas abertas nem param. Sem conta com o modelo, as conversas novas abrem no Opus 5.5.</span>
+                  <span class="desc">O servidor passa o serviço para outra conta que ainda tem esse modelo, quando o uso dele chegar na linha do modelo acima: as conversas abertas nem param. Sem conta com o modelo, as conversas novas abrem no Opus 5.5.</span>
                 </span>
               </label>
             </div>
@@ -301,14 +301,22 @@
       </section>
     </section>
 
-    <!-- ------------------------------------------------ Serviços (o menu que se chamava "Computadores"; os ids continuam) -->
+    <!-- ------------------------------------------------ Serviços (os ids da seção continuam "computadores": sec-computadores, q-computadores…) -->
     <section class="sec" id="sec-computadores" data-sec="computadores" aria-labelledby="h-computadores">
       <div class="sectop">
         <div class="sectitle">
           <h2 id="h-computadores" class="sechead">Serviços</h2>
-          <p class="muted small">Cada computador conectado recebe do servidor o acesso de uma conta Claude. Trocar aqui vale em até 30 segundos, e o Claude Code aberto passa a usar a conta nova sozinho.</p>
+          <p class="muted small">Serviço é tudo o que está conectado ao Swap: um VS Code, um agente como o Hermes, um robô. Cada serviço conectado recebe do servidor o acesso de uma conta Claude. Trocar aqui vale em até 30 segundos, e o Claude Code aberto passa a usar a conta nova sozinho.</p>
         </div>
       </div>
+
+      <details class="legend">
+        <summary>O que quer dizer cada situação</summary>
+        <p class="muted small"><span class="dot on" aria-hidden="true"></span><b>ativo agora</b>: em uso nos últimos 5 minutos (um VS Code aberto, um agente trabalhando). A troca automática cuida só dos serviços ativos.</p>
+        <p class="muted small"><span class="dot conn" aria-hidden="true"></span><b>conectado · sem uso agora</b>: ligado e falando com o servidor, mas sem uso no momento. É assim que um agente como o Hermes fica entre uma tarefa e outra: está tudo certo com ele.</p>
+        <p class="muted small"><span class="dot wait" aria-hidden="true"></span><b>aguardando contato</b>: o servidor reiniciou há pouco e este serviço ainda não falou com ele. Em até 5 minutos passa para uma das outras situações.</p>
+        <p class="muted small"><span class="dot" aria-hidden="true"></span><b>sem contato</b>: não fala com o servidor há mais de 5 minutos (fechado, desligado ou sem internet). Ao lado aparece a última vez em que foi visto.</p>
+      </details>
 
       <div class="searchbar" role="search" aria-label="Busca dos serviços">
         <label class="visually-hidden" for="q-computadores">Buscar nos serviços</label>
@@ -325,16 +333,16 @@
       <div id="devices" class="services"><p class="muted loading">Carregando…</p></div>
 
       <div class="card connect" id="connectBox">
-        <h3>Conectar um computador</h3>
+        <h3>Conectar um serviço</h3>
         <ol class="steps numbered">
           <li>No computador, abra o VS Code com a extensão Swap Plus instalada.</li>
-          <li>Abra a tela do Swap Plus (comando “Swap Plus: Configurar trocas automáticas”) e, no cartão “Servidor”, clique em <b>Entrar com Google</b>.</li>
+          <li>Abra a tela do Swap Plus (comando “Swap Plus: Configurações”) e, no cartão “Conexão”, clique em <b>Entrar com Google</b>.</li>
           <li>O navegador abre: entre com a conta do administrador ou com um dos usuários liberados em <b>Usuários</b>.</li>
-          <li>Pronto. O computador aparece nesta lista e já recebe uma conta.</li>
+          <li>Pronto. O serviço aparece nesta lista e já recebe uma conta.</li>
         </ol>
         <p id="googleOffNote" class="note warnbox hidden">O login com Google está desligado no servidor. Por enquanto, conecte usando o código de conexão abaixo.</p>
         <h4>Sem Google: código de conexão</h4>
-        <p class="muted small">Gere um código e cole no VS Code em “Colar código” (no mesmo cartão “Servidor”). Vale 10 minutos e uma vez só.</p>
+        <p class="muted small">Gere um código e cole no VS Code em “Colar código” (no mesmo cartão “Conexão”). Vale 10 minutos e uma vez só.</p>
         <div class="row gap wrap">
           <button type="button" id="btnPair" class="secondary">Gerar código de conexão</button>
         </div>
@@ -354,7 +362,7 @@
       <div class="sectop">
         <div class="sectitle">
           <h2 id="h-usuarios" class="sechead">Usuários</h2>
-          <p class="muted small">Contas Google que podem conectar computadores pelo VS Code (“Entrar com Google”). O painel continua só do administrador.</p>
+          <p class="muted small">Contas Google que podem conectar serviços pelo VS Code (“Entrar com Google”). O painel continua só do administrador.</p>
         </div>
       </div>
 
@@ -369,7 +377,7 @@
           </button>
         </div>
         <p id="allowMsg" class="fieldmsg hidden" role="status"></p>
-        <small class="hint" id="allowHint">Depois de liberada, a pessoa conecta o computador pelo VS Code com essa conta Google (“Entrar com Google”).</small>
+        <small class="hint" id="allowHint">Depois de liberada, a pessoa conecta um serviço pelo VS Code com essa conta Google (“Entrar com Google”).</small>
       </form>
 
       <div class="searchbar" role="search" aria-label="Busca dos usuários">
@@ -387,7 +395,7 @@
       <div class="card tablecard">
         <p id="usersStatus" class="fieldmsg tablemsg hidden" role="status" tabindex="-1"></p>
         <table class="utable">
-          <caption class="visually-hidden">Usuários que podem conectar computadores. Os cabeçalhos Usuário, Situação e Serviços ordenam a tabela.</caption>
+          <caption class="visually-hidden">Usuários que podem conectar serviços. Os cabeçalhos Usuário, Situação e Serviços ordenam a tabela.</caption>
           <thead>
             <tr>
               <th scope="col" data-sort="email" aria-sort="none"><button type="button" class="thsort">Usuário</button></th>
@@ -400,7 +408,7 @@
           <tbody id="usersBody"><tr><td colspan="5" class="empty">Carregando…</td></tr></tbody>
         </table>
         <div class="tablefoot">
-          <p class="muted small">Tirar um usuário impede que ele conecte computadores novos. Os computadores que ele já conectou continuam funcionando; para cortar, desconecte-os em Serviços.</p>
+          <p class="muted small">Tirar um usuário impede que ele conecte serviços novos. Os serviços que ele já conectou continuam funcionando; para cortar, desconecte-os em Serviços.</p>
           <p id="usersNote" class="muted small hidden"></p>
         </div>
       </div>

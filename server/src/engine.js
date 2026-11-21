@@ -11,28 +11,37 @@
 // - Encerrando (stop()), nada começa a gastar refresh token; stop() espera o que já começou.
 // - Renovação sem resposta (ambígua) pode ter gastado o refresh token: tenta de novo logo e
 //   confirma um invalid_grant que venha em seguida antes de dar a conta como morta.
-// - Computadores permitidos por conta (access.js, WEB-SPEC 2.3): um computador só recebe, troca para
+// - Serviços permitidos por conta (access.js, WEB-SPEC 2.3): um serviço só recebe, troca para
 //   ou ganha o acesso de uma conta liberada para ele. É permissão, não preferência: vale com a troca
 //   automática ligada ou desligada. records() continua global (extensão e painel); as escolhas usam
 //   recordsFor(dev).
-// - Regra "Computadores" (rules.devicePlacement): "separate" (padrão) = cada computador ativo numa conta (as dos
+// - Regra "Serviços" (rules.devicePlacement): "separate" (padrão) = cada serviço ativo numa conta (as dos
 //   outros ficam ocupadas, para não dividirem a sessão de 5 h; spreadOut separa); "together" = todos os ativos na
 //   MESMA conta (a do grupo) e trocam juntos (togetherStep). Quem não pode usar a conta do grupo fica com a melhor
 //   conta liberada para ele — a permissão sempre vale mais que o "juntos".
-// - Só os computadores do ADMINISTRADOR enviam logins (canUploadLogins): conectados com Google com e-mail de
+// - Só os serviços do ADMINISTRADOR enviam logins (canUploadLogins): conectados com Google com e-mail de
 //   ADMIN_EMAILS (o servidor passa quem é administrador em setAdminCheck) ou pareados por código (googleEmail nulo:
 //   o código só sai da linha de comando/painel do administrador). Os outros usam as contas do servidor.
 // - Avisos por e-mail ao dono (notify.js, opção `notify` do construtor): login que vence em menos de 3 dias (junto
 //   com o alerta diário do histórico: 1 por conta por dia), conta que morre (1 na hora) e cofre que para de gravar
 //   (1 por incidente). O motor só chama notify({ subject, text }); sem `notify`, nada é avisado. Nunca derruba nada.
+// - Presença dos serviços (só para mostrar; as decisões continuam no isActive): o servidor avisa cada pedido
+//   autenticado (touch) e o motor guarda a hora SÓ NA MEMÓRIA. A lista de serviços (devicesList: painel e
+//   StateResponse) leva lastContact, connected e presence: "active" (batimento nos últimos 5 min), "connected"
+//   (falou com o servidor nos últimos 5 min, sem batimento — ex.: o cliente do Hermes ocioso), "waiting" (ainda não
+//   chamou desde que este processo subiu, há menos de 5 min) ou "none" (sem contato).
 
 const crypto = require("crypto");
 const { RULE_DEFAULTS, STRATEGY_LABELS, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.5.2";
+const VERSION = "2.5.3";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
+// Presença (só para mostrar; nenhuma decisão usa): contato = qualquer pedido autenticado do serviço. Quem falou com
+// o servidor nesta janela e não está ativo aparece como "conectado" (ex.: o cliente do Hermes ocioso, que só lê o
+// estado a cada 2 min). A mesma janela vale depois de um reinício: até lá, quem ainda não chamou fica "aguardando".
+const CONTACT_MS = ACTIVE_MS;
 const POLL_ACTIVE_MS = 3 * 60 * 1000; // conta de dispositivo ativo: uso a cada 3 min
 const POLL_IDLE_MS = 20 * 60 * 1000; // as outras: a cada 20 min
 const POLL_BACKOFF_MIN = [2, 5, 10];
@@ -67,7 +76,7 @@ const MAX_DATE_MS = 8.64e15; // maior data que o Date aceita (além disso toISOS
 
 const PLAN_LABELS = { team: "Team", max: "Max", pro: "Pro", enterprise: "Enterprise" };
 const STOPPING_TEXT = "o servidor está reiniciando; tente de novo daqui a pouco";
-const NOT_ADMIN_TEXT = "Só os computadores do administrador enviam logins ao servidor. Este computador usa as contas do servidor.";
+const NOT_ADMIN_TEXT = "Só os serviços do administrador enviam logins ao servidor. Este serviço usa as contas do servidor.";
 const NO_ADMIN = () => false; // sem setAdminCheck: ninguém com Google é administrador
 const SAVE_FAILED_TEXT = "O cofre não está gravando (disco cheio?). NÃO reinicie o servidor: há login renovado só na memória.";
 const NO_RESPONSE_TEXT = "a renovação anterior ficou sem resposta e o login foi gasto";
@@ -99,8 +108,8 @@ const ERROR_STATUS = {
   unknown_device: 404,
   not_found: 404,
   dead_account: 409,
-  not_allowed: 409, // a conta não está liberada para este computador (Contas → Computadores permitidos)
-  not_admin: 403, // addLogin de um computador que não é do administrador (canUploadLogins)
+  not_allowed: 409, // a conta não está liberada para este serviço (Contas → Serviços permitidos)
+  not_admin: 403, // addLogin de um serviço que não é do administrador (canUploadLogins)
   invalid_login: 422,
   dead_login: 422,
   stale_login: 422,
@@ -124,8 +133,8 @@ function str(v) {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
-const notAllowedText = (n) => `a conta ${n} não está liberada para este computador`;
-const TOGETHER_TEXT = "computadores juntos na mesma conta";
+const notAllowedText = (n) => `a conta ${n} não está liberada para este serviço`;
+const TOGETHER_TEXT = "serviços juntos na mesma conta";
 /** "A", "A e B", "A, B e C" */
 const joinNames = (names) => (names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`);
 const devName = (d) => d.name || d.id;
@@ -328,6 +337,8 @@ class Engine {
     this.pollSoon = new Set(); // contas para ler o uso logo (limite batido, login novo)
     this.diagPending = null; // { number, accessToken, expiresAt, attempts } — token ANTIGO, nunca logar
     this.notes = new Map(); // deviceId → { key, at } (avisos repetidos no histórico)
+    this.contacts = new Map(); // deviceId → ms do último pedido autenticado, de qualquer rota (touch); nunca vai para o cofre
+    this.startedAt = now(); // quando este processo subiu: quem não chamou desde então pode estar só "aguardando contato"
     this.dirty = false;
     this.saveFailed = false;
     this.timer = null;
@@ -374,20 +385,20 @@ class Engine {
 
   needDevice(id) {
     const d = this.device(id);
-    if (!d) throw fail("unknown_device", "dispositivo desconhecido");
+    if (!d) throw fail("unknown_device", "serviço desconhecido");
     return d;
   }
 
   /**
    * Quem é administrador: fn(email) → true/false (o servidor passa o isAdmin de ADMIN_EMAILS, lido na subida).
-   * Sem fn: ninguém com Google é administrador (só os computadores pareados por código enviam logins).
+   * Sem fn: ninguém com Google é administrador (só os serviços pareados por código enviam logins).
    */
   setAdminCheck(fn) {
     this.isAdminEmail = typeof fn === "function" ? fn : NO_ADMIN;
   }
 
   /**
-   * O computador pode enviar logins ao servidor (POST /v1/logins)? Só os do administrador: conectado com Google com
+   * O serviço pode enviar logins ao servidor (POST /v1/logins)? Só os do administrador: conectado com Google com
    * e-mail de administrador, ou pareado por código (googleEmail nulo). Mesma regra do canUploadLogins do server.js.
    */
   canUploadLogins(dev) {
@@ -414,6 +425,49 @@ class Engine {
 
   isActive(dev, t = this.now()) {
     return !!dev && Number(dev.lastSeen) > 0 && t - Number(dev.lastSeen) <= ACTIVE_MS;
+  }
+
+  // ----- presença (só para mostrar: painel e StateResponse). As decisões continuam todas no isActive. -----
+
+  /**
+   * Contato: o serviço acabou de fazer um pedido autenticado (qualquer rota: /v1/state, /v1/credential, ...).
+   * Fica só na memória: não mexe no registro do serviço (o `lastSeen` continua sendo só do batimento e do limite
+   * batido — senão um serviço ocioso contaria como ativo e ocuparia uma conta), não suja o cofre e nunca vai para
+   * o disco.
+   */
+  touch(deviceId) {
+    if (this.device(deviceId)) this.contacts.set(deviceId, this.now()); // só de serviço que existe: o mapa não cresce à toa
+  }
+
+  /** O serviço foi desconectado (revogado ou desfeito): o contato dele sai da memória. */
+  forgetContact(deviceId) {
+    this.contacts.delete(deviceId);
+  }
+
+  /** Último contato do serviço (ms): o mais novo entre o último pedido autenticado e o `lastSeen`; null = nunca. */
+  lastContactOf(dev) {
+    const seen = Number(dev && dev.lastSeen) > 0 ? Number(dev.lastSeen) : 0;
+    const at = Math.max(seen, (dev && this.contacts.get(dev.id)) || 0);
+    return at > 0 ? at : null;
+  }
+
+  /**
+   * Presença do serviço, para a tela:
+   *   "active"     ativo (isActive: batimento nos últimos 5 min);
+   *   "connected"  não está ativo, mas falou com o servidor nos últimos 5 min (CONTACT_MS);
+   *   "waiting"    nem ativo nem conectado, mas ainda não chamou desde que este processo subiu, e ele subiu há menos
+   *                de 5 min (um reinício ou uma atualização não faz os serviços ociosos parecerem sumidos);
+   *   "none"       o resto: sem contato.
+   * → { lastContact, connected, presence }
+   */
+  presenceOf(dev, t = this.now()) {
+    const last = this.lastContactOf(dev);
+    const connected = last !== null && t - last <= CONTACT_MS;
+    let presence = "none";
+    if (this.isActive(dev, t)) presence = "active";
+    else if (connected) presence = "connected";
+    else if ((last === null || last < this.startedAt) && t - this.startedAt < CONTACT_MS) presence = "waiting";
+    return { lastContact: last, connected, presence };
   }
 
   /** Contas em uso por OUTROS dispositivos ativos. */
@@ -538,7 +592,7 @@ class Engine {
     const where = this.panelUrl ? `abra ${this.panelUrl}` : "abra o painel do Swap Plus";
     return (
       `Para renovar: ${where} → Contas → conta ${a.number} → Entrar de novo, e entre com ${email} na página da Claude; ` +
-      "copie o código e cole no painel. (Ou faça /login no Claude Code de um computador do administrador.)"
+      "copie o código e cole no painel. (Ou faça /login no Claude Code de um serviço do administrador.)"
     );
   }
 
@@ -650,9 +704,9 @@ class Engine {
     const head =
       exp > t
         ? `O login da ${this.accountWho(a)} no Swap Plus vence em ${fmtDayTime(exp)} (faltam ${leftText(exp - t)}). ` +
-          "Depois disso o servidor não consegue mais renovar o acesso dela, e os computadores deixam de usá-la."
+          "Depois disso o servidor não consegue mais renovar o acesso dela, e os serviços deixam de usá-la."
         : `O login da ${this.accountWho(a)} no Swap Plus venceu em ${fmtDayTime(exp)}. ` +
-          "O servidor pode não conseguir mais renovar o acesso dela, e os computadores deixam de usá-la quando isso acontecer.";
+          "O servidor pode não conseguir mais renovar o acesso dela, e os serviços deixam de usá-la quando isso acontecer.";
     return this.notice(`Swap Plus: login da conta ${a.number} ${verb} ${fmtDayTime(exp)}`, `${head}\n\n${this.renewText(a)}`);
   }
 
@@ -665,7 +719,7 @@ class Engine {
     const text =
       `O login da ${this.accountWho(a)} parou de valer em ${fmtDayTime(t)}.\n` +
       `Motivo: ${reason}.\n` +
-      "O servidor não renova mais esta conta, e os computadores que estavam nela passam para outra.\n\n" +
+      "O servidor não renova mais esta conta, e os serviços que estavam nela passam para outra.\n\n" +
       this.renewText(a);
     return this.notice(`Swap Plus: o login da conta ${a.number} parou de valer`, text);
   }
@@ -738,7 +792,7 @@ class Engine {
     return r;
   }
 
-  /** Regra "Computadores: Juntos" ligada (todos os ativos na mesma conta, trocando juntos)? */
+  /** Regra "Serviços: Juntos" ligada (todos os ativos na mesma conta, trocando juntos)? */
   together() {
     return this.rulesEffective().devicePlacement === "together";
   }
@@ -759,7 +813,7 @@ class Engine {
   }
 
   /**
-   * records() visto por um computador: as contas que ele não pode usar entram como `disabled` (só para as escolhas
+   * records() visto por um serviço: as contas que ele não pode usar entram como `disabled` (só para as escolhas
    * do motor — decide() e bestAccountFor). Nunca mandar para a extensão nem gravar: a tela mostraria "fora da
    * rotação". dev null → sem restrição.
    */
@@ -817,12 +871,12 @@ class Engine {
   }
 
   loginExpiringText(a, exp, t = this.now()) {
-    return `O login da conta ${a.number} (${this.accountLabel(a)}) ${exp > t ? "vence" : "venceu"} ${fmtDayTime(exp)} — entre de novo com ela no Claude Code de qualquer computador conectado.`;
+    return `O login da conta ${a.number} (${this.accountLabel(a)}) ${exp > t ? "vence" : "venceu"} ${fmtDayTime(exp)} — entre de novo com ela no Claude Code de qualquer serviço conectado.`;
   }
 
   deadText(a) {
     const why = a.dead && a.dead.cause === "no_response" ? ` (${NO_RESPONSE_TEXT})` : "";
-    return `O login da conta ${a.number} (${this.accountLabel(a)}) não vale mais${why} — entre de novo com ela no Claude Code de qualquer computador conectado.`;
+    return `O login da conta ${a.number} (${this.accountLabel(a)}) não vale mais${why} — entre de novo com ela no Claude Code de qualquer serviço conectado.`;
   }
 
   /** Avisos de agora (calculados na hora): cofre sem gravar, contas mortas e logins que vencem em menos de 3 dias. */
@@ -867,6 +921,7 @@ class Engine {
       assigned: d.assigned === undefined ? null : d.assigned,
       current: d.id === currentId,
       active: this.isActive(d, t),
+      ...this.presenceOf(d, t), // lastContact, connected, presence (só para mostrar)
     }));
   }
 
@@ -883,11 +938,11 @@ class Engine {
             name: dev.name || null,
             assigned: dev.assigned === undefined ? null : dev.assigned,
             lastSwitchAt: Number(dev.lastSwitchAt) || 0,
-            canUploadLogins: this.canUploadLogins(dev), // false = este computador usa as contas do servidor, não envia logins
+            canUploadLogins: this.canUploadLogins(dev), // false = este serviço usa as contas do servidor, não envia logins
           }
         : null,
       list: this.publicList(deviceId),
-      records: this.records(), // global (sem o filtro por computador)
+      records: this.records(), // global (sem o filtro por serviço)
       rules: this.rulesEffective(),
       autoSwitch: st.autoSwitch !== false,
       credential:
@@ -1385,7 +1440,7 @@ class Engine {
     if (this.st.autoSwitch === false) return false;
     const t = this.now();
     const others = this.othersAccounts(dev.id, t);
-    const base = this.recordsFor(dev); // contas não liberadas para este computador nunca são destino
+    const base = this.recordsFor(dev); // contas não liberadas para este serviço nunca são destino
     const args = { list: this.publicList(dev.id), r: this.rulesEffective(), modelIds: dev.models || [], now: t, lastSwitchAt: Number(dev.lastSwitchAt) || 0 };
     // Contas de outros dispositivos ativos ficam de fora (não dividir a sessão de 5h)...
     let d = decide({ ...args, records: this.withDisabled(base, others) });
@@ -1422,9 +1477,9 @@ class Engine {
     return true;
   }
 
-  // ------------------------------------------------------------------ modo "together" (computadores juntos)
+  // ------------------------------------------------------------------ modo "together" (serviços juntos)
 
-  /** records() com `disabled` nas contas que algum destes computadores não pode usar. */
+  /** records() com `disabled` nas contas que algum destes serviços não pode usar. */
   sharedRecords(devs) {
     return devs.reduce((recs, d) => access.filterRecordsForDevice(recs, this.st, d), this.records());
   }
@@ -1469,7 +1524,7 @@ class Engine {
   }
 
   /**
-   * decide() para a conta do grupo: modelos em uso de TODOS os computadores do grupo (união), intervalo mínimo
+   * decide() para a conta do grupo: modelos em uso de TODOS os serviços do grupo (união), intervalo mínimo
    * contado da última troca de qualquer um deles, destino entre as contas que todos eles podem usar. Sem destino
    * assim (blocked), tenta entre as liberadas para o `leader` (dividir o grupo é melhor que parar).
    */
@@ -1484,9 +1539,9 @@ class Engine {
   }
 
   /**
-   * Leva os computadores `devs` para a conta `to` (quem já está nela fica). Um só trocando: o texto de sempre
+   * Leva os serviços `devs` para a conta `to` (quem já está nela fica). Um só trocando: o texto de sempre
    * ("Trocou [na hora] da conta X para a conta Y: motivo", no histórico dele); dois ou mais: um registro
-   * "Computadores trocados juntos [na hora] para a conta Y: motivo — A e B". → o texto, ou null se ninguém trocou.
+   * "Serviços trocados juntos [na hora] para a conta Y: motivo — A e B". → o texto, ou null se ninguém trocou.
    */
   moveGroup(devs, to, by, reason, { now = false, deviceId = null } = {}) {
     const moving = devs.filter((d) => Number(d.assigned) !== to);
@@ -1500,7 +1555,7 @@ class Engine {
       return text;
     }
     for (const d of moving) this.moveDevice(d, to, by);
-    const text = `Computadores trocados juntos${hora} para a conta ${to}: ${reason} — ${joinNames(moving.map(devName))}`;
+    const text = `Serviços trocados juntos${hora} para a conta ${to}: ${reason} — ${joinNames(moving.map(devName))}`;
     this.pushHistory("switch", text, deviceId);
     return text;
   }
@@ -1556,7 +1611,7 @@ class Engine {
   }
 
   /**
-   * Modo "together", computador que não pode usar a conta do grupo: segue sozinho, como no modo "separate" mas sem
+   * Modo "together", serviço que não pode usar a conta do grupo: segue sozinho, como no modo "separate" mas sem
    * contas ocupadas — a melhor conta liberada para ele, trocando quando ela chega numa linha.
    */
   decideSolo(dev) {
@@ -1581,7 +1636,7 @@ class Engine {
   }
 
   /**
-   * Modo "together": para onde vai um computador que precisa de conta — a do grupo (dos outros ativos), se ele puder
+   * Modo "together": para onde vai um serviço que precisa de conta — a do grupo (dos outros ativos), se ele puder
    * usá-la; senão a melhor liberada para ele (sozinho, ele começa o grupo). → { to, group }
    */
   placeFor(dev, t = this.now()) {
@@ -1616,13 +1671,13 @@ class Engine {
 
   assignBest(dev, why) {
     const from = dev.assigned === null || dev.assigned === undefined ? null : Number(dev.assigned);
-    // "Juntos": a conta do grupo, se este computador puder usá-la; senão a melhor liberada para ele.
+    // "Juntos": a conta do grupo, se este serviço puder usá-la; senão a melhor liberada para ele.
     const place = this.together() ? this.placeFor(dev) : { to: this.bestAccountFor(dev), group: false };
     const to = place.to;
     const by = place.group ? "group" : "assign";
     const reason = this.assignReason(why, from);
     if (to === null) {
-      // Sem outra conta: o computador sai da conta que não existe mais ou que não está liberada para ele
+      // Sem outra conta: o serviço sai da conta que não existe mais ou que não está liberada para ele
       // (nunca fica numa conta não permitida, nem morta e não permitida).
       if (why === "removed" || why === "not_allowed" || (from !== null && !access.canUse(this.st, dev, from))) {
         dev.assigned = null;
@@ -1650,9 +1705,9 @@ class Engine {
    *   - sem uso conhecido: a viva de menor número
    *   - ninguém livre: vale conta de outro dispositivo
    * freeOnly: só livres. requireOk: só abaixo das linhas (com margem) e com uso conhecido.
-   * Só contas liberadas para o computador (recordsFor); dev null = sem restrição.
-   * records: records já filtrados (ex.: só as contas que todos os computadores do grupo podem usar), no lugar de recordsFor(dev).
-   * Modo "together": nenhuma conta está ocupada (os computadores dividem a conta de propósito).
+   * Só contas liberadas para o serviço (recordsFor); dev null = sem restrição.
+   * records: records já filtrados (ex.: só as contas que todos os serviços do grupo podem usar), no lugar de recordsFor(dev).
+   * Modo "together": nenhuma conta está ocupada (os serviços dividem a conta de propósito).
    */
   bestAccountFor(dev, { freeOnly = false, requireOk = false, records = null } = {}) {
     const t = this.now();
@@ -1776,7 +1831,7 @@ class Engine {
   /**
    * Credencial da conta do dispositivo, valendo pelo menos 30 min (ou metade da vida do token, se for curto);
    * renova se preciso. Sem refreshToken. Parando (stop()): não renova; entrega a atual se ainda vale mais de 1 min.
-   * Nunca entrega o acesso de uma conta não liberada para o computador (conferido de novo depois de cada espera:
+   * Nunca entrega o acesso de uma conta não liberada para o serviço (conferido de novo depois de cada espera:
    * a regra pode mudar no meio).
    */
   async credentialFor(deviceId) {
@@ -1814,7 +1869,7 @@ class Engine {
   /**
    * Troca a conta do dispositivo. number null = melhor conta (só entre as liberadas para ele).
    * Modo "together": troca o grupo inteiro (os ativos + este); quem não pode usar a conta fica onde está.
-   * Erros (.code): not_found, dead_account, not_allowed (a conta não está liberada para este computador).
+   * Erros (.code): not_found, dead_account, not_allowed (a conta não está liberada para este serviço).
    * → { switched, from, to, text }
    */
   async switchDevice(deviceId, number, by = "manual") {
@@ -1830,7 +1885,7 @@ class Engine {
       if (!acc) throw fail("not_found", `a conta ${number} não existe`);
       if (acc.dead) throw fail("dead_account", `o login da conta ${n} não vale mais; entre de novo com ela no Claude Code para o servidor receber um login novo`);
       if (!access.canUse(this.st, dev, n)) {
-        throw fail("not_allowed", `${notAllowedText(n)} ("${dev.name || dev.id}"); libere no painel em Contas → Computadores permitidos`);
+        throw fail("not_allowed", `${notAllowedText(n)} ("${dev.name || dev.id}"); libere no painel em Contas → Serviços permitidos`);
       }
       to = n;
     }
@@ -1842,15 +1897,15 @@ class Engine {
         (d) => (d.id === dev.id || this.isActive(d, t)) && Number(d.assigned) !== to && access.canUse(this.st, d, to)
       );
       if (moving.length && !(moving.length === 1 && moving[0] === dev)) {
-        const who = by === "painel" ? "pelo painel" : `pelo computador ${devName(dev)}`;
-        const text = `Computadores trocados juntos para a conta ${to}: troca manual ${who}${best} — ${joinNames(moving.map(devName))}`;
+        const who = by === "painel" ? "pelo painel" : `pelo serviço ${devName(dev)}`;
+        const text = `Serviços trocados juntos para a conta ${to}: troca manual ${who}${best} — ${joinNames(moving.map(devName))}`;
         // Quem pediu fica como "manual"/"painel"; os outros foram junto ("group").
         for (const d of moving) this.moveDevice(d, to, d === dev ? by : "group");
         this.pushHistory(kind, text, dev.id);
         await this.saveQuiet();
         return { switched: true, from, to, text };
       }
-      // Só este computador troca (os outros já estão na conta ou não podem usá-la): como no modo "separate".
+      // Só este serviço troca (os outros já estão na conta ou não podem usá-la): como no modo "separate".
     }
     if (to === from) return { switched: false, from, to, text: `já está na conta ${to}` };
     const text = from === null ? `Troca manual para a conta ${to}${best}` : `Troca manual da conta ${from} para a conta ${to}${best}`;
@@ -1869,10 +1924,10 @@ class Engine {
     const t = this.now();
     dev.lastSeen = t;
     const acc = this.acc(dev.assigned);
-    if (!acc) return { switched: false, text: "nenhuma conta atribuída a este dispositivo" };
+    if (!acc) return { switched: false, text: "nenhuma conta atribuída a este serviço" };
     this.pollSoon.add(acc.number); // reler o uso dela logo, para não voltar para ela por dado velho
     if (!access.canUse(this.st, dev, acc.number)) {
-      // A conta atual não está (mais) liberada para este computador: sai dela já, com a troca automática
+      // A conta atual não está (mais) liberada para este serviço: sai dela já, com a troca automática
       // ligada ou desligada (é permissão), e só para uma liberada (ou para nenhuma).
       const from = acc.number;
       this.assignBest(dev, "not_allowed");
@@ -1904,7 +1959,7 @@ class Engine {
       return { switched: false, text };
     }
     const others = this.othersAccounts(dev.id, t);
-    const base = this.recordsFor(dev); // só contas liberadas para este computador (também na reserva abaixo)
+    const base = this.recordsFor(dev); // só contas liberadas para este serviço (também na reserva abaixo)
     const args = { list: this.publicList(dev.id), r: this.rulesEffective(), modelIds: dev.models || [], now: t, lastSwitchAt: Number(dev.lastSwitchAt) || 0, limitHit: lbl };
     let d = decide({ ...args, records: this.withDisabled(base, others) });
     if (d.kind === "blocked" && others.size) d = decide({ ...args, records: base });
@@ -1935,7 +1990,7 @@ class Engine {
    * Só aceita login comprovadamente vivo: o refresh token recebido é SEMPRE renovado na hora,
    * antes de qualquer mudança. Um refresh token já morto (renovado em outro lugar) com o access
    * token ainda valendo não substitui mais um login bom.
-   * Erros (.code), sem mudar nada: not_admin (deviceId de um computador que não pode enviar logins — canUploadLogins;
+   * Erros (.code), sem mudar nada: not_admin (deviceId de um serviço que não pode enviar logins — canUploadLogins;
    * nem fala com a Anthropic), invalid_login, stale_login, dead_login (a Anthropic recusou a renovação),
    * refresh_failed (falha temporária, cofre sem gravar ou servidor reiniciando — nada gasto),
    * identity_mismatch (identidade errada conferida ANTES de renovar — nada gasto).
@@ -1947,7 +2002,7 @@ class Engine {
    * tempo renovam uma vez só; o outro recebe "nada a fazer" ou stale_login. stop() espera o envio em andamento.
    */
   async addLogin(args = {}) {
-    // Segunda trava (o server.js já recusa antes): login de computador que não é do administrador não entra.
+    // Segunda trava (o server.js já recusa antes): login de serviço que não é do administrador não entra.
     const from = isObj(args) ? this.device(args.deviceId) : null;
     if (from && !this.canUploadLogins(from)) throw fail("not_admin", NOT_ADMIN_TEXT);
     if (this.stopping) throw fail("refresh_failed", STOPPING_TEXT);
@@ -1990,7 +2045,7 @@ class Engine {
     await this.assertCanSpendLogin();
 
     // 1) Antes de gastar o login enviado: se o acesso dele ainda vale, confere de quem é.
-    //    Identidade errada → recusa sem gastar nada (o computador continua com o login dele).
+    //    Identidade errada → recusa sem gastar nada (o serviço continua com o login dele).
     let before = null;
     if (sent.accessToken && sent.expiresAt - this.now() > EXPIRED_SLACK_MS) {
       before = await this.anthropic.profile(sent.accessToken);
@@ -2040,7 +2095,7 @@ class Engine {
         this.checkIdentity(who, email, sentOrg);
       } catch (e) {
         if (!consumed) {
-          // A renovação não trocou o refresh token: o enviado continua valendo no computador.
+          // A renovação não trocou o refresh token: o enviado continua valendo no serviço.
           this.log.warn("[login] login recusado depois de renovar: a identidade não bate (o refresh token enviado não mudou)");
           throw e;
         }
@@ -2154,11 +2209,11 @@ class Engine {
         return { number: acc.number, created: false };
       }
       const st = this.st;
-      // Número preferido (ex.: o mesmo que a conta tinha no computador que mandou), se estiver livre.
+      // Número preferido (ex.: o mesmo que a conta tinha no serviço que mandou), se estiver livre.
       const want = Number(wantNumber);
       const number = Number.isInteger(want) && want > 0 && want <= 999 && !st.accounts[String(want)] ? want : st.nextNumber;
       st.nextNumber = Math.max(st.nextNumber, number + 1);
-      // Conta nova começa liberada para todos os computadores: uma lista que tenha sobrado de uma conta antiga
+      // Conta nova começa liberada para todos os serviços: uma lista que tenha sobrado de uma conta antiga
       // com o mesmo número não vale para ela (removeAccount já limpa; isto cobre cofre mexido à mão).
       access.onAccountRemoved(st, number);
       st.accounts[String(number)] = {
@@ -2299,7 +2354,7 @@ class Engine {
     await this.withLock(`acc:${n}`, async () => {
       if (this.acc(n) !== acc) return;
       delete this.st.accounts[String(n)];
-      // A lista de computadores permitidos sai junto (um número reaproveitado depois começa com "todos").
+      // A lista de serviços permitidos sai junto (um número reaproveitado depois começa com "todos").
       access.onAccountRemoved(this.st, n);
     });
     this.pollSoon.delete(n);
@@ -2315,13 +2370,13 @@ class Engine {
   }
 
   /**
-   * Quais computadores podem usar a conta (WEB-SPEC 2.3). O painel chama este (não o access.js direto).
-   * devices: null = todos os computadores (inclusive os que conectarem depois); [id, ...] = só esses ([] = nenhum).
+   * Quais serviços podem usar a conta (WEB-SPEC 2.3). O painel chama este (não o access.js direto).
+   * devices: null = todos os serviços (inclusive os que conectarem depois); [id, ...] = só esses ([] = nenhum).
    * Quem estava na conta e perdeu a permissão sai dela já: ativo troca na hora (needsAssign → "not_allowed" →
-   * assignBest: só para uma conta liberada; sem nenhuma, fica sem conta); parado fica sem conta e recebe uma
-   * liberada na próxima conexão. Grava o cofre.
+   * assignBest: só para uma conta liberada; sem nenhuma, fica sem conta); quem não está ativo (conectado sem uso ou
+   * sem contato) fica sem conta e recebe uma liberada no próximo batimento ou pedido de credencial. Grava o cofre.
    * Erros (.code), sem mudar nada: not_found (a conta não existe), invalid (não é lista nem null, id inválido,
-   * computador que não existe, repetido). → { number, devices: null | [id...] }
+   * serviço que não existe, repetido). → { number, devices: null | [id...] }
    */
   async setAccountDevices(number, devices) {
     const st = this.st;
@@ -2330,14 +2385,14 @@ class Engine {
     const n = Number(String(number).trim());
     if (JSON.stringify(value) !== before) {
       const text = Array.isArray(value) && value.length === 0
-        ? `Conta ${n} não está liberada para nenhum computador`
+        ? `Conta ${n} não está liberada para nenhum serviço`
         : `Conta ${n} liberada para ${access.devicesLabel(st, value)}`;
       this.pushHistory("info", text, null);
     }
     for (const d of this.deviceList()) {
       if (Number(d.assigned) !== n || access.canUse(st, d, n)) continue;
       if (this.isActive(d)) this.decideDevice(d); // troca já
-      else d.assigned = null; // parado: recebe uma conta liberada na próxima conexão
+      else d.assigned = null; // não está ativo: recebe uma conta liberada no próximo batimento (ou pedido de credencial)
     }
     this.dirty = true;
     await this.save();
@@ -2348,7 +2403,7 @@ class Engine {
    * rules: undefined = não mexe; null = tudo volta ao padrão; objeto = mescla com as atuais
    * (chave com null volta ao padrão; chave desconhecida é ignorada; número fora da faixa é ajustado).
    * autoSwitch: true/false. → { rules (efetivas), autoSwitch }
-   * Mudou a regra "Computadores" (devicePlacement): vale já (decideAll), sem esperar o próximo ciclo.
+   * Mudou a regra "Serviços" (devicePlacement): vale já (decideAll), sem esperar o próximo ciclo.
    */
   async setRules({ rules, autoSwitch } = {}) {
     const st = this.st;
@@ -2383,8 +2438,8 @@ class Engine {
       this.pushHistory(
         "info",
         placement === "together"
-          ? "Computadores juntos: todos na mesma conta (a do topo da fila), trocando juntos"
-          : "Computadores separados: cada um na sua conta",
+          ? "Serviços juntos: todos na mesma conta (a do topo da fila), trocando juntos"
+          : "Serviços separados: cada um na sua conta",
         null
       );
       this.decideAll();
@@ -2395,4 +2450,4 @@ class Engine {
   }
 }
 
-module.exports = { Engine, VERSION, ERROR_STATUS, TICK_MS, ACTIVE_MS, POLL_ACTIVE_MS, POLL_IDLE_MS, CRED_MIN_VALID_MS };
+module.exports = { Engine, VERSION, ERROR_STATUS, TICK_MS, ACTIVE_MS, CONTACT_MS, POLL_ACTIVE_MS, POLL_IDLE_MS, CRED_MIN_VALID_MS };

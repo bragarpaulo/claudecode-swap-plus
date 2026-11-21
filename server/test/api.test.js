@@ -121,6 +121,13 @@ class FakeEngine {
   pushHistory(kind, text, deviceId) {
     this.rec("pushHistory", kind, text, deviceId);
   }
+  // Presença: o servidor avisa o motor de cada pedido autenticado (touch) e de cada serviço desconectado.
+  touch(deviceId) {
+    this.rec("touch", deviceId);
+  }
+  forgetContact(deviceId) {
+    this.rec("forgetContact", deviceId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +301,7 @@ test("sem token ou com token inválido → 401; rota desconhecida → 404; méto
   assert.equal(r.status, 401);
   assert.equal(ctx.engine.count("heartbeat"), 0);
   assert.equal(ctx.engine.count("credentialFor"), 0);
+  assert.equal(ctx.engine.count("touch"), 0, "pedido sem token válido não conta como contato de ninguém");
 
   r = await request(ctx.api, "GET", "/v1/nao-existe");
   assert.equal(r.status, 404);
@@ -403,14 +411,19 @@ test("token revogado deixa de valer (pela API e pelo admin)", async (t) => {
   let r = await request(ctx.api, "DELETE", `/v1/devices/${b.deviceId}`, { token: a.token });
   assert.equal(r.status, 200);
   assert.deepEqual(r.json, { ok: true });
+  assert.deepEqual(ctx.engine.calls.filter((c) => c.name === "forgetContact").map((c) => c.args), [[b.deviceId]], "o contato do desconectado sai da memória do motor");
+  const contatos = ctx.engine.count("touch");
   r = await request(ctx.api, "GET", "/v1/state", { token: b.token });
   assert.equal(r.status, 401);
+  assert.equal(ctx.engine.count("touch"), contatos, "token revogado: 401 antes de contar como contato");
 
   // o admin revoga a
   r = await request(ctx.admin, "DELETE", `/admin/devices/${a.deviceId}`);
   assert.equal(r.status, 200);
+  assert.deepEqual(ctx.engine.last("forgetContact").args, [a.deviceId]);
   r = await request(ctx.api, "GET", "/v1/state", { token: a.token });
   assert.equal(r.status, 401);
+  assert.equal(ctx.engine.count("touch"), contatos);
 
   r = await request(ctx.admin, "DELETE", `/admin/devices/${a.deviceId}`);
   assert.equal(r.status, 404);
@@ -445,6 +458,17 @@ test("ALLOW_IPS (IPv4 e CIDR) e TRUST_PROXY", async (t) => {
   assert.equal(r.status, 403);
   r = await request(c3.api, "GET", "/v1/health");
   assert.equal(r.status, 403);
+  // token bom vindo de um endereço fora da lista: 403 antes de conferir o token (não conta como contato do serviço)
+  const pc3 = await pairCode(c3);
+  const dev3 = await request(c3.api, "POST", "/v1/pair", { body: { code: pc3.code, name: "Notebook" }, headers: { "x-forwarded-for": "203.0.113.9" } });
+  assert.equal(dev3.status, 200, dev3.text);
+  r = await request(c3.api, "GET", "/v1/state", { token: dev3.json.token });
+  assert.equal(r.status, 403);
+  assert.equal(c3.engine.count("touch"), 0);
+  r = await request(c3.api, "GET", "/v1/state", { token: dev3.json.token, headers: { "x-forwarded-for": "203.0.113.9" } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(c3.engine.last("touch").args, [dev3.json.deviceId]);
+  assert.equal(c3.engine.count("touch"), 1);
 
   // sem TRUST_PROXY o cabeçalho é ignorado
   const c4 = await setup(t, { ALLOW_IPS: "203.0.113.0/24" });
@@ -487,7 +511,12 @@ test("cada rota chama o método certo do engine", async (t) => {
   const ctx = await setup(t);
   const E = ctx.engine;
   const { token, deviceId: id } = await pairDevice(ctx, "Notebook");
-  const call = (method, p, body) => request(ctx.api, method, p, { token, body });
+  assert.equal(E.count("touch"), 0, "parear não é um pedido autenticado");
+  let pedidos = 0; // pedidos com o token deste serviço: cada um conta como contato, mesmo os recusados depois
+  const call = (method, p, body) => {
+    pedidos++;
+    return request(ctx.api, method, p, { token, body });
+  };
 
   // heartbeat → heartbeat + stateFor (campos filtrados)
   let r = await call("POST", "/v1/heartbeat", {
@@ -547,7 +576,7 @@ test("cada rota chama o método certo do engine", async (t) => {
   r = await call("POST", "/v1/logins", login);
   assert.equal(r.status, 200, r.text);
   assert.deepEqual(r.json, { number: 3, created: true });
-  // o servidor diz ao engine qual computador mandou o login (vai para o histórico)
+  // o servidor diz ao engine qual serviço mandou o login (vai para o histórico)
   assert.deepEqual(E.last("addLogin").args, [{ ...login, deviceId: id, number: null }]);
   E.loginError = "identity_mismatch";
   r = await call("POST", "/v1/logins", login);
@@ -627,6 +656,14 @@ test("cada rota chama o método certo do engine", async (t) => {
   assert.equal(r.status, 500);
   assert.deepEqual(r.json, { error: "internal", message: "erro interno no servidor" });
   assert.ok(!r.text.includes("NAO-PODE-SAIR"));
+
+  // Presença: cada pedido com o token aceito avisou o motor (touch) uma vez — os que deram certo e os recusados
+  // depois (400, 404, 409, 422, 500) —, sempre com o id do serviço e antes de a rota rodar.
+  const contatos = E.calls.filter((c) => c.name === "touch");
+  assert.ok(pedidos >= 30, `o teste fez ${pedidos} pedidos`);
+  assert.equal(contatos.length, pedidos);
+  assert.ok(contatos.every((c) => c.args.length === 1 && c.args[0] === id));
+  assert.ok(E.calls.findIndex((c) => c.name === "touch") < E.calls.findIndex((c) => c.name === "heartbeat"), "o contato é marcado na entrada, antes da rota");
 });
 
 test("limite de tentativas: 20 respostas 401 em 10 min → 429 por 10 min", async (t) => {
@@ -643,10 +680,12 @@ test("limite de tentativas: 20 respostas 401 em 10 min → 429 por 10 min", asyn
   // bloqueia o IP inteiro, até com token bom
   r = await request(ctx.api, "GET", "/v1/state", { token: d.token });
   assert.equal(r.status, 429);
+  assert.equal(ctx.engine.count("touch"), 0, "pedido barrado antes de conferir o token não conta como contato");
   // passados 10 min, volta
   ctx.clock.t += 10 * 60 * 1000 + 1;
   r = await request(ctx.api, "GET", "/v1/state", { token: d.token });
   assert.equal(r.status, 200);
+  assert.deepEqual(ctx.engine.calls.filter((c) => c.name === "touch").map((c) => c.args), [[d.deviceId]]);
 });
 
 test("admin: status e dispositivos sem segredos; recusa navegador; exige PUBLIC_URL", async (t) => {
@@ -675,8 +714,8 @@ test("admin: status e dispositivos sem segredos; recusa navegador; exige PUBLIC_
   assert.equal(semUrl.store.state.pairing, null);
 });
 
-test("logins: só os computadores do administrador enviam (Google com e-mail de ADMIN_EMAILS ou pareado por código); os outros → 403 not_admin sem chamar o engine", async (t) => {
-  const NAO_ADMIN = "Só os computadores do administrador enviam logins ao servidor. Este computador usa as contas do servidor.";
+test("logins: só os serviços do administrador enviam (Google com e-mail de ADMIN_EMAILS ou pareado por código); os outros → 403 not_admin sem chamar o engine", async (t) => {
+  const NAO_ADMIN = "Só os serviços do administrador enviam logins ao servidor. Este serviço usa as contas do servidor.";
   const ctx = await setup(t, { ADMIN_EMAILS: "dono.exemplo@gmail.com" });
   const E = ctx.engine;
   const login = {
@@ -723,10 +762,10 @@ test("logins: só os computadores do administrador enviam (Google com e-mail de 
   assert.equal(r.status, 403);
   assert.equal(r.json.error, "not_admin");
   assert.equal(E.count("addLogin"), chamadas);
-  // o computador continua conectado, usando as contas do servidor
+  // o serviço continua conectado, usando as contas do servidor
   assert.equal((await estado(bia)).status, 200);
 
-  // histórico: uma vez por computador por dia
+  // histórico: uma vez por serviço por dia
   const recusas = () => E.calls.filter((c) => c.name === "pushHistory" && /^Login recusado/.test(c.args[1]));
   assert.equal(recusas().length, 1);
   assert.deepEqual(recusas()[0].args, ["alert", 'Login recusado de "PC da Bia": só o administrador envia logins', bia.deviceId]);
@@ -738,7 +777,7 @@ test("logins: só os computadores do administrador enviam (Google com e-mail de 
   assert.equal(recusas().length, 2, "no dia seguinte registra de novo");
   assert.equal(E.count("addLogin"), chamadas);
 
-  // ADMIN_EMAILS mudou (sem o dono) e o servidor reiniciou: os computadores dele com Google deixam de enviar;
+  // ADMIN_EMAILS mudou (sem o dono) e o servidor reiniciou: os serviços dele com Google deixam de enviar;
   // o pareado por código continua (o código só sai da linha de comando/painel do administrador)
   const config2 = loadConfig({ TLS_MODE: "off", DATA_DIR: ctx.dir, PUBLIC_URL, ADMIN_EMAILS: "outra@exemplo.com" });
   const app2 = createApp({ store: ctx.store, engine: E, config: config2, now: () => ctx.clock.t, log: testLog });
@@ -755,7 +794,7 @@ test("logins: só os computadores do administrador enviam (Google com e-mail de 
   assert.equal(r.status, 200, r.text);
   assert.equal(E.count("addLogin"), chamadas + 1);
 
-  // sem ADMIN_EMAILS nenhum computador com Google envia; os pareados por código seguem enviando
+  // sem ADMIN_EMAILS nenhum serviço com Google envia; os pareados por código seguem enviando
   const config3 = loadConfig({ TLS_MODE: "off", DATA_DIR: ctx.dir, PUBLIC_URL, ADMIN_EMAILS: "" });
   const app3 = createApp({ store: ctx.store, engine: E, config: config3, now: () => ctx.clock.t, log: testLog });
   const api3 = await listen(app3.api);

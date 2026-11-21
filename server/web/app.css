@@ -19,6 +19,7 @@
   --focus: #6cb6ff;
   --ok: #3fb950;
   --okfill: #2ea043;
+  --conn: #58a6ff; /* serviço conectado, sem uso agora (bolinha azul) */
   --warn: #d29922;
   --bad: #ff7b72;
   --track: #353a42;
@@ -68,6 +69,7 @@
     --focus: #0969da;
     --ok: #1a7f37;
     --okfill: #1f883d;
+    --conn: #218bff;
     --warn: #9a6700;
     --bad: #cf222e;
     --track: #e1e4e8;
@@ -563,8 +565,12 @@ fieldset.card > legend + .hint { margin-bottom: 4px; }
 .badge.plain { color: var(--soft); background: transparent; }
 .badge.dead { color: var(--bad); background: var(--badbg); border-color: var(--bad); }
 
+/* bolinha de situação. Nos serviços, uma cor para cada presença: sem contato (a de base, cinza cheia) · ativo agora
+   (.on, verde com halo) · conectado e sem uso (.conn, azul) · aguardando contato (.wait, só o contorno cinza) */
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--soft); flex: none; }
 .dot.on { background: var(--okfill); box-shadow: 0 0 0 3px rgba(46, 160, 67, 0.2); }
+.dot.conn { background: var(--conn); }
+.dot.wait { background: transparent; box-shadow: inset 0 0 0 2px var(--soft); }
 .dot.bad { background: var(--bad); }
 
 .empty { color: var(--soft); }
@@ -612,6 +618,7 @@ details.legend { margin: 0; }
 details.legend > summary { cursor: pointer; color: var(--link); width: fit-content; font-size: var(--fs-sm); padding: 4px 0; }
 details.legend[open] > summary { margin-bottom: 4px; }
 details.legend p { max-width: 80ch; }
+details.legend .dot { margin: 0 8px 0 2px; vertical-align: 1px; } /* a legenda das situações, na aba Serviços */
 
 .addbox { border-color: var(--accent); margin: 0 0 16px; }
 .addbox h3 { margin: 0; }
@@ -691,11 +698,12 @@ button.arow:focus-visible { outline-offset: -2px; }
 .rreset { grid-area: reset; min-width: 0; color: var(--soft); font-size: var(--fs-xs); line-height: 1.35; }
 .rtroca { grid-area: troca; justify-self: end; display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-sm); white-space: nowrap; }
 .rtroca.off { color: var(--soft); }
-/* contato do serviço, no lugar do "participa da troca": "ativo agora", ou "parado" e, embaixo, quando foi visto */
+/* contato do serviço, no lugar do "participa da troca": a situação ("ativo agora", "conectado", "aguardando contato",
+   "sem contato") e, embaixo, o detalhe dela ("sem uso agora", "visto hoje 18:00"…) */
 .rseen { grid-area: troca; justify-self: end; display: grid; justify-items: end; font-size: var(--fs-sm); line-height: 1.35; text-align: right; }
 .rseen .when { color: var(--soft); font-size: var(--fs-xs); }
 .svc .aname .dot { margin: 0 8px 0 2px; vertical-align: 1px; }
-/* login vencendo ou vencido: "Fazer login até …" piscando (só CSS; parado para quem pede menos movimento) */
+/* login vencendo ou vencido: "Fazer login até …" piscando (só CSS; sem piscar para quem pede menos movimento) */
 .ralert {
   grid-column: 2 / -1;
   min-width: 0;
@@ -706,7 +714,7 @@ button.arow:focus-visible { outline-offset: -2px; }
   animation: loginblink 1.2s ease-in-out infinite;
 }
 .ralert.bad { color: var(--bad); }
-.ralert.still { animation: none; } /* login morto: destaque parado */
+.ralert.still { animation: none; } /* login morto: destaque fixo, sem piscar */
 @keyframes loginblink {
   0%, 40% { opacity: 1; }
   70%, 80% { opacity: 0.25; }
@@ -725,6 +733,8 @@ button.arow:focus-visible { outline-offset: -2px; }
   .ruse > .rbar + .rreset { padding-left: 84px; } /* embaixo da barra (rótulo 72 + espaço 12) */
   .rtroca { justify-self: start; }
   .rseen { justify-self: start; justify-items: start; text-align: left; }
+  /* serviço: a última coluna é mais larga, para o detalhe mais comprido ("o servidor reiniciou há pouco") caber numa linha */
+  .svc button.arow { grid-template-columns: 12px minmax(0, 1.5fr) minmax(0, 1fr) 176px; }
 }
 
 /* cartão aberto */
@@ -783,8 +793,9 @@ button.arow:focus-visible { outline-offset: -2px; }
 .meter.mini .linemark { top: -3px; bottom: -3px; }
 .meter.mini .pct { font-size: var(--fs-sm); min-width: 36px; }
 
-/* dados da conta: rótulo pequeno em cima, valor embaixo, em 2 colunas */
-.info {
+/* dados da conta: rótulo pequeno em cima, valor embaixo, em 2 colunas
+   (dl.info, e não só .info: no Histórico a etiqueta do tipo "Info" também leva a classe "info") */
+dl.info {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px 16px;
@@ -887,7 +898,7 @@ fieldset.subfield .check { margin: 4px 0; font-size: var(--fs-md); }
   .abody > .tsec { grid-column: 2; }
 }
 
-/* ------------------------------------------------------------ Serviços (os computadores conectados) */
+/* ------------------------------------------------------------ Serviços (tudo o que está conectado ao Swap) */
 
 /* cartão aberto do serviço (.sbody): a lista é a mesma das contas (.services, .rowcard, .arow — acima) */
 .sleft { display: grid; align-content: start; gap: 16px; min-width: 0; }
@@ -1296,7 +1307,7 @@ button.closebtn { min-height: 36px; padding: 6px 12px 6px 10px; gap: 6px; }
   .card { padding: 16px 12px; }
   button.arow { padding: 8px 12px; }
   .abody { padding: 16px 12px; }
-  .info { gap: 12px; }
+  dl.info { gap: 12px; }
   .warning { padding: 12px; }
   .allowform input[type="email"],
   .searchfield { max-width: none; }
@@ -1306,7 +1317,7 @@ button.closebtn { min-height: 36px; padding: 6px 12px 6px 10px; gap: 6px; }
   *,
   *::before,
   *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
-  /* "Fazer login até …" não pisca: fica parado, com a mesma cor de destaque */
+  /* "Fazer login até …" não pisca: fica fixo, com a mesma cor de destaque */
   .ralert { animation: none !important; opacity: 1; }
 }
 

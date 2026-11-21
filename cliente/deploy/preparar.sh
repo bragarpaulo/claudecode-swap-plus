@@ -6,6 +6,12 @@
 #   sh /opt/swap-plus/app/cliente/deploy/preparar.sh                 # simulação
 #   sh /opt/swap-plus/app/cliente/deploy/preparar.sh --apply
 #   sh /opt/swap-plus/app/cliente/deploy/preparar.sh --versao 1.0.0-2 --apply   # mesmo código, imagem nova
+#   sh /opt/swap-plus/app/cliente/deploy/preparar.sh --login-dir /srv/hermes-personal/data/swap-plus-login --apply
+#
+# --login-dir: a pasta de login fica em outro lugar (dentro da área de dados do Hermes, para ele enxergá-la sem um
+# bind novo). Essa pasta este script NÃO cria: o root do host não grava em pasta que o Hermes controla. Crie antes,
+# de dentro do contêiner, como o usuário dele:
+#   docker exec -u 10000 hermes mkdir -m 0700 /opt/data/swap-plus-login
 set -eu
 
 APP=/opt/swap-plus/app
@@ -16,10 +22,12 @@ DONO=10000          # o usuário do Hermes (hermes, uid 10000): ele e o cliente 
 
 APLICAR=0
 VERSAO=""
+LOGIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APLICAR=1 ;;
     --versao) shift; VERSAO="${1:-}" ;;
+    --login-dir) shift; LOGIN="${1:-}" ;;
     *) echo "Opção desconhecida: $1" >&2; exit 2 ;;
   esac
   shift
@@ -51,14 +59,27 @@ else
   fazer docker network create --subnet "$FAIXA" --label io.servidor.managed=true "$REDE"
 fi
 
-echo "== 2. pastas em $BASE ($DONO:$DONO, 700)"
-for d in "$BASE" "$BASE/dados" "$BASE/login"; do
+echo "== 2. pastas ($DONO:$DONO, 700)"
+PASTAS="$BASE $BASE/dados"
+[ -n "$LOGIN" ] || PASTAS="$PASTAS $BASE/login"
+for d in $PASTAS; do
   if [ -d "$d" ]; then
     echo "já existe: $(stat -c '%a %u:%g %n' "$d")"
   else
     fazer install -d -o "$DONO" -g "$DONO" -m 0700 "$d"
   fi
 done
+if [ -n "$LOGIN" ]; then
+  # Pasta de login fora daqui (dentro dos dados do Hermes): só confere. Tem de ser uma pasta de verdade (não um
+  # atalho), do usuário do Hermes e só dele.
+  if [ -L "$LOGIN" ] || [ ! -d "$LOGIN" ]; then
+    echo "A pasta de login $LOGIN não existe (ou é um atalho). Crie de dentro do contêiner do Hermes, como o usuário dele (veja o começo deste arquivo)." >&2
+    exit 1
+  fi
+  atual=$(stat -c '%a %u:%g' "$LOGIN")
+  [ "$atual" = "700 $DONO:$DONO" ] || { echo "A pasta de login $LOGIN está com $atual; esperava 700 $DONO:$DONO." >&2; exit 1; }
+  echo "pasta de login (não criada por este script): $atual $LOGIN"
+fi
 
 echo "== 3. imagem $IMAGEM"
 if docker image inspect "$IMAGEM" >/dev/null 2>&1; then
@@ -71,10 +92,12 @@ fi
 
 echo
 if [ "$APLICAR" = 1 ]; then
+  EXTRA=""
+  [ -z "$LOGIN" ] || EXTRA=" --login-dir $LOGIN"
   echo "Pronto. Faltam, nesta ordem (cliente/deploy/LEIA-ME.md):"
-  echo "  1. parear:        sh $APP/cliente/deploy/parear.sh --versao $VERSAO"
-  echo "  2. criar a stack: Portainer → Stacks → Add stack, com $APP/cliente/deploy/compose.yaml"
-  echo "                    e a variável SWAP_PLUS_CLIENTE_VERSAO=$VERSAO"
+  echo "  1. conectar:      bash $APP/cliente/deploy/entrar.sh --versao $VERSAO$EXTRA      (login com Google)"
+  echo "                    ou bash $APP/cliente/deploy/parear.sh --versao $VERSAO$EXTRA   (código, sem navegador)"
+  echo "  2. criar a stack: python3 $APP/cliente/deploy/portainer_stack_create_cliente.py --versao $VERSAO$EXTRA [--apply]"
 else
   echo "Nada foi feito (simulação). Para valer: acrescente --apply."
 fi

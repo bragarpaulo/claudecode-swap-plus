@@ -131,4 +131,10 @@ jobs:
         run: |
           sh -n cliente/deploy/preparar.sh
           bash -n cliente/deploy/parear.sh
+          bash -n cliente/deploy/entrar.sh
+          python3 -I -m py_compile cliente/deploy/portainer_stack_create_cliente.py
           docker compose -f cliente/deploy/compose.yaml config --no-interpolate > /dev/null
+          # Com as variáveis da stack: a pasta de login padrão e a de dentro dos dados do Hermes.
+          SWAP_PLUS_CLIENTE_VERSAO=1.0.0 docker compose -f cliente/deploy/compose.yaml config | grep -q "source: /opt/swap-plus-cliente/hermes/login"
+          SWAP_PLUS_CLIENTE_VERSAO=1.0.0 SWAP_PLUS_CLIENTE_LOGIN_DIR=/srv/hermes-personal/data/swap-plus-login \
+            docker compose -f cliente/deploy/compose.yaml config | grep -q "source: /srv/hermes-personal/data/swap-plus-login"

@@ -21,9 +21,11 @@ BASE=/opt/swap-plus-cliente/hermes
 REDE=swap-plus-cliente
 URL=https://swap.assistentes.si
 VERSAO=""
+LOGIN=""   # --login-dir: a pasta de login em outro lugar (ver preparar.sh)
 while [ $# -gt 0 ]; do
   case "$1" in
     --versao) shift; VERSAO="${1:-}" ;;
+    --login-dir) shift; LOGIN="${1:-}" ;;
     --url) shift; URL="${1:-}" ;;
     *) echo "Opção desconhecida: $1" >&2; exit 2 ;;
   esac
@@ -31,10 +33,11 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$VERSAO" ] || { echo "Diga a versão da imagem: --versao <a mesma do preparar.sh>" >&2; exit 2; }
 IMAGEM="swap-plus-cliente:$VERSAO"
+[ -n "$LOGIN" ] || LOGIN="$BASE/login"
 
 [ "$(id -u)" = 0 ] || { echo "Rode como root." >&2; exit 1; }
 docker image inspect "$IMAGEM" >/dev/null 2>&1 || { echo "Não achei a imagem $IMAGEM: rode o preparar.sh --apply antes." >&2; exit 1; }
-[ -d "$BASE/dados" ] && [ -d "$BASE/login" ] || { echo "Faltam as pastas em $BASE: rode o preparar.sh --apply antes." >&2; exit 1; }
+[ -d "$BASE/dados" ] && [ -d "$LOGIN" ] && [ ! -L "$LOGIN" ] || { echo "Faltam as pastas ($BASE/dados e $LOGIN): rode o preparar.sh --apply antes." >&2; exit 1; }
 if docker ps -a --format '{{.Names}}' | grep -qx swap-plus-cliente-hermes; then
   echo "O contêiner swap-plus-cliente-hermes já existe. Para conectar de novo: pare a stack, desconecte o cliente antigo no painel do Swap e apague $BASE/dados/conexao.json." >&2
   exit 1
@@ -49,7 +52,7 @@ docker run --rm \
     --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:size=16m,mode=1777 \
     --cpus 0.25 --memory 128m --pids-limit 32 \
     -e TZ=America/Sao_Paulo -e HOME=/dados -e SWAP_PLUS_NOME="$NOME" \
-    -v "$BASE/dados:/dados" -v "$BASE/login:/login" \
+    -v "$BASE/dados:/dados" -v "$LOGIN:/login" \
     "$IMAGEM" entrar --url "$URL"
 RESULTADO=$?
 set -e
@@ -66,8 +69,8 @@ d = json.load(open(sys.argv[1]))
 assert d.get("url", "").startswith("https://") and len(d.get("token", "")) >= 20 and d.get("deviceId"), "conexao.json incompleto"
 print("ok:", d["url"], "| cliente", d["deviceId"], "| nome", d.get("nome"), "| via", d.get("via"), "| token com", len(d["token"]), "caracteres")
 PY
-stat -c '%a %u:%g %n' "$BASE/dados" "$BASE/dados/conexao.json" "$BASE/login"
-[ ! -e "$BASE/login/claude/.credentials.json" ] || stat -c '%a %u:%g %n' "$BASE/login/claude/.credentials.json"
+stat -c '%a %u:%g %n' "$BASE/dados" "$BASE/dados/conexao.json" "$LOGIN"
+[ ! -e "$LOGIN/claude/.credentials.json" ] || stat -c '%a %u:%g %n' "$LOGIN/claude/.credentials.json"
 echo
 echo "Agora crie a stack no Portainer (cliente/deploy/LEIA-ME.md). Se acima apareceu \"sem conta\": no painel do Swap,"
 echo "Contas → Ajustes desta conta → Computadores permitidos, libere as contas para \"$NOME\"."

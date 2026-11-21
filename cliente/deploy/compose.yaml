@@ -15,8 +15,9 @@
 #    reconstruída por cima;
 #  · dados em /opt/swap-plus-cliente/hermes/dados (10000:10000, 700): conexao.json é o acesso deste cliente ao Swap
 #    (pode trocar de conta, mudar regras e revogar computadores pela API: é segredo). Esta pasta NÃO entra no Hermes;
-#  · login em /opt/swap-plus-cliente/hermes/login (10000:10000, 700): a pasta que o Hermes também monta. Dentro dela,
-#    claude/ é a pasta de login do Claude Code (acesso de até ~8 h, sem refresh token);
+#  · login em /opt/swap-plus-cliente/hermes/login (10000:10000, 700), ou na pasta da variável
+#    SWAP_PLUS_CLIENTE_LOGIN_DIR: a pasta que o Hermes também enxerga. Dentro dela, claude/ é a pasta de login do
+#    Claude Code (acesso de até ~8 h, sem refresh token);
 #  · roda como 10000:10000, o usuário do Hermes: os dois leem e gravam a mesma pasta de login (como o Obsidian faz
 #    com o cofre do Hermes);
 #  · sem backup: nada aqui precisa ser guardado. Perdeu a pasta de dados → parear de novo (parear.sh).
@@ -58,8 +59,11 @@ services:
         target: /dados
         bind:
           create_host_path: false
+      # A pasta que o Hermes também enxerga. Padrão: uma pasta própria, que entra no Hermes por um bind a mais na
+      # stack dele. Para não recriar o Hermes, a variável SWAP_PLUS_CLIENTE_LOGIN_DIR aponta para uma pasta DENTRO da
+      # área de dados dele (ex.: /srv/hermes-personal/data/swap-plus-login, que ele vê como /opt/data/swap-plus-login).
       - type: bind
-        source: /opt/swap-plus-cliente/hermes/login
+        source: ${SWAP_PLUS_CLIENTE_LOGIN_DIR:-/opt/swap-plus-cliente/hermes/login}
         target: /login
         bind:
           create_host_path: false

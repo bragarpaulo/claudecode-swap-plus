@@ -22,9 +22,25 @@ chamadas reais pelo Hermes (`hermes chat --oneshot`) com o provedor do plugin, u
 nome da lista (`claude-haiku-4-5-20251001`), as duas respondidas pelo Claude Code (no log: `provider=
 claude-subscription-directsdk-experimental`); e o cliente passando a **ativo** depois do uso.
 
-Ainda não conferido: uma conversa do WhatsApp ou do painel usando o provedor (a exceção da trava foi simulada e o
-caminho do `hermes chat` passou, mas nenhuma mensagem real de gateway foi enviada); uma rotina (cron) com o provedor; a
-renovação do acesso durante a madrugada (o servidor renova e o cliente regrava: o healthcheck acusa se falhar).
+**Modelo do Hermes (20/11/2026, 22:05, a pedido do Paulo):** as conversas passaram a usar o Fable 5.2 pelo Claude
+Code, com raciocínio alto. Feito pelo mesmo caminho do painel (Modelos → Main model): `model.provider` =
+`claude-subscription-directsdk-experimental`, `model.default` = `claude-fable-5-2[1m]`, `agent.reasoning_effort` =
+`high`. Para só as conversas mudarem, as 20 tarefas auxiliares que estavam em `auto` (seguiam o modelo principal)
+ficaram presas a `openai-codex` / `gpt-6.1-sol`, e `fallback_providers` ganhou o Codex como reserva. Não mudaram: a
+transcrição (`stt`: OpenAI `gpt-4o-transcribe`), os subagentes (`delegation`), a compressão e o padrão das rotinas
+(`cron.model`), todos no GPT. Das rotinas, só "Paulo — despesas, metas e auditoria — dia 10" foi para o Fable (das 86
+ativas, 65 são só script e não usam modelo nenhum). Cópias de antes: `/opt/data/config.yaml.antes-fable-20261120` e
+`/opt/data/cron/jobs.json.antes-fable-20261120`. Para voltar: no painel, Modelos → Main model → Change → OpenAI Codex
+`gpt-6.1-sol`, e `hermes config set agent.reasoning_effort medium`.
+
+Conferido depois da troca: uma mensagem de verdade pela API do gateway (o mesmo processo do WhatsApp) respondida pelo
+`claude-fable-5-2[1m]` com uso de ferramenta, em 5,5 s, sem a trava trocar por GPT; e o cliente acompanhando sozinho
+uma troca de conta decidida pelo Swap.
+
+Ainda não conferido: uma conversa do WhatsApp em si (o gateway foi testado pela API dele, não por uma mensagem de
+WhatsApp); se as conversas já abertas antes da troca mudam de modelo na hora ou só quando reiniciam (o Hermes reinicia
+as sessões de madrugada); uma rotina (cron) com o provedor; a renovação do acesso durante a madrugada (o servidor
+renova e o cliente regrava: o healthcheck acusa se falhar).
 
 Para lembrar:
 

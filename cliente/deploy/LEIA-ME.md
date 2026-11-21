@@ -64,6 +64,29 @@ também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `he
 - Possível complemento, não feito: o par espelhado (modelo GPT no provedor do plugin), que o aplicativo poderia
   mandar se o modelo principal voltasse para o GPT.
 
+**21/11/2026, 02:27–02:50 — limite de uso no meio do trabalho, e o que mudou por causa dele:**
+
+- **O que aconteceu.** Às 02:27 a conta 20 bateu o limite da sessão de 5 h. O Swap trocou todos os serviços para a
+  conta 22 às 02:27:24 (quem avisou foi a extensão do VS Code; o servidor não tinha lido a conta a tempo). O Hermes
+  caiu para a reserva (GPT) e ficou nela: ele arma uma espera até o horário de reinício informado pelo provedor
+  (`agent._rate_limited_until`, 73 min) e essa espera era da conta antiga.
+- **Hermes volta ao modelo principal quando a conta muda.** Em `/opt/data/extra_pkgs/hermes_model_lock.py`, regra
+  `apply_swap_account_recovery` (marcador `HERMES_CLAUDE_SWAP_RECOVERY_V1`): ao armar a espera no provedor do Claude
+  Code, guarda a conta que estava no login (`oauthAccount.accountUuid` do `.claude.json` da pasta de login); no começo
+  de cada mensagem seguinte, se o login já é de outra conta, responde "reabriu" em `_primary_quota_reopened_early` e o
+  Hermes volta ao Fable. Mesma conta, login ilegível ou qualquer erro: comportamento original. Cópia de antes:
+  `hermes_model_lock.py.antes-troca-20261121`. Simulada contra o código de verdade; gateway reiniciado às 02:49
+  (esperou 3 min sem mensagens); conferido: WhatsApp e teste pela linha de comando respondidos pelo Fable.
+  Ainda não visto ao vivo: um limite batendo de novo com a regra no ar.
+- **O que continua igual:** na mensagem em que o limite bate, o Hermes ainda responde pela reserva; ele não avisa o
+  Swap sozinho nem espera a troca. Com o servidor 2.5.4 (abaixo) a troca deve acontecer antes do limite na maioria
+  das vezes.
+- **Servidor do Swap 2.5.3 e 2.5.4 publicados (02:38 e 02:45)** pelo procedimento de sempre (imagem montada no
+  servidor, `SWAP_PLUS_VERSAO` trocada pelo Portainer). 2.5.3: painel com "serviços" e estados de presença.
+  2.5.4: a conta em uso é lida a tempo (ver `NOVIDADES-3.2.md` e `server/SPEC.md`). Voltar atrás: a mesma variável
+  com `2.5.2` (a imagem continua no servidor).
+- **Extensão 3.2.0 publicada às 02:42** (tag `plus-v3.2.0`), com o OK do dono.
+
 Conferido depois da troca: uma mensagem de verdade pela API do gateway (o mesmo processo do WhatsApp) respondida pelo
 `claude-fable-5-2[1m]` com uso de ferramenta, em 5,5 s, sem a trava trocar por GPT; e o cliente acompanhando sozinho
 uma troca de conta decidida pelo Swap.

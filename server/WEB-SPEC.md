@@ -351,7 +351,7 @@ liberado — este saiu da lista mas ainda tem serviço conectado), **Serviços**
 - Procura em **todos os dados do item**, inclusive os que só aparecem com o cartão aberto. Conta: "Conta N", apelido,
   e-mail, plano, organização, "participa da troca" / "fora da troca", "em uso" e os nomes dos serviços nela,
   "Nº na fila", "login morto", "Fazer login até…" / "Login venceu…", "sem leitura de uso", serviços permitidos.
-  Serviço: nome, sistema, e-mail de quem conectou ou "conectado por código", o contato (até a 2.5.2: "ativo agora" /
+  Serviço: nome, sistema, e-mail de quem conectou ou "por código de conexão" (até a 2.5.3: "conectado por código"), o contato (até a 2.5.2: "ativo agora" /
   "parado" / "ainda não apareceu"; desde a 2.5.3, o texto inteiro da situação de presença: ver "2.5.3"), "Conta N" (ou
   "sem conta"), apelido e e-mail dessa conta, "login morto". Usuário: e-mail, situação, "você" e os nomes dos serviços.
   As porcentagens não entram.

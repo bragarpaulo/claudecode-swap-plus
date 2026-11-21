@@ -141,7 +141,7 @@ swap-plus-cliente conectar --nome "Hermes"
 O comando fica esperando. Cole o código, aperte Enter e depois `Ctrl + D` (no Windows: `Ctrl + Z` e Enter). Assim o
 código não fica guardado no histórico do terminal. Também dá para passar o código direto
 (`swap-plus-cliente conectar "swapplus1:…"`) ou pela saída de outro comando (`… | swap-plus-cliente conectar`). No
-painel, um cliente conectado assim aparece como "conectado por código".
+painel, um cliente conectado assim aparece como "por código de conexão".
 
 ### 4. Deixar rodando
 
@@ -435,8 +435,10 @@ mostra sempre **ativo agora**.
 
 - Com a regra do servidor **Serviços: Separados** (o padrão), cada serviço ativo fica numa conta. Um cliente
   sempre ativo deixa uma conta ocupada o tempo todo, mesmo com o Hermes parado.
-- O servidor lê o uso da conta de um computador ativo a cada 3 minutos; o das outras, a cada 20. Um cliente sempre
-  ativo gasta mais desse orçamento de leitura, que os outros computadores também usam.
+- O servidor tem 24 leituras de uso por hora para todas as contas, e lê primeiro a conta de um serviço ativo: a cada
+  10 minutos quando ela está longe de uma linha de troca, e a cada 2,5 a 5 minutos quando está perto. As outras contas
+  ficam com o resto. Um cliente sempre ativo gasta mais desse orçamento de leitura, que os outros serviços também
+  usam.
 - Use `sempre` se o cliente não perceber o uso (com o Hermes trabalhando, o `status` continua em **parado** e o
   painel em **conectado · sem uso agora**), ou se você quer o servidor decidindo as trocas dele sem parar.
 

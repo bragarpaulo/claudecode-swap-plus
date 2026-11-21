@@ -52,7 +52,7 @@ Na imagem: `/app/plus/rules.js` e `/app/server/src/*.js` → `require("../../plu
 | `PUBLIC_HOST` | — | IP/host para o SAN do certificado próprio |
 | `TRUST_PROXY` | `0` | `1` = usar o 1º IP de `X-Forwarded-For` (só atrás do proxy) |
 | `ALLOW_IPS` | vazio | lista de IPs/CIDR IPv4 aceitos na API (vazio = todos) |
-| `USAGE_MAX_PER_HOUR` | `24` | orçamento de consultas ao endpoint de uso (a Anthropic aceita ~30/h) |
+| `USAGE_MAX_PER_HOUR` | `24` | orçamento de consultas ao endpoint de uso (a Anthropic aceita ~30/h); o servidor guarda no máximo 6 para gastar de uma vez |
 | `REFRESH_AHEAD_MIN` | `120` | renova quando faltam menos que isso para o access token vencer |
 | `ANTHROPIC_TOKEN_URL` | `https://platform.claude.com/v1/oauth/token` | trocável nos testes |
 | `ANTHROPIC_API_BASE` | `https://api.anthropic.com` | trocável nos testes |
@@ -196,8 +196,24 @@ Diagnóstico único: na 1ª renovação bem-sucedida com `diag.oldTokenValidAfte
 (conta no orçamento) e gravar true/false + log ("acesso antigo continua valendo depois de renovar: sim/não").
 Se o token tiver vencido mesmo assim (servidor parado), renovar antes de usar.
 
-Uso (passo 2): orçamento `USAGE_MAX_PER_HOUR` (balde que recarrega continuamente). Contas atribuídas a dispositivos ativos
-(visto nos últimos 5 min) a cada 3 min; as outras a cada 20 min; mortas nunca. Escolhe a mais atrasada. 401 → renovar e tentar de novo uma vez;
+Uso (passo 2): orçamento `USAGE_MAX_PER_HOUR` (balde que recarrega continuamente e guarda no máximo 6 leituras, ou o
+orçamento de 1 hora se ele for menor que 6). Uma leitura por ciclo, nesta ordem:
+1. conta marcada para ler logo (limite batido, login novo);
+2. conta em uso (atribuída a dispositivo ativo, visto nos últimos 5 min) que está na vez;
+3. as outras contas que estão na vez.
+
+Em cada grupo, a mais atrasada primeiro. Piso das outras: depois de 2 leituras seguidas de contas em uso, a seguinte é
+de outra conta, se alguma estiver na vez (as marcadas para ler logo não entram nessa contagem).
+
+Quando a conta entra na vez, contado da última leitura dela:
+- conta em uso perto de uma linha de troca, ou ainda sem leitura: 2,5 min. "Perto" é a até 15 pontos abaixo da linha da
+  sessão, ou a até 5 abaixo da linha semanal ou da do modelo (a do modelo só com `onModelLimit: "switchAccount"`);
+- conta em uso longe das linhas, ou com uma linha já passada: 10 min;
+- as outras: 20 min; mortas nunca.
+
+O balde e a contagem das leituras seguidas ficam só na memória (recomeçam quando o servidor reinicia); nada disso vai
+para o cofre. Até a 2.5.3 a regra era "conta em uso a cada 3 min, as outras a cada 20, a mais atrasada primeiro": com 23
+contas tudo ficava atrasado e a conta em uso só era lida a cada 42 min (medido em 21/11/2026). 401 → renovar e tentar de novo uma vez;
 429 → pausa global pelo Retry-After (mín. 10 min); outros erros → backoff por conta 2, 5, 10 min.
 
 Decisão (passo 3), por dispositivo ativo e com `autoSwitch`:

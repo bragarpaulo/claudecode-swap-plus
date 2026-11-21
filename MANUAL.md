@@ -442,7 +442,7 @@ há uma linha para cada serviço. No alto fica o campo de busca.
 A linha mostra:
 
 - uma bolinha com a cor da situação e o nome do serviço;
-- o sistema e quem conectou (a conta Google, ou **conectado por código**);
+- o sistema e quem conectou (a conta Google, ou **por código de conexão**);
 - a conta Claude em que ele está agora (**Conta N**, com uma barra de uso), ou **Sem conta Claude agora**;
 - a situação do serviço, por escrito.
 

@@ -1942,8 +1942,8 @@
   // ------------------------------------------------------------ Serviços (tudo o que está conectado ao Swap)
 
   const devAssigned = (d) => (d.assigned !== null && d.assigned !== undefined ? Number(d.assigned) : null);
-  /** Quem conectou o serviço: a conta Google, ou "conectado por código". */
-  const devWho = (d) => d.googleEmail || "conectado por código";
+  /** Quem conectou o serviço: a conta Google, ou "por código de conexão" (sem a palavra "conectado", que é um estado de presença). */
+  const devWho = (d) => d.googleEmail || "por código de conexão";
   /** O nome está sendo trocado e o que foi digitado ainda não foi salvo. */
   const renameDirty = (d) => devRename.has(d.id) && String(devRename.get(d.id)).trim() !== (d.name || "");
   const setServiceOpen = (devId, open) => {

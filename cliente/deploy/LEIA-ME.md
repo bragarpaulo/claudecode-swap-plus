@@ -161,7 +161,7 @@ Tudo como root, no servidor.
    conectou — e já grava o primeiro login do Claude Code na pasta compartilhada.
 
    O outro jeito, sem navegador (o código de conexão nasce dentro do contêiner do Swap e não aparece na tela; no
-   painel o cliente aparece como "conectado por código"):
+   painel o cliente aparece como "por código de conexão"):
 
    ```sh
    bash /opt/swap-plus/app/cliente/deploy/parear.sh --versao 1.0.0
@@ -327,8 +327,8 @@ Variável `SWAP_PLUS_CLIENTE_PRESENCA` da stack (padrão `auto`).
   o orçamento de leitura de uso. Se a conta dele precisar de decisão enquanto está parado (morreu, foi desativada,
   passou da linha de troca), ele manda um batimento avulso para o Swap decidir.
 - **sempre**: ativo o tempo todo. Com a regra "Serviços: Separados", uma conta fica sempre ocupada pelo Hermes, e a
-  leitura de uso dela (a cada 3 min) pesa no orçamento de 24 leituras por hora do Swap, que os outros computadores
-  ativos dividem.
+  leitura de uso dela (a cada 10 min longe de uma linha de troca, a cada 2,5 a 5 min perto de uma) pesa no orçamento de
+  24 leituras por hora do Swap: de 6 a 16 das 24, e os outros serviços ativos dividem o resto.
 
 Com a regra "Serviços: Juntos", um limite batido por um serviço troca a conta de todos os ativos, o Hermes
 entre eles.

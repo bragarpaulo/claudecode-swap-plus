@@ -1,7 +1,7 @@
 #!/bin/sh
 # Ponto de entrada do container do Swap Plus Servidor.
 # - TLS_MODE=self: gera o certificado próprio na primeira vez (EC P-256, 10 anos,
-#   SAN = PUBLIC_HOST) e mostra a impressão digital que os computadores vão fixar.
+#   SAN = PUBLIC_HOST) e mostra a impressão digital que os serviços vão fixar.
 #   Gera em *.tmp, confere e só então põe no lugar (nunca fica meio certificado).
 # - Depois entrega o processo para o Node (exec: o tini repassa o SIGTERM direto).
 set -eu
@@ -64,7 +64,7 @@ if [ "$TLS_MODE" = "self" ]; then
   esac
   if [ -z "$FP" ] || [ "${#FP}" -ne 95 ]; then
     echo "[tls] não consegui ler a impressão digital de $TLS_DIR/cert.pem (certificado inválido?)." >&2
-    echo "[tls] apague $TLS_DIR e reinicie para gerar outro (os computadores vão precisar de um código de conexão novo)." >&2
+    echo "[tls] apague $TLS_DIR e reinicie para gerar outro (os serviços vão precisar de um código de conexão novo)." >&2
     exit 1
   fi
   echo "[tls] impressão digital (SHA-256) do certificado: $FP"

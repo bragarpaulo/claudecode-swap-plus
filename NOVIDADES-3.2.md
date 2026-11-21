@@ -1,4 +1,17 @@
-# Novidades do Swap Plus 3.2
+# Novidades do Swap Plus 3.2
+
+## Servidor 2.5.4 (21/11/2026): a conta em uso passa a ser lida a tempo
+
+- **O problema:** com 23 contas, o servidor só conseguia ler o uso da conta em uso a cada 42 minutos (e não a cada 3,
+  como estava escrito). Na maioria das vezes a troca só acontecia depois de a conta bater 100%. Aconteceu de verdade em
+  21/11 às 02:27.
+- **O que mudou:** a conta em uso passa na frente das outras: é lida a cada 10 minutos, e a cada 2,5 a 5 minutos quando
+  está chegando perto da linha de troca. As outras contas continuam sendo lidas, com o que sobra do mesmo limite de 24
+  leituras por hora. Depois de um reinício o servidor também faz menos leituras de uma vez (29 na primeira hora, em vez de 47).
+- **O que não mudou:** as regras de troca, as contas e o limite de leituras por hora.
+- **Painel:** quem conectou sem conta Google aparece como "por código de conexão" (era "conectado por código", que se
+  confundia com o estado "conectado").
+
 
 ## Servidor 2.5.3 e extensão 3.2.0: "serviços" no painel e a tela enxuta no VS Code (21/11/2026)
 

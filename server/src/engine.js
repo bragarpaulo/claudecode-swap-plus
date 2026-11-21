@@ -35,7 +35,7 @@ const crypto = require("crypto");
 const { RULE_DEFAULTS, STRATEGY_LABELS, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.5.3";
+const VERSION = "2.5.4";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
 // Presença (só para mostrar; nenhuma decisão usa): contato = qualquer pedido autenticado do serviço. Quem falou com
@@ -45,6 +45,15 @@ const CONTACT_MS = ACTIVE_MS;
 const POLL_ACTIVE_MS = 3 * 60 * 1000; // conta de dispositivo ativo: uso a cada 3 min
 const POLL_IDLE_MS = 20 * 60 * 1000; // as outras: a cada 20 min
 const POLL_BACKOFF_MIN = [2, 5, 10];
+// Conta em uso (de dispositivo ativo): passa na frente das outras na leitura de uso (usageStep), e de quanto em quanto
+// tempo é lida depende de quão perto a última leitura está de uma linha de troca (nearLine). O POLL_ACTIVE_MS acima
+// (3 min fixos, na fila das outras) ficou sem uso em 21/11/2026: com 23 contas ela só era lida a cada 42,5 min.
+const POLL_ACTIVE_NEAR_MS = 150 * 1000; // perto de uma linha, ou sem leitura: a cada 2,5 min (o que o orçamento de 24/h dá)
+const POLL_ACTIVE_FAR_MS = 10 * 60 * 1000; // longe das linhas, ou com uma linha já passada: a cada 10 min
+const NEAR_SESSION_PTS = 15; // "perto" = a até 15 pontos abaixo da linha da sessão de 5 h (que anda rápido)...
+const NEAR_SLOW_PTS = 5; // ...ou a até 5 abaixo da linha semanal ou da do modelo (andam devagar: faixa larga duraria dias)
+const POLL_ACTIVE_STREAK = 2; // depois de 2 leituras seguidas de contas em uso, a seguinte é de outra conta que esteja na vez
+const USAGE_BURST = 6; // leituras que o orçamento guarda para gastar de uma vez (antes guardava a hora inteira)
 const REFRESH_BACKOFF_MIN = [1, 2, 5, 10];
 const INVALID_CLIENT_BACKOFF_MS = 10 * 60 * 1000;
 const PAUSE_429_MIN_MS = 10 * 60 * 1000;
@@ -328,11 +337,13 @@ class Engine {
     this.noticeTry = new Map(); // "weekly" | "login:<n>" → quando tentou e o aviso não gravou (só na memória)
     const perHour = Number(e.USAGE_MAX_PER_HOUR);
     this.usageMaxPerHour = Number.isFinite(perHour) && perHour >= 1 ? perHour : 24;
+    this.usageBurst = Math.min(this.usageMaxPerHour, USAGE_BURST); // orçamento menor que 6 por hora: guarda só o de 1 hora
     const ahead = Number(e.REFRESH_AHEAD_MIN);
     this.refreshAheadMs = (Number.isFinite(ahead) && ahead >= 0 && String(e.REFRESH_AHEAD_MIN).trim() !== "" ? ahead : 120) * 60000;
     // Estado só da memória (não vai para o cofre).
-    this.bucket = { tokens: this.usageMaxPerHour, at: now() };
+    this.bucket = { tokens: this.usageBurst, at: now() };
     this.pausedUntil = 0; // pausa global do uso depois de um 429
+    this.activeStreak = 0; // leituras seguidas de contas em uso (o piso das outras: usageStep)
     this.locks = new Map();
     this.pollSoon = new Set(); // contas para ler o uso logo (limite batido, login novo)
     this.diagPending = null; // { number, accessToken, expiresAt, attempts } — token ANTIGO, nunca logar
@@ -1243,10 +1254,15 @@ class Engine {
 
   // ------------------------------------------------------------------ 2) uso
 
+  /**
+   * Balde do orçamento: enche sem parar, USAGE_MAX_PER_HOUR leituras por hora, e guarda no máximo `usageBurst` (6).
+   * Guardando a hora inteira, como antes, um servidor que acabava de subir (ou que ficava um tempo sem ter o que ler)
+   * gastava o guardado de uma vez: 47 leituras numa hora com o orçamento em 24, e a Anthropic aceita ~30. Com o teto,
+   * uma hora corrida tem no máximo o orçamento + as 6 guardadas (+1, se a última repetir depois de um 401).
+   */
   refill(t = this.now()) {
-    const capN = this.usageMaxPerHour;
     const el = Math.max(0, t - this.bucket.at);
-    this.bucket.tokens = Math.min(capN, this.bucket.tokens + (el * capN) / 3600000);
+    this.bucket.tokens = Math.min(this.usageBurst, this.bucket.tokens + (el * this.usageMaxPerHour) / 3600000);
     this.bucket.at = Math.max(this.bucket.at, t);
   }
 
@@ -1267,11 +1283,41 @@ class Engine {
     return !!acc.cred.refreshToken && t >= (Number(acc.refreshBackoffUntil) || 0);
   }
 
+  /**
+   * Quando a conta entra na vez de ter o uso lido. Marcada para ler logo (pollSoon): já. Senão, a última leitura mais
+   *   - 2,5 min: conta em uso (`active`: de dispositivo ativo) perto de uma linha de troca, ou ainda sem leitura;
+   *   - 10 min: conta em uso longe das linhas, ou com uma linha já passada (nearLine diz qual das duas);
+   *   - 20 min: as outras.
+   * A espera depois de uma leitura que falhou (pollBackoffUntil) vale sempre.
+   */
   dueAt(acc, active) {
     const backoff = Number(acc.pollBackoffUntil) || 0;
     if (this.pollSoon.has(acc.number)) return backoff;
     const last = Number(acc.usageFetchedAt) || 0;
-    return Math.max(backoff, last ? last + (active ? POLL_ACTIVE_MS : POLL_IDLE_MS) : 0);
+    const every = !active ? POLL_IDLE_MS : this.nearLine(acc) ? POLL_ACTIVE_NEAR_MS : POLL_ACTIVE_FAR_MS;
+    return Math.max(backoff, last ? last + every : 0);
+  }
+
+  /**
+   * A última leitura da conta em uso está perto de uma linha de troca dela — a até 15 pontos abaixo da linha da sessão,
+   * ou a até 5 abaixo da semanal ou da do modelo (esta só conta na regra "trocar de conta para continuar no modelo")?
+   * É aí que vale gastar o orçamento com ela: a troca tem de sair logo depois de a linha passar. Sem leitura = perto
+   * (não se sabe onde ela está).
+   * Linha já passada = longe de novo: a troca é decidida no mesmo ciclo da leitura (decisionStep). Se ela não saiu
+   * (nenhuma outra conta com folga, ou troca automática desligada), reler esta conta não muda nada — o que falta é
+   * ler as OUTRAS, para achar uma com folga.
+   */
+  nearLine(acc) {
+    const u = acc.usage || acc.lastGoodUsage;
+    if (!u) return true;
+    const r = this.rulesEffective();
+    const l = linesFor(acc, r, this.records());
+    const rows = [[u.fiveHour ? u.fiveHour.pct : 0, l.session, NEAR_SESSION_PTS]]; // [uso em %, linha, faixa do "perto"]
+    if (u.sevenDay) rows.push([u.sevenDay.pct, l.weekly, NEAR_SLOW_PTS]);
+    if (r.onModelLimit === "switchAccount") for (const s of u.scoped || []) rows.push([s.pct, l.model, NEAR_SLOW_PTS]);
+    const pct = (v) => Number(v) || 0;
+    if (rows.some(([p, line]) => pct(p) >= line)) return false; // linha já passada
+    return rows.some(([p, line, band]) => pct(p) >= line - band);
   }
 
   activeAccountNumbers(t = this.now()) {
@@ -1280,6 +1326,22 @@ class Engine {
     return s;
   }
 
+  /**
+   * Uma leitura de uso por ciclo, se alguma conta está na vez (dueAt) e o orçamento deixa. Quem é lida:
+   *   1) conta marcada para ler logo (pollSoon: limite batido, login novo);
+   *   2) conta em uso;
+   *   3) as outras.
+   * Em cada grupo, a mais atrasada primeiro.
+   * Por que a conta em uso passa na frente: o orçamento (24/h) dá UMA leitura a cada 2,5 min para todas as contas.
+   * Na fila única de antes (em uso a cada 3 min, as outras a cada 20, a mais atrasada primeiro), 23 contas pediam 86
+   * leituras por hora: todas ficavam sempre atrasadas e a conta em uso entrava na roda com as outras. Medido em
+   * 21/11/2026: ela era lida a cada 42,5 min, a leitura dela passava dos 20 min que o decide() aceita
+   * (STALE_USAGE_SEC) metade do tempo e, em simulações de 7 dias, a maioria das trocas só saía depois dos 100%.
+   * Piso das outras: depois de POLL_ACTIVE_STREAK (2) leituras seguidas de contas em uso, a seguinte é de outra conta,
+   * se alguma estiver na vez. Sem ele, duas contas em uso perto da linha ficariam com o orçamento inteiro e as outras
+   * nunca mais seriam lidas — e conta sem leitura recente (CAND_STALE_SEC, 1 h) não serve de destino da troca.
+   * As marcadas para ler logo não entram nessa contagem.
+   */
   async usageStep() {
     const t = this.now();
     if (t < this.pausedUntil) return;
@@ -1288,12 +1350,25 @@ class Engine {
     const due = [];
     for (const acc of this.accountList()) {
       if (!this.pollable(acc, t)) continue;
-      const at = this.dueAt(acc, active.has(acc.number));
-      if (at <= t) due.push({ acc, at });
+      const inUse = active.has(acc.number);
+      const at = this.dueAt(acc, inUse);
+      if (at <= t) due.push({ acc, at, inUse });
     }
     if (!due.length || !this.canSpend(t)) return;
-    due.sort((x, y) => x.at - y.at || x.acc.number - y.acc.number); // a mais atrasada primeiro
-    await this.pollAccount(due[0].acc.number);
+    const first = (list) => list.sort((x, y) => x.at - y.at || x.acc.number - y.acc.number)[0]; // a mais atrasada primeiro
+    const soon = due.filter((d) => this.pollSoon.has(d.acc.number));
+    const used = due.filter((d) => d.inUse);
+    const idle = due.filter((d) => !d.inUse);
+    let next;
+    if (soon.length) next = first(soon);
+    else if (used.length && (this.activeStreak < POLL_ACTIVE_STREAK || !idle.length)) {
+      next = first(used);
+      this.activeStreak += 1;
+    } else {
+      next = first(idle); // a vez das outras (o piso), ou nenhuma conta em uso na vez
+      this.activeStreak = 0;
+    }
+    await this.pollAccount(next.acc.number);
   }
 
   applyUsage(acc, usage, t) {

@@ -135,15 +135,23 @@ também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `he
   `swap-plus/limite.json` na pasta de login a cada ciclo (30 s), manda `limit_hit` ao servidor e grava a conta nova
   (ver `cliente/README.md`, "Limites e troca de conta"). Trocar a versão do cliente não mexeu no Hermes. Voltar: a
   variável `SWAP_PLUS_CLIENTE_VERSAO` com `1.0.0`.
-- **Lado do Hermes, PREPARADO E SIMULADO, NÃO APLICADO (falta o OK do dono para reiniciar o gateway):** em
+- **Lado do Hermes, aplicado às 16:19 com o OK do dono** (o roteiro ficou em `cliente/deploy/hermes_aviso_limite.py`): em
   `/opt/data/extra_pkgs/hermes_model_lock.py`, a regra nova `_swap_limit_notice` (marcador
   `HERMES_CLAUDE_SWAP_LIMIT_NOTICE_V1`) grava o recado no momento em que o Hermes arma a espera por limite no
   provedor do Claude Code. Simulada às 16:13 contra o código de verdade, num processo à parte, com o recado indo para
   uma pasta temporária: limite no Claude Code grava o recado; conta do login mudou → a espera acaba; outro provedor e
   falha que não é limite não gravam nada; sem pasta ou sem poder gravar, nada quebra. O arquivo de verdade ficou
-  intacto (sha `4c23f7e0…`). Para aplicar: o roteiro `hermes_aviso_limite.py` (modo `aplicar`, como uid 10000 dentro
-  do contêiner; guarda a cópia `hermes_model_lock.py.antes-aviso-limite-20261121`) e depois
-  `reiniciar_hermes.sh`. O roteiro confere o sha do arquivo antes de mexer.
+  intacto até a aplicação. Aplicado pelo mesmo roteiro, no modo `aplicar` (uid 10000, dentro do contêiner; confere o
+  sha do arquivo antes de mexer): sha `4c23f7e0…` → `2d89d2c5…`, cópia de antes em
+  `hermes_model_lock.py.antes-aviso-limite-20261121`.
+- **Gateway reiniciado às 16:19:13–16:19:28** pelo `reiniciar_hermes.sh` (o Hermes estava há 71 min sem conversa; 12 s
+  fora; saúde ok). **O WhatsApp levou 5 min e meio para reconectar** (caiu às 16:19:15, voltou às 16:24:49, na 4ª
+  tentativa; o normal é de 16 s a 2 min). Não foi a mudança: a ponte abre o socket pelo `saida-gateway`, que estava na
+  camada "casa" (o túnel SSH do notebook), e o túnel estava lento e oscilando (sonda de 7 s, depois "não respondeu a
+  tempo"); como oscilava, o `saida-gateway` não chegou a passar para o IP contratado. Fica a lição: antes de reiniciar
+  o gateway, conferir a camada de saída (`/var/lib/saida-gateway/estado.json`: `ok` da camada ativa e há quanto tempo).
+- **Ainda não visto:** a linha `Swap account recovery active` no `gateway.log` depois deste reinício. A trava só é
+  carregada na primeira conversa (no reinício das 04:23 apareceu às 05:06); conferir quando chegar a primeira mensagem.
 - **O que continua igual:** a mensagem em que o limite bate ainda é respondida pela reserva; a partir da troca
   (até 30 s depois), a mensagem seguinte volta ao modelo principal.
 - **Stafy:** o código é do projeto Stafy. O contrato do servidor (`POST /v1/events` com `limit_hit`,

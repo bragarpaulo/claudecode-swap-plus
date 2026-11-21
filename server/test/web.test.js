@@ -821,8 +821,9 @@ test("painel: cada rota chama o engine certo; PanelState no formato da WEB-SPEC;
   const st = r.json;
   assert.deepEqual(
     Object.keys(st).sort(),
-    ["accounts", "adminEmails", "allowedEmails", "autoSwitch", "devices", "diag", "google", "history", "me", "ruleDefaults", "rules", "serverTime", "version", "warnings"]
+    ["accounts", "adminEmails", "allowedEmails", "autoSwitch", "devices", "diag", "google", "history", "me", "models", "ruleDefaults", "rules", "serverTime", "version", "warnings"]
   );
+  assert.deepEqual(st.models, { fetchedAt: null, builtin: true, list: [] }, "motor que não tem catálogo de modelos (antigo): lista vazia, sem quebrar");
   assert.deepEqual(st.me, { email: me, admin: true });
   assert.deepEqual(st.adminEmails, [me]);
   assert.equal(st.serverTime, ctx.clock.t);
@@ -2125,4 +2126,131 @@ test("painel: renomear serviço (PATCH /web/api/devices/:id { name }): 1 a 40 ca
   r = await call(ctx, "PATCH", "/web/api/devices/d2", { body: { name: "Y" } });
   assert.equal(r.status, 401);
   assert.equal(ctx.store.state.devices.d2.name, quarenta);
+});
+
+// ---------------------------------------------------------------------------
+// 2.6.0 — modelo preferido e modelo secundário, com o catálogo completo e o esforço de cada um
+// ---------------------------------------------------------------------------
+
+test("painel 2.6.0: o estado leva o catálogo de modelos; “Atualizar modelos” lê na hora; as regras de modelo e esforço chegam ao motor", async (t) => {
+  const ctx = await setup(t);
+  const E = ctx.engine;
+  const T = ctx.clock.t;
+  const lista = [
+    { id: "claude-fable-5-2", name: "Claude Fable 5.2", line: "fable", createdAt: "2026-11-09T18:30:00Z", efforts: ["low", "medium", "high", "xhigh", "max"] },
+    { id: "claude-opus-5-5", name: "Claude Opus 5.5", line: "opus", createdAt: "2026-10-20T00:00:00Z", efforts: ["low", "medium", "high", "xhigh", "max"] },
+    { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", line: "haiku", createdAt: "2026-10-21T00:00:00Z", efforts: ["low", "medium", "high"] },
+  ];
+  let catalogo = { fetchedAt: T - 3600 * 1000, builtin: false, list: lista };
+  let proxima = { ok: true, count: 4, fetchedAt: T };
+  E.modelCatalog = () => catalogo;
+  E.refreshModels = async () => {
+    E.rec("refreshModels");
+    if (proxima.ok) catalogo = { fetchedAt: proxima.fetchedAt, builtin: false, list: [...lista, { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", line: "sonnet", createdAt: null, efforts: ["low"] }] };
+    return proxima;
+  };
+  const { s } = await webLogin(ctx, "ana@exemplo.com");
+
+  // O estado leva o catálogo inteiro (é o que os dois seletores listam) e os padrões das regras novas.
+  let r = await call(ctx, "GET", "/web/api/state", { s });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json.models, catalogo);
+  assert.deepEqual(
+    [r.json.rules.primaryModel, r.json.rules.primaryEffort, r.json.rules.secondaryModel, r.json.rules.secondaryEffort],
+    ["claude-fable-5-2", "", "claude-opus-5-5", ""]
+  );
+  assert.deepEqual([r.json.ruleDefaults.primaryModel, r.json.ruleDefaults.secondaryModel], ["claude-fable-5-2", "claude-opus-5-5"]);
+
+  // Botão “Atualizar modelos”: é uma ação (pede o CSRF, como as outras), chama o motor e devolve o estado novo.
+  r = await call(ctx, "POST", "/web/api/models/refresh", { s, body: {}, csrf: "errado" });
+  assert.equal(r.status, 403, "sem o CSRF certo, não");
+  assert.equal(E.count("refreshModels"), 0);
+  r = await call(ctx, "POST", "/web/api/models/refresh", { s, body: {} });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(E.count("refreshModels"), 1);
+  assert.equal(r.json.ok, true);
+  assert.equal(r.json.count, 4);
+  assert.equal(r.json.message, "Lista de modelos atualizada: 4 modelos.");
+  assert.equal(r.json.state.models.list.length, 4);
+  assert.equal(r.json.state.models.fetchedAt, T);
+  // Falhou: 502 com o motivo em português, e a lista de antes continua.
+  for (const [error, re] of [
+    ["no_account", /nenhuma conta está com o acesso valendo para fazer a consulta/],
+    ["unauthorized", /a Anthropic recusou o acesso da conta usada na consulta/],
+    ["rate_limited", /a Anthropic pediu para esperar/],
+    ["bad_response", /a resposta da Anthropic veio num formato inesperado/],
+    ["transient", /a Anthropic não respondeu/],
+  ]) {
+    proxima = { ok: false, error, status: 0 };
+    r = await call(ctx, "POST", "/web/api/models/refresh", { s, body: {} });
+    assert.equal(r.status, 502, error);
+    assert.equal(r.json.error, "models_unavailable");
+    assert.match(r.json.message, re);
+    assert.match(r.json.message, /^Não consegui atualizar a lista de modelos: .*\. A lista de antes continua valendo\.$/);
+  }
+  r = await call(ctx, "GET", "/web/api/state", { s });
+  assert.equal(r.json.models.list.length, 4);
+  // Quem não entrou no painel não atualiza nada.
+  r = await call(ctx, "POST", "/web/api/models/refresh", { body: {} });
+  assert.equal(r.status, 401);
+
+  // As regras novas são texto curto: passam pelo mesmo PUT das outras e chegam ao motor como vieram.
+  r = await call(ctx, "PUT", "/web/api/rules", { s, body: { rules: { primaryModel: "claude-fable-5-2", primaryEffort: "xhigh", secondaryModel: "claude-opus-5-5", secondaryEffort: "high" } } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(E.last("setRules").args[0].rules, { primaryModel: "claude-fable-5-2", primaryEffort: "xhigh", secondaryModel: "claude-opus-5-5", secondaryEffort: "high" });
+  assert.deepEqual([r.json.state.rules.primaryEffort, r.json.state.rules.secondaryEffort], ["xhigh", "high"]);
+  r = await call(ctx, "PUT", "/web/api/rules", { s, body: { rules: { secondaryEffort: "" } } });
+  assert.equal(r.status, 200, "esforço vazio = não mexer");
+  r = await call(ctx, "PUT", "/web/api/rules", { s, body: { rules: { primaryModel: 5 } } });
+  assert.equal(r.status, 400, "número no lugar do ID");
+  r = await call(ctx, "PUT", "/web/api/rules", { s, body: { rules: { secondaryModel: "claude-" + "x".repeat(70) } } });
+  assert.equal(r.status, 400, "texto comprido demais");
+});
+
+test("painel de verdade (server/web), 2.6.0: “Modelo preferido” e “Modelo secundário” com o esforço, a lista do catálogo e o botão “Atualizar modelos”", () => {
+  const web = path.join(__dirname, "..", "web");
+  const html = fs.readFileSync(path.join(web, "index.html"), "utf8");
+  const js = fs.readFileSync(path.join(web, "app.js"), "utf8");
+  const css = fs.readFileSync(path.join(web, "app.css"), "utf8");
+  const strat = /<fieldset class="card r-strat">([^]*?)<\/fieldset>/.exec(html)[1];
+
+  // Os quatro seletores, na ordem, dentro do cartão da estratégia (o select antigo, só com o nome do limite, saiu).
+  assert.deepEqual(
+    [...strat.matchAll(/<label for="(r[A-Za-z]+)">([^<]+)<\/label>\s*<select id="\1" name="([A-Za-z]+)" aria-describedby="rModelsHint"><\/select>/g)].map((m) => m.slice(1, 4)),
+    [
+      ["rPrimary", "Modelo preferido", "primaryModel"],
+      ["rPrimaryEffort", "Esforço do modelo preferido", "primaryEffort"],
+      ["rSecondary", "Modelo secundário", "secondaryModel"],
+      ["rSecondaryEffort", "Esforço do modelo secundário", "secondaryEffort"],
+    ]
+  );
+  assert.ok(!html.includes('id="rPrefer"'), "o seletor antigo saiu");
+  assert.equal(
+    /<small class="hint" id="rModelsHint">([^]*?)<\/small>/.exec(strat)[1],
+    "O preferido é o modelo que as conversas usam e o que o Swap procura nas contas: ao trocar, contas com ele ainda disponível vêm primeiro. Quando ele acaba em todas as contas, as conversas novas abrem no secundário, com o esforço escolhido. Conversa já aberta não muda de modelo sozinha (é um limite do Claude Code). “Padrão do Claude Code” no esforço = o Swap não mexe nele."
+  );
+  assert.match(strat, /<span id="rModelsInfo" class="muted small" role="status"><\/span>\s*<button type="button" id="rModelsRefresh" class="secondary" data-k="models-refresh">Atualizar modelos<\/button>/);
+  // Onde as regras falavam “Opus 5.5” fixo, agora vai o nome do secundário escolhido (o texto do arquivo é o padrão).
+  assert.equal([...html.matchAll(/<span data-model="secondary">Opus 5\.5<\/span>/g)].length, 4);
+  assert.ok(!/[^>]Opus 5\.5/.test(html.replace(/<span data-model="secondary">Opus 5\.5<\/span>/g, "")), "nenhum “Opus 5.5” fixo sobrou nas regras");
+
+  // app.js: padrões iguais aos do plus/rules.js, as quatro regras no que o formulário compara e envia.
+  const { RULE_DEFAULTS: REAL, MODEL_EFFORTS } = require("../../plus/rules");
+  for (const k of ["primaryModel", "primaryEffort", "secondaryModel", "secondaryEffort"]) {
+    assert.ok(js.includes(`\n    ${k}: ${JSON.stringify(REAL[k])},`), `padrão de ${k} no painel igual ao do plus/rules.js`);
+  }
+  const keys = JSON.parse(/const RULE_KEYS = (\[[^\]]+\]);/.exec(js)[1]);
+  for (const k of ["primaryModel", "primaryEffort", "secondaryModel", "secondaryEffort"]) assert.ok(keys.includes(k), `RULE_KEYS sem ${k}`);
+  assert.ok(!keys.includes("preferModel"), "preferModel não é mais editado no painel: o servidor o acerta pelo modelo preferido");
+  assert.deepEqual(keys.filter((k) => !(k in REAL)), []);
+  for (const [k, id] of [["primaryModel", "rPrimary"], ["primaryEffort", "rPrimaryEffort"], ["secondaryModel", "rSecondary"], ["secondaryEffort", "rSecondaryEffort"]]) {
+    assert.ok(js.includes(`${k}: $("${id}").value,`), `readRulesForm sem ${k}`);
+  }
+  assert.deepEqual(JSON.parse(/const EFFORT_KEYS = (\[[^\]]+\]);/.exec(js)[1]), MODEL_EFFORTS, "os esforços do painel são os que o Claude Code grava");
+  assert.match(js, /const EFFORT_LABELS = \{ "": "Padrão do Claude Code", low: "Baixo", medium: "Médio", high: "Alto", xhigh: "Muito alto" \};/);
+  assert.ok(js.includes('api("POST", "/web/api/models/refresh", {})'), "o botão chama a ação do servidor");
+  assert.ok(js.includes('$("rModelsRefresh").addEventListener("click", refreshModels);'));
+  assert.ok(js.includes('toast("O modelo preferido e o secundário precisam ser diferentes.", "error");'), "não deixa salvar os dois iguais");
+  assert.ok(js.includes("· atualizados em "), "linha “N modelos · atualizados em DD/MM HH:MM”");
+  assert.ok(css.includes(".r-models {"), "os campos novos têm estilo");
 });

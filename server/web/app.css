@@ -964,6 +964,10 @@ fieldset.subfield .check { margin: 4px 0; font-size: var(--fs-md); }
 #rulesForm > fieldset.card { margin: 0; }
 .r-auto .switchrow { margin: 8px 0 4px; font-weight: 600; font-size: var(--fs-md); }
 .r-fine .fields { display: grid; gap: 0 24px; }
+/* Modelos (2.6.0): cada modelo ao lado do esforço dele; a linha de baixo diz de quando é a lista. */
+.r-models { display: grid; gap: 0 24px; }
+#rModelsHint { display: block; margin-top: 8px; }
+.r-models-foot { margin-top: 12px; justify-content: space-between; }
 
 .choices {
   display: grid;
@@ -998,6 +1002,7 @@ fieldset.subfield .check { margin: 4px 0; font-size: var(--fs-md); }
   #rulesForm > .savebar { grid-column: 1 / -1; }
   .r-model .choices { grid-template-columns: minmax(0, 1fr); }
   .r-strat .field { max-width: 480px; }
+  .r-strat .r-models { grid-template-columns: repeat(2, minmax(0, 480px)); }
   .r-fine .fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 

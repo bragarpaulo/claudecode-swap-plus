@@ -1,5 +1,5 @@
 "use strict";
-// Chamadas à Anthropic: renovar o login (OAuth), ler o uso e ler o perfil.
+// Chamadas à Anthropic: renovar o login (OAuth), ler o uso, ler o perfil e ler o catálogo de modelos.
 //
 // - Este módulo não grava nada em log. Tokens só saem daqui dentro do
 //   resultado de refresh() (para o motor guardar no cofre).
@@ -21,6 +21,10 @@
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const USER_AGENT = "swap-plus-server/2.0";
 const OAUTH_BETA = "oauth-2025-04-20";
+const API_VERSION = "2023-06-01"; // cabeçalho anthropic-version do catálogo de modelos (/v1/models)
+const MODELS_LIMIT = 100; // modelos por página (hoje vêm 15)
+const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+const MODEL_ID_RE = /^claude-[a-z0-9][a-z0-9.-]{0,79}$/;
 const TIMEOUT_MS = 15000; // uso e perfil
 const REFRESH_TIMEOUT_MS = 45000; // renovação: cortar cedo demais pode perder o refresh token novo
 const DEFAULT_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
@@ -152,6 +156,29 @@ function normalizeUsage(data) {
     if (scoped.length) out.scoped = scoped;
   }
   return out;
+}
+
+/**
+ * Resposta crua de /v1/models (`data[]`) → [{ id, name, line, createdAt, efforts }], o mais novo primeiro.
+ *   line: a família ("fable", "opus", "sonnet", "haiku"); efforts: os níveis de esforço que o modelo aceita, na
+ *   ordem low, medium, high, xhigh, max ([] = o modelo não tem esforço). Item sem ID de modelo válido é ignorado.
+ */
+function normalizeModels(data) {
+  const out = [];
+  const seen = new Set();
+  for (const m of Array.isArray(data) ? data : []) {
+    if (!isObj(m)) continue;
+    const id = str(m.id);
+    if (!id || !MODEL_ID_RE.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    const eff = isObj(m.capabilities) && isObj(m.capabilities.effort) ? m.capabilities.effort : null;
+    const efforts = eff && eff.supported !== false ? EFFORT_ORDER.filter((k) => isObj(eff[k]) && eff[k].supported === true) : [];
+    const fromId = /^claude-([a-z]+)/.exec(id);
+    const line = (str(m.line) || (fromId ? fromId[1] : "")).toLowerCase().slice(0, 40) || null;
+    out.push({ id, name: (str(m.display_name) || id).slice(0, 80), line, createdAt: str(m.created_at), efforts });
+  }
+  const ts = (m) => Date.parse(m.createdAt || "") || 0;
+  return out.sort((a, b) => ts(b) - ts(a) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
 /** Identidade opcional que o endpoint de token às vezes manda junto da renovação. */
@@ -313,12 +340,57 @@ function createAnthropic({ tokenUrl = DEFAULT_TOKEN_URL, apiBase = DEFAULT_API_B
     }
   }
 
-  return { refresh, usage, profile };
+  /**
+   * Catálogo de modelos que a conta dona do access token enxerga (GET /v1/models). Não é inferência: não gasta uso.
+   * → { ok: true, models: [{ id, name, line, createdAt, efforts }] } |
+   *   { ok: false, error: "unauthorized"|"rate_limited"|"transient"|"bad_response", status, retryAfterSec }
+   */
+  async function models(accessToken) {
+    const fail = (error, status, retryAfterSec = null) => ({ ok: false, error, status, retryAfterSec });
+    let res;
+    try {
+      res = await fetchImpl(`${base}/v1/models?limit=${MODELS_LIMIT}`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${accessToken}`, "anthropic-beta": OAUTH_BETA, "anthropic-version": API_VERSION, "User-Agent": USER_AGENT },
+        redirect: "error",
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+    } catch {
+      return fail("transient", 0);
+    }
+    if (res.status === 401) {
+      await discard(res);
+      return fail("unauthorized", 401);
+    }
+    if (res.status === 429) {
+      const ra = retryAfterOf(res, now());
+      await discard(res);
+      return fail("rate_limited", 429, ra);
+    }
+    if (!res.ok) {
+      await discard(res);
+      return fail("transient", res.status);
+    }
+    let data;
+    try {
+      data = await readJson(res);
+    } catch {
+      return fail("transient", res.status);
+    }
+    if (!isObj(data) || !Array.isArray(data.data)) return fail("bad_response", res.status);
+    const list = normalizeModels(data.data);
+    return list.length ? { ok: true, models: list } : fail("bad_response", res.status);
+  }
+
+  return { refresh, usage, profile, models };
 }
 
 module.exports = {
   createAnthropic,
   normalizeUsage,
+  normalizeModels,
+  EFFORT_ORDER,
+  API_VERSION,
   CLIENT_ID,
   USER_AGENT,
   OAUTH_BETA,

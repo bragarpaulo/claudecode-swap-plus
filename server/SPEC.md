@@ -119,6 +119,7 @@ createAnthropic({ tokenUrl, apiBase, fetchImpl = fetch }) → {
   refresh(cred)  → { ok: true, cred } | { ok: false, error: "invalid_grant"|"invalid_client"|"transient", status }
   usage(accessToken) → { ok: true, usage: Usage } | { ok: false, error: "unauthorized"|"rate_limited"|"transient"|"bad_response", status, retryAfterSec }
   profile(accessToken) → { uuid, email, orgUuid } | null
+  models(accessToken) → { ok: true, models: [{ id, name, line, createdAt, efforts }] } | { ok: false, error: "unauthorized"|"rate_limited"|"transient"|"bad_response", status, retryAfterSec }   // 2.6.0
 }
 ```
 - refresh: `POST tokenUrl` JSON `{grant_type:"refresh_token", refresh_token, client_id:"9d1c250a-e61b-44d9-88ed-5944d1962f5e"}`,
@@ -133,6 +134,12 @@ createAnthropic({ tokenUrl, apiBase, fetchImpl = fetch }) → {
   `fiveHour/sevenDay = {pct: utilization, resetsAt: resets_at}`; `limits[]` com `scope.model.display_name` e `percent` numérico →
   `scoped: [{name, pct: percent, resetsAt: resets_at}]`. 401 → unauthorized, 429 → rate_limited (+ Retry-After), resto → transient/bad_response.
 - profile: `GET {apiBase}/api/oauth/profile` → `account.uuid`, `account.email_address`, `organization.uuid`.
+- models (2.6.0): `GET {apiBase}/v1/models?limit=100`, headers `Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`,
+  `anthropic-version: 2023-06-01`. Não é inferência: não gasta uso. De cada item de `data[]`: `id` (só `claude-…`, até 80
+  caracteres), `name` = `display_name` (ou o ID), `line` = a família (`line`, ou a que o ID diz: fable, opus, sonnet, haiku),
+  `createdAt` = `created_at`, `efforts` = os níveis de `capabilities.effort` com `supported: true`, na ordem low, medium,
+  high, xhigh, max (`[]` se o modelo não tem esforço). Ordem: o mais novo primeiro. 401 → unauthorized, 429 → rate_limited,
+  lista vazia ou corpo estranho → bad_response, resto → transient.
 - timeout 15 s em tudo (AbortSignal.timeout).
 
 ## engine.js
@@ -291,6 +298,34 @@ tem o modelo não é trocada por uma sem ele).
   mais frequente perto da linha do modelo ("Uso (passo 2)", acima). Com `20`, a troca não teria acontecido.
 - Onde muda: painel, **Regras de troca → Ajustes finos → "Mínimo de Fable sobrando no destino"** (WEB-SPEC, "2.5.6");
   linha de comando, `rule preferMinFreePct 20`. `setRules`: número (ou número em texto) de 0 a 50; `null` volta ao padrão.
+
+Modelos — preferido, secundário e esforço (desde a 2.6.0; pedido do dono em 21/11/2026: "carregar todos os modelos para
+seleção, com as opções de esforço, tanto no preferido quanto no secundário"):
+- **Catálogo** (`st.models = { fetchedAt, list: [{ id, name, line, createdAt, efforts }] }`, no cofre): o que o painel lista.
+  `modelsStep` (fim do passo 3 de cada ciclo) lê `anthropic.models` quando o catálogo nunca foi lido ou tem mais de 24 h, com o
+  acesso de uma conta viva e com o acesso valendo — de preferência uma em uso, senão a de menor número. Fora do orçamento
+  das leituras de uso. Falhou: a lista de antes continua, espera 1 h (`modelsRetryAt`, só na memória) e o log avisa uma vez
+  por sequência de falhas (`[modelos] não consegui ler o catálogo…`). Um 401 aqui não renova nada. `refreshModels()` faz a
+  mesma leitura na hora (botão do painel) → `{ ok, count, fetchedAt }` ou `{ ok: false, error }` (`no_account` = nenhuma
+  conta com o acesso valendo). `modelCatalog()` → `{ fetchedAt, builtin, list }`; sem catálogo lido vale a lista embutida
+  (`builtin: true`: claude-fable-5-2, claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5, esforços low a xhigh). O acesso
+  usado nunca vai para o log. O catálogo vai só para o painel (`PanelState.models`); os serviços não o recebem.
+- **Regras** (em `RULE_DEFAULTS`, `plus/rules.js`; vão para os serviços dentro de `rules` do `StateResponse`):
+  `primaryModel` (padrão `"claude-fable-5-2"`) — o modelo que as conversas usam e que o Swap procura nas contas;
+  `secondaryModel` (padrão `"claude-opus-5-5"`) — o modelo padrão das conversas novas quando o preferido acaba em todas;
+  `primaryEffort` e `secondaryEffort` (padrão `""`) — o esforço de cada um no Claude Code: `""` (não mexe), `low`,
+  `medium`, `high` ou `xhigh` (o `max` existe na API, mas o Claude Code não o guarda no settings.json).
+  `setRules`: ID = texto `claude-…` (minúsculas, até 80 caracteres; o servidor não exige que esteja no catálogo, que pode
+  estar velho); esforço fora da lista → `invalid_rules`; preferido igual ao secundário → `invalid_rules` ("o modelo
+  preferido e o secundário precisam ser diferentes"). Nada é gravado quando recusa.
+- **`preferModel` acompanha o preferido.** O `decide()` continua usando `rules.preferModel`, que é o NOME DO LIMITE no uso
+  das contas ("Fable"). Quando `primaryModel` muda num `setRules`, o servidor grava `preferModel` = a família do modelo com
+  a inicial maiúscula (a `line` do catálogo; fora dele, a que o ID diz): fable → "Fable", opus → "Opus". Igual ao padrão,
+  a chave sai do cofre. Pedido que traz `preferModel` ele mesmo (cliente antigo) vale como veio.
+- **Quem aplica** é cada serviço (a extensão, `plus/modelSwitch.js`, desde a 3.4.0): o esforço das regras vai para
+  `modelSettings["<id>"].effortLevel` do settings.json do Claude Code; quando o preferido acaba, o `model` padrão passa para
+  o ID do secundário e volta depois. O servidor não muda o modelo de ninguém. Conversa já aberta não muda de modelo
+  sozinha (limite do Claude Code, conferido no 2.1.330).
 
 Regra **Serviços** (`rules.devicePlacement`, só do servidor; `decide()` não usa; até a 2.5.2 a tela e o histórico diziam
 "Computadores"): `"separate"` (padrão) = o que está acima (cada serviço ativo numa conta; contas dos outros ocupadas;

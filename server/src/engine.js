@@ -43,10 +43,10 @@
 //     - no piso (holdFloorMs, 30 min) renova assim mesmo: acesso vencido é pior que o buraco.
 
 const crypto = require("crypto");
-const { RULE_DEFAULTS, STRATEGY_LABELS, CAND_STALE_SEC, decide, windows, linesFor } = require("../../plus/rules");
+const { RULE_DEFAULTS, STRATEGY_LABELS, CAND_STALE_SEC, MODEL_EFFORTS, MODEL_ID_RE, modelLine, limitNameOf, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.5.6";
+const VERSION = "2.6.0";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
 // Presença (para mostrar e, desde a 2.5.5, para saber quem segura cada conta: holders): contato = qualquer pedido autenticado do serviço. Quem falou com
@@ -92,6 +92,21 @@ const NOTE_REPEAT_MS = 60 * 60 * 1000; // "sem folga" no histórico no máximo 1
 const SPENT_KEEP = 500; // refresh tokens gastos lembrados (por conta e na lista geral)
 const DIAG_MAX_ATTEMPTS = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Catálogo de modelos (2.6.0): a lista que o painel mostra em "Modelo preferido" e "Modelo secundário", com os
+// esforços de cada um. Vem de GET /v1/models com o acesso de uma conta (não é inferência: não gasta uso) e fica no
+// cofre (st.models). Uma leitura por dia; depois de uma falha, espera 1 h. Não entra no orçamento das leituras de uso.
+const MODELS_EVERY_MS = DAY_MS;
+const MODELS_RETRY_MS = 60 * 60 * 1000;
+const MODELS_MAX = 200;
+// Enquanto o catálogo nunca foi lido (servidor novo, Anthropic fora): o mínimo para o painel funcionar.
+const BUILTIN_MODELS = [
+  { id: "claude-fable-5-2", name: "Claude Fable 5.2", line: "fable", createdAt: null, efforts: [...MODEL_EFFORTS] },
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5", line: "opus", createdAt: null, efforts: [...MODEL_EFFORTS] },
+  { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", line: "sonnet", createdAt: null, efforts: [...MODEL_EFFORTS] },
+  { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", line: "haiku", createdAt: null, efforts: [...MODEL_EFFORTS] },
+];
+const MODEL_RULE_KEYS = ["primaryModel", "secondaryModel"];
+const EFFORT_RULE_KEYS = ["primaryEffort", "secondaryEffort"];
 const LOGIN_WARN_MS = 3 * DAY_MS; // avisa (histórico e painel) quando faltam menos de 3 dias para o login vencer de vez
 // E-mails ao dono sobre o vencimento dos logins (pedido do Paulo, 20/11/2026): um resumo por semana com as contas
 // que vencem nos 7 dias seguintes e, para cada conta, UM aviso quando falta menos de 1 dia.
@@ -302,6 +317,8 @@ function cleanLive(live, t) {
   };
 }
 
+const hasOwnRule = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
 function checkRule(key, value) {
   if (RULE_LIMITS[key]) {
     const [min, max] = RULE_LIMITS[key];
@@ -324,6 +341,16 @@ function checkRule(key, value) {
   if (key === "preferModel") {
     if (typeof value !== "string") throw fail("invalid_rules", "preferModel precisa ser texto");
     return value.trim().slice(0, 40);
+  }
+  if (MODEL_RULE_KEYS.includes(key)) {
+    const id = typeof value === "string" ? value.trim().toLowerCase() : "";
+    if (!MODEL_ID_RE.test(id)) throw fail("invalid_rules", `${key} precisa ser o ID de um modelo (ex.: claude-fable-5-2)`);
+    return id;
+  }
+  if (EFFORT_RULE_KEYS.includes(key)) {
+    const e = typeof value === "string" ? value.trim().toLowerCase() : null;
+    if (e !== "" && !MODEL_EFFORTS.includes(e)) throw fail("invalid_rules", `${key} precisa ser vazio (não mexe no esforço) ou ${MODEL_EFFORTS.join(", ")}`);
+    return e;
   }
   throw fail("invalid_rules", `regra desconhecida: ${key}`);
 }
@@ -368,6 +395,8 @@ class Engine {
     this.activeStreak = 0; // leituras seguidas de contas em uso (o piso das outras: usageStep)
     this.locks = new Map();
     this.pollSoon = new Set(); // contas para ler o uso logo (limite batido, login novo)
+    this.modelsRetryAt = 0; // catálogo de modelos: depois de uma falha, só tenta de novo a partir daqui (só na memória)
+    this.modelsFailed = false; // a última leitura do catálogo falhou (o log avisa uma vez por sequência de falhas)
     this.diagPending = null; // { number, accessToken, expiresAt, attempts } — token ANTIGO, nunca logar
     this.notes = new Map(); // deviceId → { key, at } (avisos repetidos no histórico)
     this.contacts = new Map(); // deviceId → ms do último pedido autenticado, de qualquer rota (touch); nunca vai para o cofre
@@ -1083,6 +1112,7 @@ class Engine {
       if (!this.stopping) {
         await this.usageStep();
         await this.decisionStep();
+        await this.modelsStep();
       }
       if (this.dirty) await this.saveQuiet();
     } catch (e) {
@@ -1584,6 +1614,95 @@ class Engine {
       this.log.warn("[diagnóstico] não deu para testar o acesso antigo; fica para a próxima renovação");
     }
     return true;
+  }
+
+  // ------------------------------------------------------------------ catálogo de modelos (2.6.0)
+
+  /**
+   * O catálogo que o painel mostra: { fetchedAt (ms | null), builtin, list: [{ id, name, line, createdAt, efforts }] }.
+   * builtin: true = a Anthropic ainda não foi lida (vale a lista mínima embutida).
+   */
+  modelCatalog() {
+    const m = this.st.models;
+    const list = isObj(m) && Array.isArray(m.list) ? m.list.filter((x) => isObj(x) && str(x.id)) : [];
+    if (!list.length) return { fetchedAt: null, builtin: true, list: BUILTIN_MODELS.map((x) => ({ ...x, efforts: [...x.efforts] })) };
+    return {
+      fetchedAt: Number(m.fetchedAt) > 0 ? Number(m.fetchedAt) : null,
+      builtin: false,
+      list: list.map((x) => ({
+        id: String(x.id),
+        name: str(x.name) || String(x.id),
+        line: str(x.line) || modelLine(x.id),
+        createdAt: str(x.createdAt),
+        efforts: Array.isArray(x.efforts) ? x.efforts.filter((e) => typeof e === "string") : [],
+      })),
+    };
+  }
+
+  /** Família ("fable", "opus"…) do modelo: a do catálogo, se ele está lá; senão a que o ID diz. */
+  modelLineOf(id) {
+    const hit = this.modelCatalog().list.find((m) => m.id === id);
+    return (hit && hit.line) || modelLine(id);
+  }
+
+  /** Conta cujo acesso serve para ler o catálogo: viva, com o acesso valendo; de preferência uma em uso. */
+  modelsAccount(t = this.now()) {
+    const active = this.activeAccountNumbers(t);
+    const ok = this.accountList().filter((a) => !a.dead && a.cred && a.cred.accessToken && (Number(a.cred.expiresAt) || 0) > t + EXPIRED_SLACK_MS);
+    return ok.find((a) => active.has(a.number)) || ok[0] || null;
+  }
+
+  /** Uma vez por dia (e logo depois de subir, se nunca leu): atualiza o catálogo. Falhou: espera 1 h. Nunca lança. */
+  async modelsStep(t = this.now()) {
+    if (typeof this.anthropic.models !== "function") return;
+    const m = this.st.models;
+    const last = isObj(m) && Array.isArray(m.list) && m.list.length ? Number(m.fetchedAt) || 0 : 0;
+    if (last && t - last < MODELS_EVERY_MS) return;
+    if (t < this.modelsRetryAt) return;
+    try {
+      await this.refreshModels();
+    } catch (e) {
+      this.modelsRetryAt = this.now() + MODELS_RETRY_MS;
+      this.log.warn(`[modelos] erro ao atualizar o catálogo: ${e && e.message}`);
+    }
+  }
+
+  /**
+   * Lê o catálogo de modelos na Anthropic com o acesso de uma conta viva e guarda no cofre.
+   * → { ok: true, count, fetchedAt } | { ok: false, error: "no_account"|"unauthorized"|"rate_limited"|"transient"|"bad_response"|"unsupported", status }
+   * O acesso nunca vai para o log. Um 401 aqui não renova nada (quem cuida do acesso é a leitura de uso).
+   */
+  async refreshModels() {
+    if (typeof this.anthropic.models !== "function") return { ok: false, error: "unsupported", status: 0 };
+    const t = this.now();
+    const acc = this.modelsAccount(t);
+    if (!acc) {
+      this.modelsRetryAt = t + MODELS_RETRY_MS;
+      return { ok: false, error: "no_account", status: 0 };
+    }
+    const res = await this.anthropic.models(acc.cred.accessToken);
+    const t2 = this.now();
+    if (!res || !res.ok || !Array.isArray(res.models) || !res.models.length) {
+      const error = (res && res.error) || "transient";
+      this.modelsRetryAt = t2 + MODELS_RETRY_MS;
+      if (!this.modelsFailed) this.log.warn(`[modelos] não consegui ler o catálogo de modelos com a conta ${acc.number} (${error}${res && res.status ? `, status ${res.status}` : ""}); tento de novo em 1 h`);
+      this.modelsFailed = true;
+      return { ok: false, error, status: (res && res.status) || 0 };
+    }
+    const list = res.models.slice(0, MODELS_MAX).map((m) => ({
+      id: String(m.id),
+      name: str(m.name) || String(m.id),
+      line: str(m.line) || modelLine(m.id),
+      createdAt: str(m.createdAt),
+      efforts: Array.isArray(m.efforts) ? m.efforts.filter((e) => typeof e === "string").slice(0, 10) : [],
+    }));
+    this.st.models = { fetchedAt: t2, list };
+    this.modelsRetryAt = 0;
+    this.modelsFailed = false;
+    this.dirty = true;
+    await this.saveQuiet();
+    this.log.info(`[modelos] catálogo atualizado com a conta ${acc.number}: ${list.length} modelo(s)`);
+    return { ok: true, count: list.length, fetchedAt: t2 };
   }
 
   // ------------------------------------------------------------------ 3) decisões
@@ -2713,10 +2832,21 @@ class Engine {
     else if (rules !== undefined) {
       if (!isObj(rules)) throw fail("invalid_rules", "rules precisa ser um objeto");
       nextRules = { ...(isObj(st.rules) ? st.rules : {}) };
+      const primaryBefore = hasOwnRule(nextRules, "primaryModel") ? nextRules.primaryModel : RULE_DEFAULTS.primaryModel;
       for (const [k, v] of Object.entries(rules)) {
         if (!Object.prototype.hasOwnProperty.call(RULE_DEFAULTS, k)) continue; // chave desconhecida: ignora
         if (v === null) delete nextRules[k];
         else nextRules[k] = checkRule(k, v);
+      }
+      // Modelos (2.6.0): o preferido e o secundário não podem ser o mesmo; e o nome do limite que o decide() procura
+      // nas contas (preferModel) acompanha o modelo preferido — a não ser que o pedido diga o preferModel ele mesmo.
+      const eff = { ...RULE_DEFAULTS, ...nextRules };
+      if (eff.primaryModel === eff.secondaryModel) throw fail("invalid_rules", "o modelo preferido e o secundário precisam ser diferentes");
+      if (eff.primaryModel !== primaryBefore && !hasOwnRule(rules, "preferModel")) {
+        const line = this.modelLineOf(eff.primaryModel);
+        const name = line ? line[0].toUpperCase() + line.slice(1) : limitNameOf(eff.primaryModel);
+        if (name === RULE_DEFAULTS.preferModel) delete nextRules.preferModel;
+        else nextRules.preferModel = name.slice(0, 40);
       }
     }
     if (nextRules) {
@@ -2749,4 +2879,4 @@ class Engine {
   }
 }
 
-module.exports = { Engine, VERSION, ERROR_STATUS, TICK_MS, ACTIVE_MS, CONTACT_MS, POLL_ACTIVE_MS, POLL_IDLE_MS, CRED_MIN_VALID_MS };
+module.exports = { Engine, VERSION, ERROR_STATUS, TICK_MS, ACTIVE_MS, CONTACT_MS, POLL_ACTIVE_MS, POLL_IDLE_MS, CRED_MIN_VALID_MS, MODELS_EVERY_MS, MODELS_RETRY_MS, BUILTIN_MODELS };

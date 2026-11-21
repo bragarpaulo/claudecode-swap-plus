@@ -37,9 +37,24 @@
     intervalSec: 60,
     onModelLimit: "sameAccount",
     devicePlacement: "separate", // "separate" | "together" (serviços juntos na mesma conta)
+    // 2.6.0: o modelo que as conversas usam, o que entra quando ele acaba, e o esforço de cada um ("" = não mexe).
+    primaryModel: "claude-fable-5-2",
+    primaryEffort: "",
+    secondaryModel: "claude-opus-5-5",
+    secondaryEffort: "",
   };
+  // Esforços que o Claude Code guarda no settings.json (o "max" só se escolhe dentro da conversa).
+  const EFFORT_KEYS = ["low", "medium", "high", "xhigh"];
+  const EFFORT_LABELS = { "": "Padrão do Claude Code", low: "Baixo", medium: "Médio", high: "Alto", xhigh: "Muito alto" };
+  // [modelo, esforço] de cada par do formulário.
+  const MODEL_FIELDS = [
+    { key: "primaryModel", effortKey: "primaryEffort", id: "rPrimary", effortId: "rPrimaryEffort" },
+    { key: "secondaryModel", effortKey: "secondaryEffort", id: "rSecondary", effortId: "rSecondaryEffort" },
+  ];
   // Regras que o painel edita (intervalSec é só do modo local da extensão).
-  const RULE_KEYS = ["sessionPct", "weeklyPct", "modelPct", "preferModel", "strategy", "expiringHours", "cooldownMin", "marginPct", "preferMinFreePct", "onModelLimit", "devicePlacement"];
+  // (preferModel, o nome do limite que o servidor procura nas contas, saiu daqui na 2.6.0: o servidor o acerta sozinho
+  // pelo modelo preferido.)
+  const RULE_KEYS = ["sessionPct", "weeklyPct", "modelPct", "primaryModel", "primaryEffort", "secondaryModel", "secondaryEffort", "strategy", "expiringHours", "cooldownMin", "marginPct", "preferMinFreePct", "onModelLimit", "devicePlacement"];
   const NUM_FIELDS = [
     { key: "expiringHours", id: "rExpiring", label: "Horas para “cota prestes a zerar”", min: 1, max: 168 },
     { key: "cooldownMin", id: "rCooldown", label: "Intervalo mínimo entre trocas", min: 0, max: 240 },
@@ -667,16 +682,6 @@
   function platformLabel(p) {
     if (!p) return "—";
     return PLATFORMS[String(p).toLowerCase()] || String(p);
-  }
-
-  function modelNames() {
-    const names = new Set();
-    for (const a of accounts()) {
-      for (const src of [a.usage, a.lastGoodUsage]) {
-        if (isObj(src) && Array.isArray(src.scoped)) for (const s of src.scoped) if (s && s.name) names.add(String(s.name));
-      }
-    }
-    return [...names].sort();
   }
 
   /** "Serviços permitidos" da conta: null = todos, [ids] = só esses, undefined = o servidor ainda não manda. */
@@ -2309,7 +2314,10 @@
       sessionPct: Number($("rSession").value),
       weeklyPct: Number($("rWeekly").value),
       modelPct: Number($("rModel").value),
-      preferModel: $("rPrefer").value,
+      primaryModel: $("rPrimary").value,
+      primaryEffort: $("rPrimaryEffort").value,
+      secondaryModel: $("rSecondary").value,
+      secondaryEffort: $("rSecondaryEffort").value,
       strategy: checkedValue("strategy"),
       expiringHours: numVal($("rExpiring")),
       cooldownMin: numVal($("rCooldown")),
@@ -2342,13 +2350,79 @@
     $("rAutoText").textContent = $("rAuto").checked ? "Troca automática ligada" : "Troca automática desligada";
   }
 
-  function fillPreferOptions(value) {
-    const sel = $("rPrefer");
-    const names = modelNames();
+  // ----- modelos (2.6.0): o catálogo vem do servidor, que o lê na Anthropic uma vez por dia -----
+
+  /** Catálogo de modelos do estado: { fetchedAt, builtin, list: [{ id, name, line, efforts }] }. */
+  function catalog() {
+    const m = S && isObj(S.models) ? S.models : null;
+    const list = m && Array.isArray(m.list) ? m.list.filter((x) => isObj(x) && x.id) : [];
+    return { fetchedAt: m ? m.fetchedAt : null, builtin: !m || m.builtin !== false, list };
+  }
+
+  const modelInfo = (id) => catalog().list.find((m) => String(m.id) === String(id)) || null;
+
+  /** Nome do modelo para as dicas: "Opus 5.5" (sem o "Claude" da frente); fora do catálogo, o próprio ID. */
+  function modelShort(id) {
+    const m = modelInfo(id);
+    return String((m && m.name) || id || "").replace(/^Claude\s+/i, "") || "modelo secundário";
+  }
+
+  /** Esforços que dá para gravar para o modelo: os que ele aceita (modelo fora do catálogo: todos). */
+  function effortsOf(id) {
+    const m = modelInfo(id);
+    const ok = m && Array.isArray(m.efforts) ? m.efforts.map(String) : EFFORT_KEYS;
+    return EFFORT_KEYS.filter((e) => ok.includes(e));
+  }
+
+  function fillModelSelect(sel, value) {
     const v = String(value || "");
-    if (v && !names.includes(v)) names.push(v);
-    sel.replaceChildren(h("option", { value: "", text: "Nenhum (sem preferência)" }), ...names.map((n) => h("option", { value: n, text: n })));
+    const list = catalog().list.map((m) => ({ id: String(m.id), name: String(m.name || m.id) }));
+    // Modelo gravado que saiu do catálogo continua aparecendo (com o ID), para não trocar sem a pessoa ver.
+    if (v && !list.some((m) => m.id === v)) list.push({ id: v, name: `${v} (fora da lista)` });
+    sel.replaceChildren(...list.map((m) => h("option", { value: m.id, text: m.name })));
     sel.value = v;
+  }
+
+  /** Esforço: "Padrão do Claude Code" + os níveis que o modelo escolhido aceita. Nível que ele não aceita vira o padrão. */
+  function fillEffortSelect(sel, modelId, value) {
+    const ok = effortsOf(modelId);
+    const v = ok.includes(String(value)) ? String(value) : "";
+    sel.replaceChildren(...["", ...ok].map((e) => h("option", { value: e, text: EFFORT_LABELS[e] })));
+    sel.value = v;
+  }
+
+  function fillModelOptions(v) {
+    for (const f of MODEL_FIELDS) {
+      fillModelSelect($(f.id), v[f.key]);
+      fillEffortSelect($(f.effortId), $(f.id).value, v[f.effortKey]);
+    }
+    paintModelNames();
+  }
+
+  /** As dicas das regras falam do modelo secundário pelo nome escolhido no formulário. */
+  function paintModelNames() {
+    const sec = modelShort($("rSecondary").value);
+    for (const el of document.querySelectorAll('[data-model="secondary"]')) el.textContent = sec;
+  }
+
+  const pad2 = (n) => String(n).padStart(2, "0");
+
+  /** "N modelos · atualizados em DD/MM HH:MM" (ou o aviso de que a lista completa ainda não foi lida). */
+  function paintModelsInfo() {
+    const c = catalog();
+    const n = c.list.length;
+    const d = toDate(c.fetchedAt);
+    const when = d ? `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}` : null;
+    $("rModelsInfo").textContent = c.builtin || !when ? `${n} modelo${n === 1 ? "" : "s"} · lista básica: a lista completa ainda não foi lida na Anthropic` : `${n} modelo${n === 1 ? "" : "s"} · atualizados em ${when}`;
+  }
+
+  const catalogSig = () => JSON.stringify(catalog().list.map((m) => [m.id, m.name, m.efforts]));
+  let modelsShownSig = null;
+
+  async function refreshModels() {
+    await act($("rModelsRefresh"), () => api("POST", "/web/api/models/refresh", {}), {
+      ok: (r) => (r && r.message) || "Lista de modelos atualizada.",
+    });
   }
 
   function writeRulesForm(v) {
@@ -2364,7 +2438,8 @@
     for (const el of $("rulesForm").querySelectorAll('input[name="strategy"]')) el.checked = el.value === v.strategy;
     for (const el of $("rulesForm").querySelectorAll('input[name="onModelLimit"]')) el.checked = el.value === (v.onModelLimit === "switchAccount" ? "switchAccount" : "sameAccount");
     for (const el of $("rulesForm").querySelectorAll('input[name="devicePlacement"]')) el.checked = el.value === (v.devicePlacement === "together" ? "together" : "separate");
-    fillPreferOptions(v.preferModel);
+    fillModelOptions(v);
+    modelsShownSig = catalogSig();
     paintChoices();
   }
 
@@ -2394,17 +2469,19 @@
     const cur = stateRuleValues();
     const sig = JSON.stringify({ ...cur, autoSwitch: undefined }); // a troca automática não conta como "regra mudada"
     fillDefaultsHints();
+    paintModelsInfo();
     if (rulesDirty && !force) {
       $("rulesChanged").classList.toggle("hidden", sig === rulesBaseSig);
       return;
     }
     $("rulesChanged").classList.add("hidden");
     if (!force && sig === rulesBaseSig) {
-      // Mesmas regras: só atualiza a lista de modelos se mudou (sem mexer no foco).
-      const sel = $("rPrefer");
-      const want = JSON.stringify(["", ...modelNames(), ...(cur.preferModel && !modelNames().includes(cur.preferModel) ? [cur.preferModel] : [])]);
-      const have = JSON.stringify([...sel.options].map((o) => o.value));
-      if (want !== have && document.activeElement !== sel) fillPreferOptions(sel.value);
+      // Mesmas regras: só atualiza as listas de modelos se o catálogo mudou (sem mexer no foco).
+      const busy = MODEL_FIELDS.some((f) => document.activeElement === $(f.id) || document.activeElement === $(f.effortId));
+      if (catalogSig() !== modelsShownSig && !busy) {
+        fillModelOptions(readRulesForm());
+        modelsShownSig = catalogSig();
+      }
       return;
     }
     rulesBase = cur;
@@ -2436,6 +2513,10 @@
     }
     if (e && e.target && e.target.type === "range") paintRangeOut(e.target.id);
     if (e && e.target && e.target.removeAttribute) e.target.removeAttribute("aria-invalid");
+    // Trocou o modelo: a lista de esforços passa a ser a dele (o esforço escolhido fica, se ele aceitar).
+    const mf = e && e.target ? MODEL_FIELDS.find((f) => f.id === e.target.id) : null;
+    if (mf) fillEffortSelect($(mf.effortId), e.target.value, $(mf.effortId).value);
+    paintModelNames();
     paintChoices();
     setRulesDirty(!sameRules(readRulesForm(), rulesBase));
   }
@@ -2456,6 +2537,13 @@
     }
     if (!v.strategy || !STRATEGY_LABELS[v.strategy]) {
       toast("Escolha a estratégia (para qual conta ir).", "error");
+      return;
+    }
+    if (!v.primaryModel || !v.secondaryModel || v.primaryModel === v.secondaryModel) {
+      const el = $("rSecondary");
+      el.setAttribute("aria-invalid", "true");
+      el.focus();
+      toast("O modelo preferido e o secundário precisam ser diferentes.", "error");
       return;
     }
     const def = defaults();
@@ -3174,6 +3262,7 @@
     rf.addEventListener("submit", saveRules);
     $("rulesUndo").addEventListener("click", undoRules);
     $("rulesDefaults").addEventListener("click", rulesToDefaults);
+    $("rModelsRefresh").addEventListener("click", refreshModels);
     setRulesDirty(false);
 
     $("allowForm").addEventListener("submit", addAllowed);

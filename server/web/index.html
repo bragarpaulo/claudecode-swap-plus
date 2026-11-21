@@ -212,7 +212,7 @@
               <label for="rModel">Limite semanal de um modelo (ex.: Fable)</label>
               <input type="range" id="rModel" name="modelPct" min="50" max="100" step="1" aria-describedby="rModelHint">
               <output id="rModelOut" for="rModel"></output>
-              <small class="hint" id="rModelHint">Padrão: <span data-def="modelPct" data-unit="%">95%</span>. Com “Trocar de conta” (abaixo), é onde o servidor troca a conta; com “Seguir na mesma conta”, é onde as conversas novas passam para o Opus 5.5.</small>
+              <small class="hint" id="rModelHint">Padrão: <span data-def="modelPct" data-unit="%">95%</span>. Com “Trocar de conta” (abaixo), é onde o servidor troca a conta; com “Seguir na mesma conta”, é onde as conversas novas passam para o <span data-model="secondary">Opus 5.5</span>.</small>
             </div>
           </fieldset>
 
@@ -223,14 +223,14 @@
                 <input type="radio" name="onModelLimit" id="rLimitSame" value="sameAccount">
                 <span>
                   <span class="name">Seguir na mesma conta</span>
-                  <span class="desc">A conta não muda. Na linha do modelo, cada serviço passa o modelo padrão do Claude Code para o Opus 5.5 (as conversas novas abrem nele) e volta quando o modelo renova. A conversa já aberta para no limite: nela, escolha o Opus 5.5 no seletor de modelo.</span>
+                  <span class="desc">A conta não muda. Na linha do modelo, cada serviço passa o modelo padrão do Claude Code para o <span data-model="secondary">Opus 5.5</span> (as conversas novas abrem nele) e volta quando o modelo renova. A conversa já aberta para no limite: nela, escolha o <span data-model="secondary">Opus 5.5</span> no seletor de modelo.</span>
                 </span>
               </label>
               <label class="choice" for="rLimitSwitch">
                 <input type="radio" name="onModelLimit" id="rLimitSwitch" value="switchAccount">
                 <span>
                   <span class="name">Trocar de conta</span>
-                  <span class="desc">O servidor passa o serviço para outra conta que ainda tem esse modelo, quando o uso dele chegar na linha do modelo acima: as conversas abertas nem param. Sem conta com o modelo, as conversas novas abrem no Opus 5.5.</span>
+                  <span class="desc">O servidor passa o serviço para outra conta que ainda tem esse modelo, quando o uso dele chegar na linha do modelo acima: as conversas abertas nem param. Sem conta com o modelo, as conversas novas abrem no <span data-model="secondary">Opus 5.5</span>.</span>
                 </span>
               </label>
             </div>
@@ -261,10 +261,28 @@
                 </span>
               </label>
             </div>
-            <div class="field">
-              <label for="rPrefer">Modelo preferido</label>
-              <select id="rPrefer" name="preferModel" aria-describedby="rPreferHint"></select>
-              <small class="hint" id="rPreferHint">Ao trocar, contas com este modelo ainda disponível vêm primeiro.</small>
+            <div class="fields r-models">
+              <div class="field">
+                <label for="rPrimary">Modelo preferido</label>
+                <select id="rPrimary" name="primaryModel" aria-describedby="rModelsHint"></select>
+              </div>
+              <div class="field">
+                <label for="rPrimaryEffort">Esforço do modelo preferido</label>
+                <select id="rPrimaryEffort" name="primaryEffort" aria-describedby="rModelsHint"></select>
+              </div>
+              <div class="field">
+                <label for="rSecondary">Modelo secundário</label>
+                <select id="rSecondary" name="secondaryModel" aria-describedby="rModelsHint"></select>
+              </div>
+              <div class="field">
+                <label for="rSecondaryEffort">Esforço do modelo secundário</label>
+                <select id="rSecondaryEffort" name="secondaryEffort" aria-describedby="rModelsHint"></select>
+              </div>
+            </div>
+            <small class="hint" id="rModelsHint">O preferido é o modelo que as conversas usam e o que o Swap procura nas contas: ao trocar, contas com ele ainda disponível vêm primeiro. Quando ele acaba em todas as contas, as conversas novas abrem no secundário, com o esforço escolhido. Conversa já aberta não muda de modelo sozinha (é um limite do Claude Code). “Padrão do Claude Code” no esforço = o Swap não mexe nele.</small>
+            <div class="row gap wrap r-models-foot">
+              <span id="rModelsInfo" class="muted small" role="status"></span>
+              <button type="button" id="rModelsRefresh" class="secondary" data-k="models-refresh">Atualizar modelos</button>
             </div>
           </fieldset>
 

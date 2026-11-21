@@ -596,6 +596,8 @@ function createWeb(deps) {
       accounts,
       rules: engine.rulesEffective(),
       ruleDefaults: { ...RULE_DEFAULTS },
+      // Catálogo de modelos (2.6.0): o que "Modelo preferido" e "Modelo secundário" listam, com os esforços de cada um.
+      models: typeof engine.modelCatalog === "function" ? engine.modelCatalog() : { fetchedAt: null, builtin: true, list: [] },
       autoSwitch: st.autoSwitch !== false,
       devices,
       allowedEmails: Array.isArray(st.allowedEmails) ? [...st.allowedEmails] : [],
@@ -668,6 +670,24 @@ function createWeb(deps) {
     await applyRules(body);
     if (rulesSnapshot() !== before) await note(`Regras alteradas pelo painel (${me})`);
     return done(sess);
+  }
+
+  const MODELS_WHY = {
+    no_account: "nenhuma conta está com o acesso valendo para fazer a consulta",
+    unauthorized: "a Anthropic recusou o acesso da conta usada na consulta",
+    rate_limited: "a Anthropic pediu para esperar",
+    bad_response: "a resposta da Anthropic veio num formato inesperado",
+    unsupported: "este servidor não sabe ler a lista de modelos",
+  };
+
+  /** Botão "Atualizar modelos": lê agora o catálogo na Anthropic (não gasta uso). Falhou: a lista de antes continua. */
+  async function refreshModels({ sess }) {
+    const r = typeof engine.refreshModels === "function" ? await engine.refreshModels() : { ok: false, error: "unsupported" };
+    if (!r || !r.ok) {
+      const why = MODELS_WHY[r && r.error] || "a Anthropic não respondeu";
+      throw new HttpError(502, "models_unavailable", `Não consegui atualizar a lista de modelos: ${why}. A lista de antes continua valendo.`);
+    }
+    return done(sess, { count: r.count, message: `Lista de modelos atualizada: ${r.count} modelo${r.count === 1 ? "" : "s"}.` });
   }
 
   function describePatch(p) {
@@ -997,6 +1017,7 @@ function createWeb(deps) {
     },
     { m: "GET", p: /^\/web\/api\/state$/, fn: panel(({ sess }) => panelState(sess)) },
     { m: "PUT", p: /^\/web\/api\/rules$/, body: true, fn: panel(putRules, change) },
+    { m: "POST", p: /^\/web\/api\/models\/refresh$/, body: true, fn: panel(refreshModels, change) },
     { m: "PATCH", p: /^\/web\/api\/accounts\/(\d{1,6})$/, body: true, fn: panel(patchAccount, change) },
     { m: "DELETE", p: /^\/web\/api\/accounts\/(\d{1,6})$/, fn: panel(deleteAccount, change) },
     { m: "PUT", p: /^\/web\/api\/accounts\/(\d{1,6})\/devices$/, body: true, fn: panel(putAccountDevices, change) },

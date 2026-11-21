@@ -73,6 +73,7 @@ Imagem: `server/web/` vai para `/app/server/web/` (Dockerfile + .dockerignore).
 | `GET /web/api/me` | `{ email, admin: true, csrf, expiresAt }` ou 401 |
 | `GET /web/api/state` | PanelState (abaixo) |
 | `PUT /web/api/rules` | `{ rules?, autoSwitch? }` → `engine.setRules` |
+| `POST /web/api/models/refresh` | `{}` → `engine.refreshModels` (2.6.0): lê agora o catálogo de modelos na Anthropic. `{ ok, count, message, state }`; falhou → 502 `models_unavailable` |
 | `PATCH /web/api/accounts/:n` | `{ disabled?, threshold?, weeklyThreshold?, modelThreshold?, priority?, alias? }` → `engine.updateAccount` (linhas: 50–100 ou null) |
 | `DELETE /web/api/accounts/:n` | `engine.removeAccount` (a tela pede confirmação) |
 | `POST /web/api/devices/:id/switch` | `{ number \| null }` → `engine.switchDevice(id, number, "painel")` |
@@ -470,3 +471,43 @@ modelo preferido no destino".
   número precisa ser maior (20, por exemplo). O que mudou junto, e vale com qualquer número: a conta em uso passa a
   ser lida a cada 2,5 min desde 15 pontos antes da linha do modelo (era 5), para a troca sair na linha de 95% antes de
   o Fable acabar (`server/SPEC.md`, "Uso (passo 2)").
+
+## 2.6.0 — Modelo preferido e modelo secundário, com todos os modelos e o esforço de cada um (pedido do dono, 21/11/2026)
+
+O pedido: "A estratégia é aproveitar ao máximo o modelo preferido, o Fable. O modelo secundário é o Opus 5.5. É preciso
+carregar todos os modelos para seleção, incluindo o Fable e o Opus, com as respectivas opções de esforço, tanto no
+preferido quanto no secundário." Até a 2.5.6 o seletor "Modelo preferido" listava só os NOMES DE LIMITE vistos no uso das
+contas (na prática, "Fable"), e o secundário (Opus 5.5) era fixo no código da extensão.
+
+- **Onde:** Contas → Regras de troca → cartão **Para qual conta ir (estratégia)**, embaixo das três estratégias. No lugar
+  do select antigo (`rPrefer`, que saiu) entram quatro, dois a dois na tela larga:
+  - **Modelo preferido** (`rPrimary`, regra `primaryModel`) e **Esforço do modelo preferido** (`rPrimaryEffort`,
+    `primaryEffort`);
+  - **Modelo secundário** (`rSecondary`, `secondaryModel`) e **Esforço do modelo secundário** (`rSecondaryEffort`,
+    `secondaryEffort`).
+- **Lista de modelos:** todos os de `PanelState.models.list`, pelo nome que a Anthropic dá ("Claude Fable 5.2"), o mais
+  novo primeiro. Um modelo gravado que saiu do catálogo continua na lista como `<id> (fora da lista)`.
+- **Lista de esforços:** **Padrão do Claude Code** (valor `""`: o Swap não mexe) e, dos níveis **Baixo** (`low`),
+  **Médio** (`medium`), **Alto** (`high`) e **Muito alto** (`xhigh`), só os que o modelo escolhido aceita
+  (`efforts` do catálogo). Trocar o modelo refaz a lista; o esforço escolhido fica se o modelo novo aceitar, senão volta
+  a "Padrão do Claude Code". O nível `max` não aparece: o Claude Code não o guarda como padrão (só dentro da conversa).
+- **Dica** (`rModelsHint`): "O preferido é o modelo que as conversas usam e o que o Swap procura nas contas: ao trocar,
+  contas com ele ainda disponível vêm primeiro. Quando ele acaba em todas as contas, as conversas novas abrem no
+  secundário, com o esforço escolhido. Conversa já aberta não muda de modelo sozinha (é um limite do Claude Code).
+  “Padrão do Claude Code” no esforço = o Swap não mexe nele."
+- **Embaixo:** `rModelsInfo` — "N modelos · atualizados em DD/MM HH:MM" (ou "N modelos · lista básica: a lista completa
+  ainda não foi lida na Anthropic", enquanto `models.builtin`) — e o botão **Atualizar modelos** (`rModelsRefresh`), que
+  chama `POST /web/api/models/refresh` e mostra a mensagem do servidor ("Lista de modelos atualizada: 15 modelos."). Erro:
+  "Não consegui atualizar a lista de modelos: <motivo>. A lista de antes continua valendo."
+- **Salvar:** as quatro regras entram no rascunho como as outras (`RULE_KEYS`: comparar, "Alterações não salvas",
+  **Desfazer**, **Voltar ao padrão**, **Salvar regras**). Preferido igual ao secundário não salva: marca o secundário e
+  mostra "O modelo preferido e o secundário precisam ser diferentes." `preferModel` saiu do que o painel envia: o servidor
+  o acerta sozinho pelo modelo preferido (SPEC.md, "Modelos").
+- **Textos que acompanham a escolha:** onde as regras diziam "Opus 5.5" fixo (a dica da linha do modelo e as duas opções de
+  "Quando o limite de um modelo acaba"), agora vai o nome do secundário escolhido no formulário (`<span data-model="secondary">`,
+  sem o "Claude" da frente). O rótulo "Mínimo de Fable sobrando no destino" continua com o texto fixo.
+- **PanelState** ganha `models: { fetchedAt (ms | null), builtin, list: [{ id, name, line, createdAt, efforts }] }`;
+  `rules` e `ruleDefaults` trazem `primaryModel`, `primaryEffort`, `secondaryModel` e `secondaryEffort`.
+- **Linha de comando:** `rule secondaryModel claude-sonnet-5-5`, `rule primaryEffort xhigh` (o caminho de sempre).
+- **O que não é do painel:** quem troca o modelo padrão e grava o esforço é a extensão de cada VS Code (3.4.0). O Hermes
+  e os outros serviços sem VS Code têm o modelo deles na própria configuração.

@@ -300,7 +300,33 @@ const RULE_DEFAULTS = {
   // Só no modo servidor (engine.js): "separate" = cada computador numa conta; "together" = todos na mesma conta
   // e trocam juntos. decide() não usa.
   devicePlacement: "separate",
+  // Modelos (servidor 2.6.0 / extensão 3.4.0; decide() não usa — ele continua olhando preferModel, o NOME do limite):
+  //   primaryModel    o modelo que as conversas usam e que o Swap procura nas contas (ID da Anthropic);
+  //   secondaryModel  o modelo padrão das conversas novas quando o preferido acaba em todas as contas;
+  //   *Effort         o esforço de cada um no Claude Code ("" = não mexe; low | medium | high | xhigh).
+  primaryModel: "claude-fable-5-2",
+  primaryEffort: "",
+  secondaryModel: "claude-opus-5-5",
+  secondaryEffort: "",
 };
+
+// Esforços que o Claude Code guarda no settings.json (modelSettings[<id>].effortLevel). O "max" existe na API,
+// mas não é gravável ali: só se escolhe dentro da conversa.
+const MODEL_EFFORTS = ["low", "medium", "high", "xhigh"];
+const MODEL_ID_RE = /^claude-[a-z0-9][a-z0-9.-]{0,79}$/;
+
+/** Família do modelo ("fable", "opus", "sonnet", "haiku"…) a partir do ID ou do apelido; null se não der para saber. */
+function modelLine(id) {
+  const t = String(id || "").trim().toLowerCase().replace(/\[.*$/, "");
+  const m = /^(?:claude-)?([a-z]+)/.exec(t);
+  return m && m[1] !== "claude" ? m[1] : null;
+}
+
+/** Nome do limite por modelo no uso das contas ("Fable", "Opus"…) para o modelo dado; "" se não der para saber. */
+function limitNameOf(id) {
+  const line = modelLine(id);
+  return line ? line[0].toUpperCase() + line.slice(1) : "";
+}
 
 module.exports = {
   STALE_USAGE_SEC,
@@ -308,6 +334,10 @@ module.exports = {
   STRATEGY_LABELS,
   DEAD_LOGIN,
   RULE_DEFAULTS,
+  MODEL_EFFORTS,
+  MODEL_ID_RE,
+  modelLine,
+  limitNameOf,
   loginDead,
   fmtPct,
   roundedDate,

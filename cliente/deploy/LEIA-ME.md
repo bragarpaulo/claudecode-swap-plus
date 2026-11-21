@@ -115,7 +115,11 @@ também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `he
   dentro do Stafy e pediu a conta 1 (Fable em 100%); a regra "juntos" levou o VS Code junto e a própria conversa
   bateu o limite. No aviso de limite o servidor registrou a conta 22 (a atribuída naquele instante), mas o acesso em
   uso era o da conta 1: o aviso da extensão não diz de qual conta é o acesso.
-- **Ainda não visto ao vivo** (até 15:05): uma renovação adiada pela 2.5.5 (a primeira chance é às 15:53, conta 6) e
+- **Visto ao vivo às 15:53:19:** as contas 1, 4 e 7 renovaram e a conta 6, em uso, foi adiada (`[renovação] conta 6:
+  adiada, NoteWin, Câmeras da casa (servidor), Hermes (servidor) e Stafy (servidor) estão com o acesso dela`). Nenhuma
+  conversa do NoteWin teve erro de login. É a mesma situação das 09:53, agora sem queda.
+- **Ainda não visto ao vivo** (até 15:58): a segunda metade da 2.5.5 (faltando menos de 1 h, a troca "o login da conta
+  N vai ser renovado" e a renovação logo depois; para a conta 6 isso é às 16:53, se os serviços ainda estiverem nela) e
   um limite de verdade com o gancho de retomada no ar (o registro dele fica em `~/.swap-plus/retomar.log`).
 - **Voltar atrás:** servidor, a variável `SWAP_PLUS_VERSAO` com `2.5.4` (as imagens continuam lá); retomada, a opção
   na tela da extensão (ou `"enabled": false` em `~/.swap-plus/retomar.json`, que vale na hora).

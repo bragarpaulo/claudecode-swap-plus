@@ -38,6 +38,32 @@ também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `he
 --provider "" --reasoning-effort ""` em vez de repor o arquivo). Para voltar: no painel, Modelos → Main model → Change → OpenAI Codex
 `gpt-6.1-sol`, e `hermes config set agent.reasoning_effort medium`.
 
+**Correções de 21/11/2026 (madrugada), depois que o Paulo viu o chat do aplicativo cair no GPT:**
+
+- **Aplicativo (Desktop) mandando "modelo Claude + provedor do GPT".** O aplicativo guarda na máquina a última
+  escolha manual de modelo e a de provedor separadamente. Depois da troca do modelo principal ele ficou com o modelo
+  novo (`claude-fable-5-2[1m]`) e o provedor antigo (`openai-codex`) e passou a criar as conversas com esse par, que
+  não existe: cada mensagem falhava três vezes (404, uns 9 s) e só então a reserva (GPT) respondia. Reproduzido com
+  `hermes chat --oneshot --provider openai-codex -m 'claude-fable-5-2[1m]'`. Correção no servidor, sem depender do
+  aplicativo: `/opt/data/extra_pkgs/hermes_model_lock.py` ganhou `repair_route` (marcador
+  `HERMES_CLAUDE_ROUTE_REPAIR_V1`), instalada em `LocalSessionPolicy.effective`: quando a rota de uma sessão com
+  política de lançamento (aplicativo, linha de comando) resolve em "modelo claude-* no provedor `openai-codex` ou
+  `anthropic`" e o perfil está no plugin, a sessão segue a rota do perfil, mantendo o modelo pedido. Sessões de modo
+  seguro e qualquer outro par ficam como estavam; erro dentro da regra devolve o resultado original. No mesmo
+  arquivo, o GPT forçado da trava antiga passou a ser resolvido para o próprio Codex (antes era montado em cima da
+  rota padrão, que deixou de ser o Codex). Cópia de antes: `hermes_model_lock.py.antes-reparo-20261121`. Revisada por
+  dois revisores independentes antes de instalar; gateway reiniciado às 01:01–01:03 (84 s: esperou uma rotina
+  terminar). Depois: o mesmo comando responde pelo Fable em 2,1 s, sem falha; GPT escolhido de propósito continua no
+  GPT; o padrão do perfil sai pelo Fable.
+- **Resposta a mensagem de voz saindo pelo GPT.** `auxiliary.voice_chat` é a rota das respostas a áudio e o padrão
+  dela é seguir o modelo principal; em 20/11 ela tinha sido presa ao GPT junto com as tarefas internas, por engano.
+  Voltou ao padrão (`provider: auto`, sem modelo; cópia de antes: `config.yaml.antes-voz-20261121`). A transcrição
+  (`stt`) continua no GPT. As outras 20 tarefas auxiliares seguem presas a `openai-codex` / `gpt-6.1-sol`.
+- Ainda não visto depois destas correções: uma mensagem do aplicativo em si (o caminho foi testado pela linha de
+  comando, que usa a mesma política de lançamento) e uma mensagem de voz respondida pelo Fable.
+- Possível complemento, não feito: o par espelhado (modelo GPT no provedor do plugin), que o aplicativo poderia
+  mandar se o modelo principal voltasse para o GPT.
+
 Conferido depois da troca: uma mensagem de verdade pela API do gateway (o mesmo processo do WhatsApp) respondida pelo
 `claude-fable-5-2[1m]` com uso de ferramenta, em 5,5 s, sem a trava trocar por GPT; e o cliente acompanhando sozinho
 uma troca de conta decidida pelo Swap.

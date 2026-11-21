@@ -183,7 +183,7 @@ Sem perfis de regras: as regras são UMA só (gerais), ficam dentro de **Contas*
 - Botão **+ Adicionar conta** (login pela assinatura Claude, direto no painel — ver "Adicionar conta pela assinatura").
 - Lista: participantes da troca primeiro, na ordem da fila (semanal que renova antes primeiro; empate: menos uso);
   embaixo, grupo recolhido **Fora da troca (N)**. Desde a 2.5.1 a lista é uma coluna de linhas que abrem e fecham, com
-  as contas em uso no alto (ver "2.5.1").
+  as contas em uso no alto (ver "2.5.1"); na 2.5.2 o grupo saiu e as contas fora da troca ficam no fim da lista.
 - Cartão da conta como hoje + **Computadores permitidos**: "Todos" ou caixas por computador (um ou mais).
   `state.accountDevices["<n>"] = null | [deviceId...]` (null = todos). Remover computador/conta limpa as listas.
 - Abaixo da lista, seção **Regras de troca** (o formulário de regras de hoje: sessão/semanal/modelo %, modelo
@@ -197,12 +197,12 @@ Sem perfis de regras: as regras são UMA só (gerais), ficam dentro de **Contas*
   - Vai em `PUT /web/api/rules { rules: { devicePlacement } }` (rota de hoje; o motor recusa outro valor com 400 `invalid_rules`).
     Motor: SPEC.md, "Regra Computadores".
 
-**Serviços** (o menu "Computadores" até a 2.5.0): grade de quadradinhos, um por computador: nome (renomear), sistema, usuário (conta Google), último
+**Serviços** (o menu "Computadores" até a 2.5.0): grade de quadradinhos (linhas que abrem e fecham desde a 2.5.2), um por computador: nome (renomear), sistema, usuário (conta Google), último
 contato (ativo/parado), **conta Claude logada nele agora** (número + e-mail) com o uso dela em barras pequenas; ações:
 trocar de conta (só entre as permitidas para esse computador; "melhor conta"), desconectar. Bloco "Conectar um
 computador" (passo a passo + código de reserva).
 
-**Usuários**: tabela (e-mail, papel: Administrador/Usuário, computadores conectados, desde quando, ações): liberar
+**Usuários** (colunas, ordenação e confirmação na linha: ver "2.5.2"): tabela (e-mail, papel: Administrador/Usuário, computadores conectados, desde quando, ações): liberar
 (e-mail), tirar (admin não sai). É quem pode conectar computadores; o painel continua só do administrador.
 
 **Regra de uso no motor**: um computador só recebe/troca para contas cujo `accountDevices` é null ou contém o id
@@ -276,7 +276,7 @@ Os outros textos com "computadores" não mudaram (regra "Computadores: Separados
 - **Ordem**: primeiro as contas **em uso** (com computador nelas agora — `assignedDevices`), inclusive uma conta fora da
   troca que esteja em uso; depois as outras que participam, na ordem da fila. A etiqueta "Nº na fila" é a posição na
   fila, não na lista (a conta em uso sobe sem mudar de posição). As que não participam e não estão em uso continuam no
-  grupo recolhido **Fora da troca (N)**.
+  grupo recolhido **Fora da troca (N)** (até a 2.5.2, que acabou com o grupo: ver "2.5.2").
 - **Alerta de login** (a validade é o `loginExpiresAt`, o mesmo "Login vale até" do cartão): faltando **menos de 3 dias**,
   a linha ganha o ícone de alerta, a borda amarela e a linha **"Fazer login até <data e hora>"** piscando; já vencido,
   em vermelho, **"Login venceu em <data e hora>"**. Aparece com a conta recolhida e com ela aberta (a linha é o cabeçalho
@@ -289,3 +289,59 @@ Os outros textos com "computadores" não mudaram (regra "Computadores: Separados
   e fecham. O corpo é irmão do botão, não filho: os controles de dentro não abrem nem fecham o cartão. A atualização de
   30 s devolve o foco ao mesmo controle (`data-k`) sem rolar a página. "Ver conta N" (avisos do topo) abre o cartão.
 - Rascunho de "Ajustes desta conta" ainda não salvo: a linha mostra "Alterações não salvas", mesmo com o cartão fechado.
+
+## 2.5.2 — Fim do grupo "Fora da troca", serviços em linhas, tabela de usuários e busca em cada aba (pedido do dono, 20/11/2026)
+
+De novo só a tela mudou (`server/web/`): nenhuma rota nem campo novo. Tudo sai do PanelState e das rotas que já existiam.
+
+**Contas: uma lista só.** O grupo recolhido "Fora da troca (N)" saiu. As contas que não participam da troca são linhas
+como as outras, no **fim da lista** (por número), com o indicador "Fora da troca" de sempre. Ordem completa: contas em
+uso (as que participam, na ordem da fila; depois as fora da troca que estiverem em uso) → as outras que participam, na
+ordem da fila → as fora da troca sem uso. A frase útil do grupo foi para a "Situação" do cartão aberto: "fora da troca
+(a troca automática não usa esta conta; dá para usá-la numa troca manual, em Serviços, ou ligar “Participa da troca” de
+novo, abaixo)".
+
+**Serviços: linhas que abrem e fecham**, como as contas (no lugar da grade de quadradinhos):
+- A página abre com **todos recolhidos**; o que está aberto fica só na memória da página (por id do computador) e
+  continua igual nas atualizações de 30 s. Ordem: os ativos primeiro; depois, por nome (como antes).
+- **Linha recolhida** (cerca de duas linhas na tela larga; empilhada abaixo de 960 px): bolinha de ativo/parado e o
+  nome; sistema e quem conectou (e-mail do Google ou "conectado por código"); a conta Claude de agora — "Conta N" com
+  **uma barra**, a mesma da linha da conta (o limite de maior porcentagem; o nome do limite e "renova <quando>" vão na
+  linha de baixo), ou "Sem conta Claude agora" / "Conta N (não existe mais no servidor)"; e o contato ("ativo agora",
+  ou "parado" e "visto <quando>", ou "ainda não apareceu"). Conta de login morto: etiqueta "Login morto" na linha.
+- **Cartão aberto** = o que o quadradinho tinha: sistema, usuário e contato; "Conta Claude agora" com as barras todas;
+  "Trocar para" (só as contas permitidas); **Renomear** (o campo aparece no alto do cartão) e **Desconectar**.
+- Mesma acessibilidade das contas: a linha é um `<button>` com `aria-expanded`/`aria-controls`; o corpo é irmão dele.
+  Nome digitado e ainda não salvo: a linha mostra "Nome não salvo", mesmo com o cartão fechado.
+- O bloco "Conectar um computador" continua embaixo da lista.
+
+**Usuários: tabela** com as colunas **Usuário** (e-mail, com "você"), **Situação** (Administrador / Liberado / Não
+liberado — este saiu da lista mas ainda tem serviço conectado), **Serviços** (quantos e quais), **Desde** e as ações.
+- **Liberar um usuário**: formulário no alto (e-mail + botão). O que der errado aparece **embaixo do campo** — campo
+  vazio, e-mail que não parece válido, ou a mensagem que o servidor devolveu — e o campo fica marcado (`aria-invalid`,
+  `aria-describedby`). O sucesso também aparece ali ("… liberado. Ele já pode conectar…").
+- **Ações por linha** (as que o servidor tem): **Tirar** (liberado) e **Liberar de novo** (não liberado); o
+  administrador é "fixo". Não há "editar": não existe rota para isso.
+- **Tirar** não abre janela: a linha ganha uma faixa embaixo com a pergunta e os botões "Tirar usuário" / "Cancelar"
+  (o foco vai para Cancelar; Esc cancela; sair da aba cancela). Se o servidor falhar, o erro aparece nessa faixa.
+  O resultado ("… não está mais liberado.") aparece no alto da tabela.
+- **Ordenar**: os cabeçalhos Usuário, Situação e Serviços são botões (`aria-sort`); clicar de novo inverte. Ordem
+  inicial: situação (administrador, liberados, não liberados), com o e-mail desempatando.
+- **Celular** (até 720 px): cada linha vira um cartão empilhado (e-mail e ação em cima; "Situação:", "Serviços:" e
+  "Desde:" embaixo). O cabeçalho some — ali não dá para ordenar. Sem rolagem horizontal.
+
+**Busca em cada aba** (Contas, Serviços, Usuários): um campo acima da lista, que filtra enquanto a pessoa digita.
+- Procura em **todos os dados do item**, inclusive os que só aparecem com o cartão aberto. Conta: "Conta N", apelido,
+  e-mail, plano, organização, "participa da troca" / "fora da troca", "em uso" e os nomes dos computadores nela,
+  "Nº na fila", "login morto", "Fazer login até…" / "Login venceu…", "sem leitura de uso", computadores permitidos.
+  Serviço: nome, sistema, e-mail de quem conectou ou "conectado por código", "ativo agora" / "parado" / "ainda não
+  apareceu", "Conta N" (ou "sem conta"), apelido e e-mail dessa conta, "login morto". Usuário: e-mail, situação,
+  "você" e os nomes dos serviços. As porcentagens não entram.
+- Sem diferença de maiúsculas e de acentos ("servico" acha "Serviço"). Com mais de uma palavra, **todas** precisam
+  aparecer, em qualquer ordem e campo; e, se algum item tem a **frase inteira**, ficam só esses ("em uso" não traz a
+  conta "sem leitura de uso"; "conta 7" não traz a que está em 7º na fila).
+- Ao lado do campo: **"N de M"** (com texto na busca) e o **×** que limpa; **Esc** limpa. Sem resultado: "Nada
+  encontrado para “…”" com o botão "Limpar a busca".
+- O texto de cada aba fica só na memória: continua na atualização de 30 s e ao trocar de aba; some ao recarregar. A
+  busca só esconde linhas — não muda a ordem nem o que está aberto — e o campo não pega o foco na atualização.
+  "Ver conta N" (avisos do topo) limpa a busca das contas se ela esconde a conta.

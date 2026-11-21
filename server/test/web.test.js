@@ -1521,6 +1521,95 @@ test('painel de verdade (server/web): menu "Contas · Serviços · Usuários", n
   assert.ok(!/setInterval\([^)]*(?:blink|pisca)/i.test(js), "o piscar não usa temporizador");
 });
 
+// 2.5.2: contas fora da troca no fim da lista (sem grupo), serviços em linhas que abrem e fecham, tabela de
+// usuários (ordenar, confirmar na linha, mensagens no lugar) e uma busca em cada aba. Também lê os arquivos de verdade.
+test("painel de verdade (server/web), 2.5.2: sem o grupo “Fora da troca”, serviços em linhas, tabela de usuários e busca em cada aba", () => {
+  const webDir = path.join(__dirname, "..", "web");
+  const html = fs.readFileSync(path.join(webDir, "index.html"), "utf8");
+  const js = fs.readFileSync(path.join(webDir, "app.js"), "utf8").replace(/\r\n/g, "\n");
+  const css = fs.readFileSync(path.join(webDir, "app.css"), "utf8").replace(/\r\n/g, "\n");
+
+  // Contas: uma lista só (o grupo recolhido "Fora da troca (N)" saiu da tela, do JS e do CSS).
+  for (const [nome, texto] of [["index.html", html], ["app.js", js], ["app.css", css]]) {
+    assert.ok(!/outgroup|outOpen/.test(texto), `${nome}: sobrou o grupo "Fora da troca"`);
+  }
+  assert.ok(!/Fora da troca \(\$\{/.test(js), 'app.js: sobrou o título "Fora da troca (N)"');
+  assert.match(js, /\.\.\.inQ\.filter\(inUse\), \.\.\.off\.filter\(inUse\), \.\.\.inQ\.filter\(\(a\) => !inUse\(a\)\), \.\.\.off\.filter\(\(a\) => !inUse\(a\)\)/, "ordem: em uso, fila, fora da troca no fim");
+
+  // Busca: um campo por aba, com rótulo, contador "N de M" e botão de limpar; o texto fica só na memória.
+  for (const [sec, rotulo] of [["contas", "Buscar nas contas"], ["computadores", "Buscar nos serviços"], ["usuarios", "Buscar nos usuários"]]) {
+    assert.match(html, new RegExp(`<label class="visually-hidden" for="q-${sec}">${rotulo}</label>`), `rótulo da busca de ${sec}`);
+    assert.match(html, new RegExp(`<input type="search" id="q-${sec}"[^>]*autocomplete="off"[^>]*aria-describedby="qn-${sec}"`), `campo de busca de ${sec}`);
+    assert.match(html, new RegExp(`<button type="button" class="iconbtn clearbtn hidden" id="qx-${sec}" aria-label="Limpar a busca [^"]+">`), `botão de limpar de ${sec}`);
+    assert.match(html, new RegExp(`id="qn-${sec}" role="status"`), `contador de ${sec}`);
+  }
+  assert.match(js, /const filters = \{ contas: "", computadores: "", usuarios: "" \};/);
+  assert.match(js, /`\$\{shown\} de \$\{total\}`/);
+  assert.match(js, /`Nada encontrado para “\$\{filters\[sec\]\.trim\(\)\}”`/);
+  assert.match(js, /e\.key !== "Escape"/, "Esc limpa a busca");
+  assert.ok(!/(?:local|session)Storage\.setItem\([^)]*(?:filter|busca|q-)/i.test(js), "a busca não é gravada");
+
+  // A regra da busca, de verdade: tira do app.js o fold() e o searchFilter() e roda aqui (são funções sem tela).
+  const foldSrc = /\n  const fold = \(v\) =>[\s\S]*?;\n/.exec(js);
+  const filterSrc = /\n  function searchFilter\(sec, list, textsOf\) \{[\s\S]*?\n  \}\n/.exec(js);
+  assert.ok(foldSrc && filterSrc, "não achei fold()/searchFilter() no app.js");
+  const filters = { t: "" };
+  const { fold, searchFilter } = new Function("filters", `${foldSrc[0]}${filterSrc[0]}return { fold, searchFilter };`)(filters);
+  assert.equal(fold("Serviço  JOSÉ Antônio – Ação"), "servico  jose antonio – acao");
+  const itens = [
+    { n: 1, t: ["Conta 7", "ana@exemplo.com", "em uso em 2 computadores", "5º na fila"] },
+    { n: 2, t: ["Conta 9", "bia@exemplo.com", "7º na fila", "sem leitura de uso", "Serviço de Rotinas"] },
+    { n: 3, t: ["Conta 12", "José Antônio", "fora da troca", null] },
+  ];
+  const busca = (q) => {
+    filters.t = q;
+    return searchFilter("t", itens, (x) => x.t).map((x) => x.n);
+  };
+  assert.deepEqual(busca(""), [1, 2, 3]);
+  assert.deepEqual(busca("   "), [1, 2, 3]);
+  assert.deepEqual(busca("SERVICO"), [2], "sem diferença de maiúsculas e acentos");
+  assert.deepEqual(busca("jose antonio"), [3]);
+  assert.deepEqual(busca("fila conta"), [1, 2], "várias palavras: todas, em qualquer ordem e campo");
+  assert.deepEqual(busca("exemplo fora"), [], "todas precisam aparecer");
+  assert.deepEqual(busca("7"), [1, 2]);
+  assert.deepEqual(busca("conta 7"), [1], "a frase inteira ganha: não traz a 7ª da fila");
+  assert.deepEqual(busca("em uso"), [1], 'a frase inteira ganha: não traz "sem leitura de uso"');
+
+  // Serviços: linhas que abrem e fecham, como as contas (botão com aria-expanded/aria-controls; aberto só na memória).
+  assert.match(html, /<div id="devices" class="services">/);
+  assert.ok(!/deviceTile|class="tiles"|"card tile/.test(html + js), "sobrou a grade de quadradinhos");
+  assert.match(js, /const svcExpanded = new Set\(\);/);
+  assert.match(js, /"aria-controls": o\.id\("body"\)/);
+  assert.match(js, /class: "abody sbody", id: id\("body"\), hidden: !open/);
+  assert.match(js, /rowUsage\(o\.acc, `Conta \$\{o\.acc\.number\}`\)/, "a linha do serviço usa a mesma barra única das contas");
+  assert.match(css, /\.accounts,\n\.services \{[^}]*grid-template-columns: minmax\(0, 1fr\)/, "contas e serviços: uma coluna");
+
+  // Usuários: tabela com cabeçalhos que ordenam, liberar com a mensagem no lugar e "Tirar" confirmado na linha.
+  const cabecalhos = [...html.matchAll(/<th scope="col" data-sort="([a-z]+)" aria-sort="[a-z]+"><button type="button" class="thsort">([^<]+)<\/button><\/th>/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(cabecalhos, [
+    ["email", "Usuário"],
+    ["role", "Situação"],
+    ["services", "Serviços"],
+  ]);
+  assert.match(html, /<input type="email" id="allowEmail"[^>]*aria-describedby="allowMsg allowHint">/);
+  assert.match(html, /<p id="allowMsg" class="fieldmsg hidden" role="status"><\/p>/);
+  assert.match(html, /<p id="usersStatus" class="fieldmsg tablemsg hidden" role="status" tabindex="-1"><\/p>/);
+  assert.match(js, /const ROLE_LABEL = \{ admin: "Administrador", user: "Liberado", gone: "Não liberado" \};/);
+  const usuarios = js.slice(js.indexOf("\n  function userRows() {"), js.indexOf("\n  function renderGoogleInfo() {"));
+  assert.ok(usuarios.length > 2000, "não achei o trecho da aba Usuários no app.js");
+  assert.ok(!/confirmBox\(|window\.confirm|toast\(/.test(usuarios), "Usuários: confirmação e mensagens no lugar (sem janela nem aviso flutuante)");
+  assert.match(usuarios, /"data-k": `user-yes-\$\{r\.key\}`, text: "Tirar usuário"/);
+  assert.match(usuarios, /"data-k": `user-no-\$\{r\.key\}`, text: "Cancelar"/);
+  for (const rota of ['api("POST", "/web/api/allowed", { email', 'api("DELETE", `/web/api/allowed/${encodeURIComponent(r.email)}`)']) {
+    assert.ok(usuarios.includes(rota), `Usuários usa a rota que já existe: ${rota}`);
+  }
+  assert.deepEqual([...new Set([...usuarios.matchAll(/api\("([A-Z]+)", [`"](\/web\/api\/[a-z]+)/g)].map((m) => `${m[1]} ${m[2]}`))].sort(), ["DELETE /web/api/allowed", "POST /web/api/allowed"], "nenhuma rota inventada");
+  // No celular a tabela vira cartões empilhados: o cabeçalho some e cada dado leva o nome da coluna.
+  const celular = css.slice(css.indexOf("@media (max-width: 720px)"), css.indexOf("@media (max-width: 480px)"));
+  assert.match(celular, /\.utable thead \{ display: none; \}/);
+  assert.match(celular, /\.utable td\[data-label\]::before \{ content: attr\(data-label\) ": "/);
+});
+
 test("versão: server.js e engine.js dizem a mesma (é a do rodapé do painel)", () => {
   const { VERSION } = require("../src/server");
   assert.match(VERSION, /^\d+\.\d+\.\d+$/);

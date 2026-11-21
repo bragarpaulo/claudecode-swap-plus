@@ -136,10 +136,23 @@
       <details class="legend">
         <summary>Como ler a lista</summary>
         <p class="muted small">Cada conta é uma linha. Clique nela para abrir o cartão com todos os limites, os dados e os ajustes; clique de novo para fechar. A linha mostra uma barra só, a do limite mais perto de parar a conta (o de maior porcentagem entre sessão de 5 horas, semanal e modelo), quando ele renova e se a conta participa da troca.</p>
-        <p class="muted small">As contas em uso (com computador nelas agora) aparecem primeiro. Depois vêm as outras que participam da troca, na ordem da fila: primeiro a conta cujo limite semanal renova antes; em empate, a menos usada. As que não participam ficam no grupo “Fora da troca”, embaixo.</p>
+        <p class="muted small">As contas em uso (com computador nelas agora) aparecem primeiro. Depois vêm as outras que participam da troca, na ordem da fila: primeiro a conta cujo limite semanal renova antes; em empate, a menos usada. As que não participam ficam no fim da lista, com o indicador “Fora da troca”.</p>
         <p class="muted small">As barras mostram quanto de cada limite já foi usado; o tracinho é a linha de troca. Verde: longe da linha. Amarelo: chegando perto. Vermelho: na linha (o servidor passa o computador para outra conta).</p>
         <p class="muted small">“Acesso” é a chave de poucas horas que o servidor renova sozinho. “Login” é o que permite renovar: quando vence, é preciso entrar de novo com a conta. Faltando menos de 3 dias, a linha da conta pisca “Fazer login até…” com a data e a hora.</p>
+        <p class="muted small">A busca procura em tudo o que a conta mostra, inclusive o que só aparece com o cartão aberto: número, apelido, e-mail, plano, organização, situação (“em uso”, “fora da troca”, “login morto”), posição na fila e os computadores nela. Não liga para maiúsculas nem acentos; com mais de uma palavra, todas precisam aparecer (se alguma conta tem a frase inteira, ficam só essas).</p>
       </details>
+
+      <div class="searchbar" role="search" aria-label="Busca das contas">
+        <label class="visually-hidden" for="q-contas">Buscar nas contas</label>
+        <div class="searchfield">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M11 4a7 7 0 1 0 0 14a7 7 0 0 0 0-14zM20 20l-4-4"/></svg>
+          <input type="search" id="q-contas" data-k="q-contas" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Buscar: número, e-mail, situação…" aria-describedby="qn-contas">
+          <button type="button" class="iconbtn clearbtn hidden" id="qx-contas" aria-label="Limpar a busca das contas">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <span class="qcount muted small" id="qn-contas" role="status"></span>
+      </div>
 
       <div id="accounts"><p class="muted loading">Carregando…</p></div>
 
@@ -296,7 +309,20 @@
           <p class="muted small">Cada computador conectado recebe do servidor o acesso de uma conta Claude. Trocar aqui vale em até 30 segundos, e o Claude Code aberto passa a usar a conta nova sozinho.</p>
         </div>
       </div>
-      <div id="devices" class="tiles"><p class="muted loading">Carregando…</p></div>
+
+      <div class="searchbar" role="search" aria-label="Busca dos serviços">
+        <label class="visually-hidden" for="q-computadores">Buscar nos serviços</label>
+        <div class="searchfield">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M11 4a7 7 0 1 0 0 14a7 7 0 0 0 0-14zM20 20l-4-4"/></svg>
+          <input type="search" id="q-computadores" data-k="q-computadores" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Buscar: nome, e-mail, conta, ativo…" aria-describedby="qn-computadores">
+          <button type="button" class="iconbtn clearbtn hidden" id="qx-computadores" aria-label="Limpar a busca dos serviços">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <span class="qcount muted small" id="qn-computadores" role="status"></span>
+      </div>
+
+      <div id="devices" class="services"><p class="muted loading">Carregando…</p></div>
 
       <div class="card connect" id="connectBox">
         <h3>Conectar um computador</h3>
@@ -332,25 +358,41 @@
         </div>
       </div>
 
+      <!-- liberar um usuário: o erro do campo (ou a resposta do servidor) aparece embaixo dele, em #allowMsg -->
+      <form id="allowForm" class="card allowform" novalidate>
+        <label for="allowEmail">Liberar um usuário (conta Google)</label>
+        <div class="row gap wrap">
+          <input type="email" id="allowEmail" autocomplete="off" spellcheck="false" placeholder="pessoa@gmail.com" aria-describedby="allowMsg allowHint">
+          <button type="submit" id="btnAllow" data-k="allow-add">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+            <span>Liberar</span>
+          </button>
+        </div>
+        <p id="allowMsg" class="fieldmsg hidden" role="status"></p>
+        <small class="hint" id="allowHint">Depois de liberada, a pessoa conecta o computador pelo VS Code com essa conta Google (“Entrar com Google”).</small>
+      </form>
+
+      <div class="searchbar" role="search" aria-label="Busca dos usuários">
+        <label class="visually-hidden" for="q-usuarios">Buscar nos usuários</label>
+        <div class="searchfield">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M11 4a7 7 0 1 0 0 14a7 7 0 0 0 0-14zM20 20l-4-4"/></svg>
+          <input type="search" id="q-usuarios" data-k="q-usuarios" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Buscar: e-mail, situação, serviço…" aria-describedby="qn-usuarios">
+          <button type="button" class="iconbtn clearbtn hidden" id="qx-usuarios" aria-label="Limpar a busca dos usuários">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <span class="qcount muted small" id="qn-usuarios" role="status"></span>
+      </div>
+
       <div class="card tablecard">
-        <form id="allowForm" class="tabletools allowform" novalidate>
-          <label for="allowEmail">Liberar um usuário (conta Google)</label>
-          <div class="row gap wrap">
-            <input type="email" id="allowEmail" autocomplete="off" spellcheck="false" placeholder="pessoa@gmail.com" aria-describedby="allowHint">
-            <button type="submit" id="btnAllow" data-k="allow-add">
-              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
-              <span>Liberar</span>
-            </button>
-          </div>
-          <small class="hint" id="allowHint">Depois de liberada, a pessoa conecta o computador pelo VS Code com essa conta Google (“Entrar com Google”).</small>
-        </form>
+        <p id="usersStatus" class="fieldmsg tablemsg hidden" role="status" tabindex="-1"></p>
         <table class="utable">
-          <caption class="visually-hidden">Usuários que podem conectar computadores</caption>
+          <caption class="visually-hidden">Usuários que podem conectar computadores. Os cabeçalhos Usuário, Situação e Serviços ordenam a tabela.</caption>
           <thead>
             <tr>
-              <th scope="col">E-mail</th>
-              <th scope="col">Papel</th>
-              <th scope="col">Computadores</th>
+              <th scope="col" data-sort="email" aria-sort="none"><button type="button" class="thsort">Usuário</button></th>
+              <th scope="col" data-sort="role" aria-sort="ascending"><button type="button" class="thsort">Situação</button></th>
+              <th scope="col" data-sort="services" aria-sort="none"><button type="button" class="thsort">Serviços</button></th>
               <th scope="col">Desde</th>
               <th scope="col"><span class="visually-hidden">Ações</span></th>
             </tr>

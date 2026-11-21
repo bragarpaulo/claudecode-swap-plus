@@ -274,6 +274,7 @@ button.linkbtn:hover { text-decoration-thickness: 2px; }
 
 input[type="text"],
 input[type="email"],
+input[type="search"],
 input[type="number"],
 select,
 textarea {
@@ -290,6 +291,7 @@ textarea {
 }
 input[type="text"]:hover,
 input[type="email"]:hover,
+input[type="search"]:hover,
 input[type="number"]:hover,
 select:hover,
 textarea:hover { border-color: var(--soft); }
@@ -578,53 +580,38 @@ fieldset.card > legend + .hint { margin-bottom: 4px; }
 .emptystate p { max-width: 60ch; margin: 4px auto 0; font-size: var(--fs-md); }
 .emptystate .emptytitle { margin: 0 auto; font-size: var(--fs-lg); font-weight: 650; color: var(--fg); }
 
+/* ------------------------------------------------------------ busca (uma por aba) */
+
+.searchbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 12px 0 0; }
+.searchfield { position: relative; flex: 1 1 260px; max-width: 460px; display: flex; align-items: center; }
+.searchfield > .ico { position: absolute; left: 12px; color: var(--soft); pointer-events: none; }
+.searchfield > input { width: 100%; padding-left: 36px; padding-right: 40px; text-overflow: ellipsis; }
+.searchfield > input::-webkit-search-cancel-button,
+.searchfield > input::-webkit-search-decoration { -webkit-appearance: none; display: none; }
+.searchfield > .clearbtn { position: absolute; right: 2px; width: 32px; min-height: 32px; }
+.qcount { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.qcount:empty { display: none; }
+.emptystate > button { margin-top: 12px; }
+
 /* ------------------------------------------------------------ Contas */
 
-/* lista de contas: uma coluna de linhas compactas; clicar na linha abre o cartão da conta ali mesmo */
-.accounts {
+/* listas de contas e de serviços: uma coluna de linhas compactas; clicar na linha abre o cartão ali mesmo */
+.accounts,
+.services {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   margin-top: 16px;
 }
+.services { margin-bottom: 24px; }
 #accounts > .emptystate { margin-top: 16px; }
+.services > .emptystate,
+.services > .loading { margin: 0; }
 
 details.legend { margin: 0; }
 details.legend > summary { cursor: pointer; color: var(--link); width: fit-content; font-size: var(--fs-sm); padding: 4px 0; }
 details.legend[open] > summary { margin-bottom: 4px; }
 details.legend p { max-width: 80ch; }
-
-details.outgroup { margin-top: 24px; }
-details.outgroup > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  cursor: pointer;
-  padding: 8px 16px;
-  border: 1px dashed var(--field-line);
-  border-radius: var(--radius);
-  color: var(--soft);
-  font-size: var(--fs-md);
-  font-weight: 600;
-  list-style: none;
-}
-details.outgroup > summary::-webkit-details-marker { display: none; }
-details.outgroup > summary::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  margin: 0 4px 2px 2px;
-  border-right: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
-  transform: rotate(-45deg);
-  transition: transform 0.15s;
-}
-details.outgroup[open] > summary::before { transform: rotate(45deg); margin-bottom: 4px; }
-details.outgroup > summary:hover { color: var(--fg); background: var(--surface); }
-details.outgroup[open] > summary { color: var(--fg); }
-details.outgroup > p { margin: 8px 4px 0; }
-details.outgroup > .accounts { margin-top: 12px; }
 
 .addbox { border-color: var(--accent); margin: 0 0 16px; }
 .addbox h3 { margin: 0; }
@@ -638,15 +625,17 @@ details.outgroup > .accounts { margin-top: 12px; }
 .subhead { font-size: var(--fs-xl); margin: 0 0 4px; }
 .subsec > p { margin: 0 0 16px; }
 
-/* conta: a linha (botão .arow) é o cabeçalho; o cartão completo (.abody) aparece embaixo dela quando aberta */
-.card.acct { margin: 0; padding: 0; }
+/* conta ou serviço na lista (.rowcard): a linha (botão .arow) é o cabeçalho; o cartão completo (.abody) aparece
+   embaixo dela quando aberta */
+.card.rowcard { margin: 0; padding: 0; }
 .acct.off { border-style: dashed; background: transparent; box-shadow: none; }
 .acct.off .bar { opacity: 0.6; } /* só as barras ficam apagadas: o texto mantém o contraste */
 .acct.loginsoon { border-color: var(--warn); }
 .acct.deadacc,
 .acct.loginbad { border-color: var(--bad); }
 
-/* linha da conta (recolhida): nome + etiquetas e e-mail | uma barra de uso e quando renova | participa da troca.
+/* linha recolhida. Conta: nome + etiquetas e e-mail | uma barra de uso e quando renova | participa da troca.
+   Serviço: bolinha + nome e sistema · quem conectou | "Conta N" com a barra e o limite | contato (.rseen).
    Base (celular e tela média): empilhada. Tela larga (960 px): tudo lado a lado, em duas linhas de texto. */
 .card .arowh { margin: 0; font-size: inherit; font-weight: inherit; line-height: inherit; }
 button.arow {
@@ -673,7 +662,7 @@ button.arow {
 }
 button.arow:hover { background: var(--rowhover); }
 button.arow:focus-visible { outline-offset: -2px; }
-.acct.open > .arowh > .arow { border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
+.rowcard.open > .arowh > .arow { border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
 .arow > .chev {
   grid-area: chev;
   justify-self: center;
@@ -702,6 +691,10 @@ button.arow:focus-visible { outline-offset: -2px; }
 .rreset { grid-area: reset; min-width: 0; color: var(--soft); font-size: var(--fs-xs); line-height: 1.35; }
 .rtroca { grid-area: troca; justify-self: end; display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-sm); white-space: nowrap; }
 .rtroca.off { color: var(--soft); }
+/* contato do serviço, no lugar do "participa da troca": "ativo agora", ou "parado" e, embaixo, quando foi visto */
+.rseen { grid-area: troca; justify-self: end; display: grid; justify-items: end; font-size: var(--fs-sm); line-height: 1.35; text-align: right; }
+.rseen .when { color: var(--soft); font-size: var(--fs-xs); }
+.svc .aname .dot { margin: 0 8px 0 2px; vertical-align: 1px; }
 /* login vencendo ou vencido: "Fazer login até …" piscando (só CSS; parado para quem pede menos movimento) */
 .ralert {
   grid-column: 2 / -1;
@@ -731,6 +724,7 @@ button.arow:focus-visible { outline-offset: -2px; }
   .ruse > .rreset { grid-area: auto; }
   .ruse > .rbar + .rreset { padding-left: 84px; } /* embaixo da barra (rótulo 72 + espaço 12) */
   .rtroca { justify-self: start; }
+  .rseen { justify-self: start; justify-items: start; text-align: left; }
 }
 
 /* cartão aberto */
@@ -882,39 +876,32 @@ fieldset.subfield .check { margin: 4px 0; font-size: var(--fs-md); }
 .checklist .check span { overflow-wrap: anywhere; }
 .afoot { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 
-/* cartão aberto em tela larga: as barras à esquerda e os dados da conta à direita (o resto ocupa as duas colunas) */
+/* cartão aberto em tela larga: as barras à esquerda e os dados da conta à direita (o resto ocupa as duas colunas).
+   No serviço: sistema/usuário/contato e "Trocar para" à esquerda (.sleft), a conta Claude de agora à direita (.tsec) */
 @media (min-width: 960px) {
   .abody { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; column-gap: 32px; }
   .abody > * { grid-column: 1 / -1; }
-  .abody > .meters { grid-column: 1; }
+  .abody > .meters,
+  .abody > .sleft { grid-column: 1; }
   .abody > .info { grid-column: 2; padding-top: 0; border-top: 0; }
+  .abody > .tsec { grid-column: 2; }
 }
 
-/* ------------------------------------------------------------ Computadores */
+/* ------------------------------------------------------------ Serviços (os computadores conectados) */
 
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
-  gap: 16px;
-  margin: 0 0 24px;
-}
-.tiles > .emptystate,
-.tiles > .loading { grid-column: 1 / -1; margin: 0; }
-.tile { display: flex; flex-direction: column; gap: 12px; margin: 0; }
-.tile.live { border-color: var(--okfill); }
-.thead { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 28px; }
-.thead h3 { margin: 0; flex: 1 1 auto; min-width: 0; font-size: var(--fs-lg); overflow-wrap: anywhere; }
-.thead .linkbtn { flex: none; font-size: var(--fs-sm); }
+/* cartão aberto do serviço (.sbody): a lista é a mesma das contas (.services, .rowcard, .arow — acima) */
+.sleft { display: grid; align-content: start; gap: 16px; min-width: 0; }
 .renform { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.renform input[type="text"] { flex: 1 1 150px; }
+.renform > label { flex: 1 0 100%; font-weight: 600; font-size: var(--fs-sm); }
+.renform input[type="text"] { flex: 1 1 150px; max-width: 440px; }
 .tinfo { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--fs-sm); }
 .tinfo dt { color: var(--soft); }
 .tinfo dd { margin: 0; overflow-wrap: anywhere; }
-/* caixa "Conta Claude agora": cresce para os quadradinhos da mesma linha terem as partes alinhadas */
+/* caixa "Conta Claude agora" */
 .tsec {
-  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -928,12 +915,12 @@ fieldset.subfield .check { margin: 4px 0; font-size: var(--fs-md); }
 .taccname .badge { margin-left: 0; }
 .tacc .email { color: var(--soft); font-size: var(--fs-sm); }
 .tacc .minis { margin-top: 12px; }
-.dctl { display: grid; gap: 4px; }
+.dctl { display: grid; gap: 4px; max-width: 520px; }
 .dctl > label { font-weight: 600; font-size: var(--fs-sm); }
 .dctl .row { flex-wrap: nowrap; }
 .dctl select { flex: 1 1 auto; width: 100%; min-width: 0; }
 .dctl button { flex: none; }
-.tile .afoot { padding-top: 12px; border-top: 1px solid var(--line); }
+.sbody > .afoot { padding-top: 12px; border-top: 1px solid var(--line); }
 
 .connect h3 { margin-bottom: 4px; }
 .steps { margin: 8px 0; padding-left: 1.4em; }
@@ -1019,13 +1006,20 @@ fieldset.subfield .check { margin: 4px 0; font-size: var(--fs-md); }
 }
 .savebar .row { margin-left: auto; }
 
-/* ------------------------------------------------------------ Usuários (tabela) */
+/* ------------------------------------------------------------ Usuários (liberar + tabela) */
 
-.card.tablecard { padding: 0; overflow: hidden; }
-.tabletools { display: grid; gap: 8px; padding: 16px; border-bottom: 1px solid var(--line); }
-.tabletools > label { font-weight: 600; font-size: var(--fs-md); }
-.tabletools input[type="email"] { flex: 1 1 160px; max-width: 440px; }
-.tabletools .hint { margin: 0; }
+.allowform { display: grid; gap: 8px; margin: 0; }
+.allowform > label { font-weight: 600; font-size: var(--fs-md); }
+.allowform input[type="email"] { flex: 1 1 160px; max-width: 440px; }
+.allowform .hint { margin: 0; }
+/* resultado de um pedido, no lugar: embaixo do campo de liberar (#allowMsg) ou no alto da tabela (#usersStatus) */
+.fieldmsg { margin: 0; font-size: var(--fs-sm); font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.fieldmsg.ok { color: var(--ok); }
+.fieldmsg.error { color: var(--bad); }
+.tablemsg { padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--inset); }
+.tablemsg:focus-visible { outline-offset: -2px; }
+
+.card.tablecard { margin-top: 16px; padding: 0; overflow: hidden; }
 .utable { width: 100%; border-collapse: collapse; font-size: var(--fs-md); }
 .utable th,
 .utable td { height: 56px; padding: 8px 16px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--line); }
@@ -1040,6 +1034,26 @@ fieldset.subfield .check { margin: 4px 0; font-size: var(--fs-md); }
   background: var(--inset);
   white-space: nowrap;
 }
+/* cabeçalho que ordena a tabela: um botão com cara de cabeçalho; a seta mostra a ordem em uso */
+button.thsort,
+button.thsort:hover {
+  min-height: 0;
+  padding: 0;
+  gap: 6px;
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+button.thsort:hover { color: var(--fg); }
+button.thsort::after { content: "\2195"; font-size: 11px; opacity: 0.5; }
+th[aria-sort="ascending"] > .thsort,
+th[aria-sort="descending"] > .thsort { color: var(--fg); }
+th[aria-sort="ascending"] > .thsort::after { content: "\25B2"; font-size: 9px; opacity: 1; }
+th[aria-sort="descending"] > .thsort::after { content: "\25BC"; font-size: 9px; opacity: 1; }
 .utable tbody th { font-weight: 600; overflow-wrap: anywhere; }
 .utable tbody tr:hover > * { background: var(--rowhover); }
 .utable td.actions { width: 1%; text-align: right; white-space: nowrap; }
@@ -1048,6 +1062,30 @@ fieldset.subfield .check { margin: 4px 0; font-size: var(--fs-md); }
 .utable tr.gone td { color: var(--soft); }
 .utable .tag { margin-left: 8px; }
 .utable td.empty { text-align: center; }
+/* faixa embaixo de uma linha: a pergunta "Tirar?" com os botões, ou o erro do último pedido daquela linha */
+.utable tr.hassub > * { border-bottom-color: transparent; }
+.utable tr.subrow > td { height: auto; padding: 0 16px 12px; }
+.utable tbody tr.subrow:hover > *,
+.utable tbody tr.nonerow:hover > * { background: transparent; }
+.subin {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--bad);
+  border-radius: var(--radius-sm);
+  background: var(--badbg);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+.subtext { flex: 1 1 280px; min-width: 0; }
+.subtext p { margin: 0; overflow-wrap: anywhere; }
+.subtext p + p { margin-top: 4px; }
+.utable tr.nonerow > td { height: auto; padding: 8px 16px 16px; }
+.utable .emptystate { padding: 16px 8px; border: 0; }
+.utable td[data-label="Desde"] { white-space: nowrap; }
 .tablefoot { padding: 12px 16px; background: var(--inset); }
 .tablefoot p { margin: 0; max-width: 100ch; }
 .tablefoot p + p { margin-top: 4px; }
@@ -1068,7 +1106,6 @@ fieldset.subfield .check { margin: 4px 0; font-size: var(--fs-md); }
 .plainrow .email { flex: 1 1 200px; }
 .sinfo { flex: 1 1 220px; min-width: 0; }
 .sinfo b { font-size: var(--fs-md); }
-.allowform { display: grid; gap: 8px; }
 .mecard .row.gap { align-items: center; gap: 12px; }
 .mecard .meinfo { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .mecard .meinfo p { margin: 0; }
@@ -1201,26 +1238,38 @@ button.closebtn { min-height: 36px; padding: 6px 12px 6px 10px; gap: 6px; }
   .sectop > button { width: 100%; }
   .sechead { font-size: 20px; }
 
-  /* tabela de usuários vira lista: e-mail e ação na 1ª linha, o resto embaixo */
-  .utable thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-  .utable,
-  .utable tbody { display: block; width: 100%; }
+  /* tabela de usuários vira cartões empilhados: e-mail e ação na 1ª linha, o resto embaixo com o nome da coluna.
+     O cabeçalho some (cada dado leva o nome da coluna); ordenar pelos cabeçalhos fica só na tela larga. */
+  .card.tablecard { border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: visible; }
+  .utable thead { display: none; }
+  .utable { display: block; width: 100%; }
+  .utable tbody { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; width: 100%; }
   .utable tr {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 4px 12px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--line);
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
   }
   .utable th,
   .utable td { display: block; height: auto; padding: 0; border: 0; }
   .utable tbody th { grid-column: 1; grid-row: 1; }
   .utable td.actions { grid-column: 2; grid-row: 1; width: auto; }
-  .utable td[data-label] { grid-column: 1 / -1; font-size: var(--fs-sm); }
+  .utable td[data-label] { grid-column: 1 / -1; font-size: var(--fs-sm); white-space: normal; }
   .utable td[data-label]::before { content: attr(data-label) ": "; color: var(--soft); }
-  .utable td.empty { grid-column: 1 / -1; }
+  .utable td.empty,
+  .utable tr.subrow > td,
+  .utable tr.nonerow > td { grid-column: 1 / -1; padding: 0; }
   .utable tbody tr:hover > * { background: transparent; }
+  /* a faixa de confirmação (ou de erro) cola embaixo do cartão da linha dela */
+  .utable tr.hassub { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  .utable tr.subrow { margin-top: -8px; border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+  .tablemsg { margin-bottom: 8px; border: 1px solid var(--line); border-radius: var(--radius); }
+  .tablefoot { margin-top: 8px; border: 1px solid var(--line); border-radius: var(--radius); }
 
   dialog.drawer { width: 100vw; border-left: 0; }
   .drawerhead { padding: 12px 16px; }
@@ -1247,10 +1296,10 @@ button.closebtn { min-height: 36px; padding: 6px 12px 6px 10px; gap: 6px; }
   .card { padding: 16px 12px; }
   button.arow { padding: 8px 12px; }
   .abody { padding: 16px 12px; }
-  .tiles { gap: 12px; }
   .info { gap: 12px; }
   .warning { padding: 12px; }
-  .tabletools input[type="email"] { max-width: none; }
+  .allowform input[type="email"],
+  .searchfield { max-width: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

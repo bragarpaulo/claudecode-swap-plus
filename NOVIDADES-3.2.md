@@ -48,6 +48,12 @@ conta, quando ele renova e se a conta participa da troca. As contas em uso vêm 
 dias para o login de uma conta vencer (ou ele já venceu), a linha dela pisca "Fazer login até…" com a data e a hora.
 E a aba **Computadores** agora se chama **Serviços** (só o nome mudou).
 
+**Servidor 2.5.2: busca e listas iguais nas três abas.** Cada aba ganhou um campo de **busca**, que filtra enquanto
+você digita e procura em tudo o que o item mostra, sem ligar para maiúsculas nem acentos. Em **Contas**, o grupo
+"Fora da troca" saiu: essas contas ficam no fim da lista, como linhas iguais às outras. Em **Serviços**, cada
+serviço virou uma linha que abre e fecha, como as contas. Em **Usuários**, a tabela ordena pelos cabeçalhos, os
+erros aparecem ao lado do campo e "Tirar" pede a confirmação na própria linha.
+
 ## Quem precisa
 
 Só quem quer usar o Claude Code **fora do VS Code** com as contas do Swap Plus: pelo Hermes, por um serviço ou por

@@ -3,6 +3,8 @@
 // Desenho 2.3 (server/WEB-SPEC.md): menus Contas · Serviços · Usuários; "Minha conta" e "Histórico" no topo.
 // Desde a 2.5.1 o menu "Computadores" aparece como "Serviços" (só o nome na tela: o id da seção e o endereço
 // "#computadores" continuam) e as contas são linhas que abrem e fecham no lugar (WEB-SPEC.md, "2.5.1").
+// 2.5.2: contas fora da troca no fim da lista (sem grupo à parte), serviços em linhas que abrem e fecham, tabela
+// de usuários com ordenação e confirmação na própria linha, e uma busca em cada aba (WEB-SPEC.md, "2.5.2").
 (function () {
   "use strict";
 
@@ -83,13 +85,21 @@
 
   let addLogin = null; // pedido de "Adicionar conta" / "Entrar de novo" em andamento { loginId, authUrl, expiresAt, loginHint, number }
   let addTimer = null;
-  let outOpen = false; // grupo "Fora da troca" aberto
 
   const acctDraft = new Map(); // número da conta → rascunho dos ajustes { alias, priority, devAll, devPicked }
   const acctOpen = new Set(); // contas com "Ajustes desta conta" aberto
   // Contas com o cartão aberto na lista. A página abre com todas recolhidas (nada é gravado: recarregar fecha
-  // tudo); a escolha vale enquanto a página fica aberta, inclusive nas atualizações de 30 s.
+  // tudo); a escolha vale enquanto a página fica aberta, inclusive nas atualizações de 30 s e com a busca.
   const acctExpanded = new Set();
+  const svcExpanded = new Set(); // o mesmo para os serviços (aba "Serviços"): ids dos computadores com o cartão aberto
+  // Busca de cada aba: o texto digitado (só na memória; continua nas atualizações de 30 s e ao trocar de aba).
+  const filters = { contas: "", computadores: "", usuarios: "" };
+  // Usuários: ordem da tabela, a linha que está perguntando "Tirar?" (chave da linha) e as mensagens do último
+  // pedido, mostradas no lugar e não no aviso flutuante: form = embaixo do campo de liberar; table = da tabela
+  // (where: "table" → no alto dela; ou a chave de uma linha → na faixa embaixo dessa linha).
+  let userSort = { key: "role", dir: 1 };
+  let userConfirm = null;
+  const userNote = { form: null, table: null }; // cada uma: { kind: "ok" | "error", text, where?, status? }
   // Linhas próprias por conta (sessão 5h, semanal, modelo): salvas na hora, sem o "Salvar ajustes".
   const OWN_KEYS = ["threshold", "weeklyThreshold", "modelThreshold"];
   const OWN_SAVE_MS = 500; // espera depois do último movimento do slider antes de salvar
@@ -393,10 +403,20 @@
     rulesDirty = false;
     rulesBase = null;
     rulesBaseSig = null;
-    outOpen = false;
     acctDraft.clear();
     acctOpen.clear();
     acctExpanded.clear();
+    svcExpanded.clear();
+    for (const sec of SECTIONS) {
+      filters[sec] = "";
+      $(`q-${sec}`).value = "";
+    }
+    userSort = { key: "role", dir: 1 };
+    userConfirm = null;
+    userNote.form = null;
+    userNote.table = null;
+    paintUserNotes();
+    $("allowEmail").removeAttribute("aria-invalid");
     ownUi.clear();
     ownLive.clear();
     for (const t of ownTimers.values()) clearTimeout(t);
@@ -743,6 +763,72 @@
     }
   }
 
+  // ------------------------------------------------------------ busca (uma por aba)
+
+  const SEARCH_VIEW = { contas: "accounts", computadores: "devices", usuarios: "users" }; // aba → lista que ela filtra
+
+  /** Texto para comparar na busca: minúsculas e sem acentos ("Serviço" → "servico"). */
+  const fold = (v) =>
+    String(v ?? "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+  /**
+   * Filtra os itens de uma aba pela busca dela. textsOf(item) = os textos do item, inclusive os que só aparecem
+   * com o cartão aberto. Sem diferença de maiúsculas e acentos. Com mais de uma palavra, todas precisam aparecer
+   * (em qualquer ordem e em qualquer campo); mas, se algum item tem a frase inteira, junta, ficam só esses — assim
+   * "em uso" não traz a conta "sem leitura de uso", nem "conta 7" a que está em 7º na fila.
+   */
+  function searchFilter(sec, list, textsOf) {
+    const words = fold(filters[sec]).split(/\s+/).filter(Boolean);
+    if (!words.length) return list;
+    const hay = new Map(list.map((x) => [x, fold(textsOf(x).filter(Boolean).join("\n"))]));
+    const all = list.filter((x) => words.every((w) => hay.get(x).includes(w)));
+    if (words.length < 2) return all;
+    const phrase = words.join(" ");
+    const exact = all.filter((x) => hay.get(x).includes(phrase));
+    return exact.length ? exact : all;
+  }
+
+  /** "N de M" ao lado do campo e o botão de limpar (só com texto na busca). */
+  function paintSearch(sec, shown, total) {
+    $(`qn-${sec}`).textContent = filters[sec].trim() ? `${shown} de ${total}` : "";
+    $(`qx-${sec}`).classList.toggle("hidden", !filters[sec]);
+  }
+
+  /** Muda a busca da aba e redesenha a lista dela. O aberto/fechado de cada item não muda. */
+  function setFilter(sec, text, focus) {
+    filters[sec] = text;
+    const input = $(`q-${sec}`);
+    if (input.value !== text) input.value = text;
+    if (S) paint(SEARCH_VIEW[sec]);
+    else paintSearch(sec, 0, 0);
+    if (focus) input.focus();
+  }
+
+  /** Lista vazia por causa da busca: "Nada encontrado para …" e o botão que limpa (peças para pôr numa caixa). */
+  function noResults(sec, where) {
+    return [
+      h("p", { class: "emptytitle", text: `Nada encontrado para “${filters[sec].trim()}”` }),
+      h("p", { class: "muted", text: `A busca olha todos os dados de ${where}. Tente outra palavra, ou menos palavras.` }),
+      h("button", { type: "button", class: "secondary", "data-k": `q-${sec}-none`, text: "Limpar a busca", onclick: () => setFilter(sec, "", true) }),
+    ];
+  }
+
+  function wireSearch() {
+    for (const sec of SECTIONS) {
+      const input = $(`q-${sec}`);
+      input.value = ""; // o navegador não devolve texto antigo: a busca vive só na memória da página
+      input.addEventListener("input", () => setFilter(sec, input.value, false));
+      input.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape" || !input.value) return;
+        e.preventDefault();
+        setFilter(sec, "", false);
+      });
+      $(`qx-${sec}`).addEventListener("click", () => setFilter(sec, "", true));
+    }
+  }
+
   function renderAll() {
     if (!S) return;
     renderMe();
@@ -875,15 +961,14 @@
     $("summary").textContent = parts.join(" · ");
   }
 
-  /** Leva até a conta n: abre o grupo "Fora da troca" (se ela está nele) e o cartão dela. */
+  /** Leva até a conta n e abre o cartão dela. Se a busca da aba a esconde, a busca é limpa. */
   function goToAccount(n) {
     selectSection("contas", false);
-    const a = accById(n);
+    if (accById(n)) {
+      if (!$(`conta-${n}`) && filters.contas) setFilter("contas", "", false);
+      setAccountOpen(n, true);
+    }
     const card = $(`conta-${n}`);
-    const g = card ? card.closest("details.outgroup") : null;
-    if (g) g.open = true;
-    if (g || (a && a.disabled && !inUse(a))) outOpen = true;
-    if (a) setAccountOpen(n, true);
     if (card) {
       card.scrollIntoView({ block: "start" });
       card.focus({ preventScroll: true });
@@ -982,15 +1067,54 @@
     });
   }
 
-  /** Abre ou fecha o cartão da conta n ali mesmo (sem redesenhar a lista) e guarda a escolha (acctExpanded). */
-  function setAccountOpen(n, open) {
-    if (open) acctExpanded.add(n);
-    else acctExpanded.delete(n);
-    const card = $(`conta-${n}`);
+  /**
+   * Abre ou fecha ali mesmo (sem redesenhar a lista) o cartão de uma linha — conta ou serviço — e guarda a
+   * escolha em `set`. ids: { card, row, body } dos elementos da linha.
+   */
+  function setRowOpen(set, key, ids, open) {
+    if (open) set.add(key);
+    else set.delete(key);
+    const card = $(ids.card);
     if (!card) return;
     card.classList.toggle("open", open);
-    $(`acc-${n}-row`).setAttribute("aria-expanded", open ? "true" : "false");
-    $(`acc-${n}-body`).hidden = !open;
+    $(ids.row).setAttribute("aria-expanded", open ? "true" : "false");
+    $(ids.body).hidden = !open;
+  }
+  const setAccountOpen = (n, open) => setRowOpen(acctExpanded, n, { card: `conta-${n}`, row: `acc-${n}-row`, body: `acc-${n}-body` }, open);
+
+  /**
+   * A barra única das linhas recolhidas (contas e serviços): o limite mais perto de parar a conta `a` (topLimit),
+   * com a porcentagem, as cores de sempre e, embaixo, quando renova. Na linha da conta o rótulo é o do limite
+   * ("Sessão 5h"); na do serviço (who = "Conta N") o rótulo é a conta e o limite vai para a linha de baixo.
+   */
+  function rowUsage(a, who) {
+    const f = usageOf(a);
+    if (!f) {
+      const none = isDead(a) ? "Sem dados de uso." : "Ainda sem leitura de uso.";
+      return h("span", { class: "ruse none" }, h("span", { class: "rreset", text: who ? `${who}: ${none.charAt(0).toLowerCase()}${none.slice(1)}` : none }));
+    }
+    const l = topLimit(a, f.u);
+    const p = clamp(l.pct);
+    const s = sev(p, l.line);
+    const fill = h("span", { class: "fill " + s });
+    fill.style.width = `${p}%`;
+    const mark = h("span", { class: "linemark" });
+    mark.style.left = `${clamp(l.line)}%`;
+    const when = l.resetsAt ? fmtWhen(l.resetsAt) : null;
+    const foot = l.idle ? "sem uso nas últimas 5 horas" : when ? `renova ${when}` : "";
+    return h(
+      "span",
+      { class: "ruse" },
+      h(
+        "span",
+        { class: "rbar" },
+        h("span", { class: "lbl", "aria-hidden": "true", text: who || l.label }),
+        h("span", { class: "bar", "aria-hidden": "true" }, fill, mark),
+        h("span", { class: "pct " + s, "aria-hidden": "true", text: fmtPct(p) }),
+        h("span", { class: "visually-hidden", text: `${who ? `${who}, ` : ""}${l.long}: ${fmtPct(p)} usado, ${sevText(s)} (${fmtPct(l.line)}).` })
+      ),
+      h("span", { class: "rreset", text: who ? [l.label, foot].filter(Boolean).join(" · ") : foot })
+    );
   }
 
   /** "Fazer login até dom 22/11 14:00"; vencido: "Login venceu em qua 18/11 09:00" ("venceu ontem 22:10", sem o "em"). */
@@ -1014,34 +1138,6 @@
     const devs = deviceNames(a);
     const al = o.alert;
     const bad = !!al && al.kind !== "soon";
-
-    const f = usageOf(a);
-    let use;
-    if (!f) {
-      use = h("span", { class: "ruse none" }, h("span", { class: "rreset", text: isDead(a) ? "Sem dados de uso." : "Ainda sem leitura de uso." }));
-    } else {
-      const l = topLimit(a, f.u);
-      const p = clamp(l.pct);
-      const s = sev(p, l.line);
-      const fill = h("span", { class: "fill " + s });
-      fill.style.width = `${p}%`;
-      const mark = h("span", { class: "linemark" });
-      mark.style.left = `${clamp(l.line)}%`;
-      const when = l.resetsAt ? fmtWhen(l.resetsAt) : null;
-      use = h(
-        "span",
-        { class: "ruse" },
-        h(
-          "span",
-          { class: "rbar" },
-          h("span", { class: "lbl", "aria-hidden": "true", text: l.label }),
-          h("span", { class: "bar", "aria-hidden": "true" }, fill, mark),
-          h("span", { class: "pct " + s, "aria-hidden": "true", text: fmtPct(p) }),
-          h("span", { class: "visually-hidden", text: `${l.long}: ${fmtPct(p)} usado, ${sevText(s)} (${fmtPct(l.line)}).` })
-        ),
-        h("span", { class: "rreset", text: l.idle ? "sem uso nas últimas 5 horas" : when ? `renova ${when}` : "" })
-      );
-    }
 
     const title = h(
       "span",
@@ -1076,7 +1172,7 @@
       },
       h("span", { class: "chev", "aria-hidden": "true" }),
       h("span", { class: "rid" }, title, a.email ? h("span", { class: "email", text: a.email }) : null),
-      use,
+      rowUsage(a, null),
       h(
         "span",
         { class: "rtroca" + (a.disabled ? " off" : "") },
@@ -1105,7 +1201,14 @@
     // --- situação (ok: linha discreta; login morto: caixa vermelha; fora da troca: texto apagado)
     const sitParts = [];
     if (dead) sitParts.push(h("span", { class: "badtext", text: "login morto — clique em “Entrar de novo” (abaixo) e entre com esta conta" }));
-    if (a.disabled) sitParts.push(h("span", { class: "muted", text: `${dead ? " · " : ""}fora da troca (a troca automática não usa esta conta)` }));
+    if (a.disabled) {
+      sitParts.push(
+        h("span", {
+          class: "muted",
+          text: `${dead ? " · " : ""}fora da troca (a troca automática não usa esta conta; dá para usá-la numa troca manual, em Serviços, ou ligar “Participa da troca” de novo, abaixo)`,
+        })
+      );
+    }
     if (!dead && !a.disabled) sitParts.push(h("span", { class: "oktext", text: "ok" }));
     const sit = h(
       "p",
@@ -1163,12 +1266,11 @@
       checked: !a.disabled,
       onchange: (e) => {
         const on = e.target.checked;
-        if (!on) outOpen = true; // a conta desce para "Fora da troca": deixar o grupo aberto para ela não sumir
         act(e.target, () => api("PATCH", `/web/api/accounts/${n}`, { disabled: !on }), {
           ok: () => {
             if (on) return `Conta ${n} de volta à troca.`;
             const cur = accById(n); // já com o estado novo: a conta em uso continua no alto da lista
-            const where = cur && inUse(cur) ? "Enquanto houver computador nela, continua no alto da lista; depois vai para o grupo “Fora da troca”, embaixo." : "Ela fica no grupo “Fora da troca”, embaixo.";
+            const where = cur && inUse(cur) ? "Enquanto houver computador nela, continua no alto da lista; depois vai para o fim." : "Ela vai para o fim da lista.";
             return `Conta ${n} fora da troca: a troca automática não vai usá-la. ${where}`;
           },
         });
@@ -1203,7 +1305,7 @@
     // A linha (botão) é o cabeçalho; o corpo é irmão dela, não filho: clicar no liga/desliga, em "Ajustes desta
     // conta" ou em "Remover conta" não abre nem fecha o cartão.
     const cls =
-      "card acct" +
+      "card rowcard acct" +
       (open ? " open" : "") +
       (a.disabled ? " off" : "") +
       (dead ? " deadacc" : "") +
@@ -1543,10 +1645,36 @@
   }
 
   /**
-   * Lista de contas, numa coluna de linhas que abrem e fecham (accountCard). Ordem (pedido do dono): primeiro as
-   * contas em uso (com computador nelas agora); depois as outras que participam da troca, na ordem da fila. A
-   * posição na fila ("1º na fila") é a da fila, não a da lista: a conta em uso sobe sem mudar de posição. As que
-   * não participam (e não estão em uso) ficam no grupo recolhido "Fora da troca".
+   * Textos de uma conta para a busca: tudo o que a linha e o cartão aberto dizem dela (as porcentagens não).
+   * pos = posição na fila (ou null).
+   */
+  function accountWords(a, pos) {
+    const al = loginAlert(a);
+    const devs = deviceNames(a);
+    return [
+      `Conta ${a.number}`,
+      a.alias,
+      a.email,
+      a.plan && a.plan.label,
+      a.organizationName || a.orgName,
+      a.disabled ? "fora da troca" : "participa da troca",
+      devs.length ? `em uso em ${devs.length === 1 ? "1 computador" : `${devs.length} computadores`}` : null,
+      ...devs,
+      pos ? `${pos}º na fila` : null,
+      isDead(a) ? "login morto" : a.disabled ? null : "situação ok",
+      al && al.kind === "soon" ? `login vencendo ${loginAlertText(al)}` : null,
+      al && al.kind === "expired" ? loginAlertText(al) : null,
+      usageOf(a) ? null : "sem leitura de uso",
+      `permitidos: ${allowedDevicesText(a)}`,
+    ];
+  }
+
+  /**
+   * Lista de contas, numa coluna só de linhas que abrem e fecham (accountCard), sem grupo à parte. Ordem (pedido
+   * do dono): primeiro as contas em uso (com computador nelas agora), mesmo as que estão fora da troca; depois as
+   * outras que participam, na ordem da fila; no fim, as que estão fora da troca (por número). A posição na fila
+   * ("1º na fila") é a da fila, não a da lista: a conta em uso sobe sem mudar de posição.
+   * A busca da aba (filters.contas) só esconde linhas: não mexe na ordem nem no que está aberto.
    */
   function renderAccounts(box) {
     for (const n of [...acctDraft.keys()]) if (!accById(n)) acctDraft.delete(n);
@@ -1554,6 +1682,7 @@
     for (const n of [...acctExpanded]) if (!accById(n)) acctExpanded.delete(n);
     const all = accounts();
     if (!all.length) {
+      paintSearch("contas", 0, 0);
       box.replaceChildren(
         emptyState("Nenhuma conta no servidor ainda", "Clique em “Adicionar conta” (no alto, à direita) e entre com a conta Claude. Ou entre com a conta no Claude Code de um computador conectado.")
       );
@@ -1562,29 +1691,15 @@
     const inQ = queueOrder(all.filter((a) => !a.disabled));
     const posOf = new Map(); // número da conta → posição na fila (login morto não entra na fila)
     for (const a of inQ) if (!isDead(a)) posOf.set(Number(a.number), posOf.size + 1);
+    const pos = (a) => posOf.get(Number(a.number)) || null;
     const off = all.filter((a) => a.disabled).sort(byNumber);
-    const top = [...inQ.filter(inUse), ...off.filter(inUse), ...inQ.filter((a) => !inUse(a))];
-    const out = off.filter((a) => !inUse(a));
+    const list = [...inQ.filter(inUse), ...off.filter(inUse), ...inQ.filter((a) => !inUse(a)), ...off.filter((a) => !inUse(a))];
+    const shown = searchFilter("contas", list, (a) => accountWords(a, pos(a)));
+    paintSearch("contas", shown.length, list.length);
     const kids = [];
-    if (top.length) kids.push(h("div", { class: "accounts" }, top.map((a) => accountCard(a, posOf.get(Number(a.number)) || null))));
-    if (!inQ.length) {
-      kids.push(
-        emptyState("Nenhuma conta participa da troca agora", `${out.length ? "Abra “Fora da troca”, abaixo, clique" : "Clique"} numa conta e ligue “Participa da troca”.`)
-      );
-    }
-    if (out.length) {
-      const det = h(
-        "details",
-        { class: "outgroup", open: outOpen },
-        h("summary", { "data-k": "out-group" }, h("span", { class: "outtitle", text: `Fora da troca (${out.length})` })),
-        h("p", { class: "muted small", text: "Contas que não participam da troca automática. Dá para usá-las numa troca manual (em Serviços) ou ligar “Participa da troca” de novo." }),
-        h("div", { class: "accounts" }, out.map((a) => accountCard(a, null)))
-      );
-      det.addEventListener("toggle", () => {
-        outOpen = det.open;
-      });
-      kids.push(det);
-    }
+    if (!inQ.length && !filters.contas.trim()) kids.push(emptyState("Nenhuma conta participa da troca agora", "Clique numa conta e ligue “Participa da troca”."));
+    if (shown.length) kids.push(h("div", { class: "accounts" }, shown.map((a) => accountCard(a, pos(a)))));
+    else kids.push(h("div", { class: "emptystate card" }, noResults("contas", "cada conta (número, apelido, e-mail, plano, situação, fila e os computadores nela)")));
     box.replaceChildren(...kids);
   }
 
@@ -1757,13 +1872,46 @@
     });
   }
 
-  // ------------------------------------------------------------ Computadores
+  // ------------------------------------------------------------ Serviços (os computadores conectados)
 
+  const devAssigned = (d) => (d.assigned !== null && d.assigned !== undefined ? Number(d.assigned) : null);
+  /** Quem conectou o serviço: a conta Google, ou "conectado por código". */
+  const devWho = (d) => d.googleEmail || "conectado por código";
+  /** O nome está sendo trocado e o que foi digitado ainda não foi salvo. */
+  const renameDirty = (d) => devRename.has(d.id) && String(devRename.get(d.id)).trim() !== (d.name || "");
+  const setServiceOpen = (devId, open) => {
+    const s = safeId(devId);
+    setRowOpen(svcExpanded, devId, { card: `dev-${s}-card`, row: `dev-${s}-row`, body: `dev-${s}-body` }, open);
+  };
+
+  /** Textos de um serviço para a busca: o que a linha e o cartão aberto dizem dele (as porcentagens não). */
+  function serviceWords(d) {
+    const assigned = devAssigned(d);
+    const acc = assigned !== null ? accById(assigned) : null;
+    return [
+      devName(d),
+      platformLabel(d.platform),
+      devWho(d),
+      d.active ? "ativo agora" : d.lastSeen ? `parado visto ${fmtWhen(d.lastSeen) || ""}` : "parado ainda não apareceu",
+      assigned !== null ? `Conta ${assigned}` : "sem conta",
+      acc && acc.alias,
+      acc && acc.email,
+      acc && isDead(acc) ? "login morto" : null,
+    ];
+  }
+
+  /**
+   * Lista de serviços, como a de contas: uma coluna de linhas que abrem e fecham (serviceCard), todas recolhidas
+   * quando a página abre (svcExpanded guarda o que está aberto). Ordem: os ativos primeiro; depois, por nome.
+   * A busca da aba (filters.computadores) só esconde linhas.
+   */
   function renderDevices(box) {
     const list = [...devices()].sort((x, y) => Number(!!y.active) - Number(!!x.active) || devName(x).localeCompare(devName(y), "pt-BR"));
     for (const id of [...devChoice.keys()]) if (!list.some((d) => d.id === id)) devChoice.delete(id);
     for (const id of [...devRename.keys()]) if (!list.some((d) => d.id === id)) devRename.delete(id);
+    for (const id of [...svcExpanded]) if (!list.some((d) => d.id === id)) svcExpanded.delete(id);
     if (!list.length) {
+      paintSearch("computadores", 0, 0);
       box.replaceChildren(
         emptyState(
           "Nenhum computador conectado ainda",
@@ -1772,40 +1920,81 @@
       );
       return;
     }
-    box.replaceChildren(...list.map(deviceTile));
+    const shown = searchFilter("computadores", list, serviceWords);
+    paintSearch("computadores", shown.length, list.length);
+    if (shown.length) box.replaceChildren(...shown.map(serviceCard));
+    else box.replaceChildren(h("div", { class: "emptystate card" }, noResults("computadores", "cada serviço (nome, sistema, quem conectou, contato e a conta em que ele está)")));
   }
 
-  function deviceTile(d) {
+  /**
+   * Linha do serviço (o cartão recolhido), em cerca de duas linhas: bolinha de ativo/parado e nome; sistema e
+   * quem conectou; a conta Claude em que ele está agora ("Conta N" com UMA barra, a mesma das linhas de conta —
+   * rowUsage — ou "Sem conta Claude agora"); e o contato ("ativo agora" / "parado" e quando foi visto).
+   * É um botão de verdade, como a linha da conta: clicar (ou Enter/Espaço) abre e fecha o cartão ali mesmo.
+   * o: { id (monta os ids), name, open, assigned, acc }.
+   */
+  function serviceRow(d, o) {
+    const title = h(
+      "span",
+      { class: "rtitle" },
+      // a bolinha vai dentro do nome: num nome comprido, ela fica na primeira linha dele
+      h("span", { class: "aname", id: o.id("title") }, h("span", { class: "n" }, h("span", { class: "dot" + (d.active ? " on" : ""), "aria-hidden": "true" }), o.name)),
+      o.acc && isDead(o.acc) ? badge("dead", "Login morto") : null,
+      // nome novo digitado e ainda não salvo (o cartão pode estar fechado)
+      h("span", { class: "dirty", id: o.id("rowdirty"), text: renameDirty(d) ? "Nome não salvo" : "" })
+    );
+    let use;
+    if (o.acc) use = rowUsage(o.acc, `Conta ${o.acc.number}`);
+    else use = h("span", { class: "ruse none" }, h("span", { class: "rreset", text: o.assigned !== null ? `Conta ${o.assigned} (não existe mais no servidor)` : "Sem conta Claude agora" }));
+    const seen = d.active
+      ? [h("span", { class: "oktext", text: "ativo agora" })]
+      : d.lastSeen
+        ? [h("span", { text: "parado" }), h("span", { class: "visually-hidden", text: ", " }), h("span", { class: "when", text: `visto ${fmtWhen(d.lastSeen) || "—"}` })]
+        : [h("span", { text: "ainda não apareceu" })];
+    return h(
+      "button",
+      {
+        type: "button",
+        class: "arow",
+        id: o.id("row"),
+        "data-k": o.id("row"),
+        "aria-expanded": o.open ? "true" : "false",
+        "aria-controls": o.id("body"),
+        onclick: () => setServiceOpen(d.id, !svcExpanded.has(d.id)),
+      },
+      h("span", { class: "chev", "aria-hidden": "true" }),
+      h("span", { class: "rid" }, title, h("span", { class: "email", text: `${platformLabel(d.platform)} · ${devWho(d)}` })),
+      use,
+      h("span", { class: "rseen" }, seen)
+    );
+  }
+
+  /**
+   * Serviço na lista: a linha (serviceRow) e, embaixo dela, o cartão completo (.abody) — sistema, usuário e
+   * contato; a conta Claude de agora com as barras todas; "Trocar para"; Renomear e Desconectar. O corpo é irmão
+   * do botão da linha: os controles de dentro não abrem nem fecham o cartão.
+   */
+  function serviceCard(d) {
     const name = devName(d);
     const safe = safeId(d.id);
     const id = (s) => `dev-${safe}-${s}`;
-    const assigned = d.assigned !== null && d.assigned !== undefined ? Number(d.assigned) : null;
+    const assigned = devAssigned(d);
     const acc = assigned !== null ? accById(assigned) : null;
+    const open = svcExpanded.has(d.id);
     const seen = d.active ? "ativo agora" : d.lastSeen ? `parado · visto ${fmtWhen(d.lastSeen) || "—"}` : "ainda não apareceu";
 
-    // --- nome (renomear)
-    let head;
-    if (devRename.has(d.id)) {
-      head = renameForm(d, id, name);
-    } else {
-      const ren = h("button", { type: "button", class: "linkbtn small", "data-k": id("ren"), text: "Renomear", "aria-label": `Renomear ${name}` });
-      ren.addEventListener("click", () => {
-        devRename.set(d.id, d.name || "");
-        paint("devices", true);
-        const input = $(id("name"));
-        if (input) {
-          input.focus();
-          input.select();
-        }
-      });
-      head = h(
-        "div",
-        { class: "thead" },
-        h("span", { class: "dot" + (d.active ? " on" : ""), "aria-hidden": "true" }),
-        h("h3", { id: id("title"), text: name }),
-        ren
-      );
-    }
+    // --- renomear: o botão fica no pé do cartão; clicando, o campo aparece no alto do cartão
+    const renaming = devRename.has(d.id);
+    const ren = h("button", { type: "button", class: "secondary small", "data-k": id("ren"), text: "Renomear", "aria-label": `Renomear ${name}` });
+    ren.addEventListener("click", () => {
+      devRename.set(d.id, d.name || "");
+      paint("devices", true);
+      const input = $(id("name"));
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    });
 
     // --- conta Claude logada agora
     const accBox = acc
@@ -1859,21 +2048,30 @@
 
     return h(
       "article",
-      { class: "card tile" + (d.active ? " live" : ""), "aria-label": name },
-      head,
+      { class: "card rowcard svc" + (open ? " open" : ""), id: id("card"), "aria-labelledby": id("title") },
+      h("h3", { class: "arowh" }, serviceRow(d, { id, name, open, assigned, acc })),
       h(
-        "dl",
-        { class: "tinfo" },
-        h("dt", { text: "Sistema" }),
-        h("dd", { text: platformLabel(d.platform) }),
-        h("dt", { text: "Usuário" }),
-        h("dd", { text: d.googleEmail || "conectado por código" }),
-        h("dt", { text: "Contato" }),
-        h("dd", { class: d.active ? "oktext" : null, text: seen })
-      ),
-      h("div", { class: "tsec" }, h("p", { class: "tlabel", text: "Conta Claude agora" }), accBox),
-      h("div", { class: "dctl" }, h("label", { for: id("sel"), text: "Trocar para" }), h("div", { class: "row gap wrap" }, sel, go), hint),
-      h("div", { class: "afoot" }, off)
+        "div",
+        { class: "abody sbody", id: id("body"), hidden: !open },
+        renaming ? renameForm(d, id, name) : null,
+        h(
+          "div",
+          { class: "sleft" },
+          h(
+            "dl",
+            { class: "tinfo" },
+            h("dt", { text: "Sistema" }),
+            h("dd", { text: platformLabel(d.platform) }),
+            h("dt", { text: "Usuário" }),
+            h("dd", { text: devWho(d) }),
+            h("dt", { text: "Contato" }),
+            h("dd", { class: d.active ? "oktext" : null, text: seen })
+          ),
+          h("div", { class: "dctl" }, h("label", { for: id("sel"), text: "Trocar para" }), h("div", { class: "row gap wrap" }, sel, go), hint)
+        ),
+        h("div", { class: "tsec" }, h("p", { class: "tlabel", text: "Conta Claude agora" }), accBox),
+        h("div", { class: "afoot" }, renaming ? null : ren, off)
+      )
     );
   }
 
@@ -1895,7 +2093,11 @@
       paint("devices", true);
       refocus(id("ren"));
     };
-    input.addEventListener("input", () => devRename.set(d.id, input.value));
+    input.addEventListener("input", () => {
+      devRename.set(d.id, input.value);
+      const rowNote = $(id("rowdirty")); // o aviso na linha do serviço (continua à vista com o cartão fechado)
+      if (rowNote) rowNote.textContent = renameDirty(d) ? "Nome não salvo" : "";
+    });
     input.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -1904,7 +2106,7 @@
       }
     });
     cancelBtn.addEventListener("click", cancel);
-    const form = h("form", { class: "renform", novalidate: true }, input, h("div", { class: "row gap" }, save, cancelBtn));
+    const form = h("form", { class: "renform", novalidate: true }, h("label", { for: id("name"), text: "Novo nome" }), input, h("div", { class: "row gap" }, save, cancelBtn));
     form.addEventListener("submit", (e) => {
       e.preventDefault();
       const v = input.value.trim().replace(/\s+/g, " ");
@@ -1955,6 +2157,7 @@
       before: () => {
         devChoice.delete(d.id);
         devRename.delete(d.id);
+        svcExpanded.delete(d.id);
       },
       ok: `${name} desconectado.`,
     });
@@ -2254,108 +2457,269 @@
     return rows;
   }
 
+  const ROLE_ORDER = { admin: 0, user: 1, gone: 2 };
+  const ROLE_LABEL = { admin: "Administrador", user: "Liberado", gone: "Não liberado" };
+
+  /** Textos de um usuário para a busca: e-mail, situação e os nomes dos serviços que ele conectou. */
+  function userWords(r, self) {
+    return [r.email, ROLE_LABEL[r.role], r.role === "user" ? "usuário" : null, self ? "você" : null, ...r.devices.map(devName), r.devices.length ? null : "nenhum serviço"];
+  }
+
+  /** Ordena as linhas pela coluna escolhida no cabeçalho (userSort); o e-mail desempata. */
+  function sortUsers(rows) {
+    const mail = (x, y) => x.email.localeCompare(y.email, "pt-BR");
+    const by = { role: (x, y) => ROLE_ORDER[x.role] - ROLE_ORDER[y.role], services: (x, y) => x.devices.length - y.devices.length };
+    const f = by[userSort.key];
+    return [...rows].sort((x, y) => (f ? userSort.dir * f(x, y) || mail(x, y) : userSort.dir * mail(x, y)));
+  }
+
+  /** Clique no cabeçalho: ordena por essa coluna; de novo, inverte. "Serviços" começa por quem tem mais. */
+  function sortUsersBy(key) {
+    userSort = userSort.key === key ? { key, dir: -userSort.dir } : { key, dir: key === "services" ? -1 : 1 };
+    paint("users");
+  }
+
+  function paintUserSort() {
+    for (const th of document.querySelectorAll(".utable th[data-sort]")) {
+      const on = th.getAttribute("data-sort") === userSort.key;
+      th.setAttribute("aria-sort", on ? (userSort.dir > 0 ? "ascending" : "descending") : "none");
+    }
+  }
+
+  /**
+   * Mensagens do último pedido da aba Usuários, mostradas no lugar e não no aviso flutuante: a do formulário
+   * (userNote.form) embaixo do campo de liberar; a da tabela (userNote.table) no alto dela quando where = "table".
+   * A de uma linha (where = chave da linha) sai com a tabela, na faixa embaixo da linha (userRow).
+   */
+  function paintUserNotes() {
+    const t = userNote.table;
+    for (const [id, n] of [["allowMsg", userNote.form], ["usersStatus", t && t.where === "table" ? t : null]]) {
+      const el = $(id);
+      el.textContent = n ? n.text : "";
+      el.classList.toggle("hidden", !n);
+      el.classList.toggle("ok", !!n && n.kind === "ok");
+      el.classList.toggle("error", !!n && n.kind === "error");
+      el.setAttribute("role", n && n.kind === "error" ? "alert" : "status");
+    }
+  }
+
+  /** slot: "form" ou "table". note: { kind, text, where? (só na tabela), status? } ou null (apaga). */
+  function setUserNote(slot, note) {
+    userNote[slot] = note && note.text ? note : null;
+    paintUserNotes();
+    if (slot === "table" && S) paint("users");
+  }
+
+  /**
+   * Pedido da aba Usuários: trava o botão, chama a API, recarrega o estado e mostra o resultado no lugar.
+   * o.slot: "form" (liberar pelo formulário) ou "table"; na tabela, o.okAt e o.errAt dizem onde ("table" = no alto,
+   * ou a chave da linha). → true se deu certo.
+   */
+  async function userAct(btn, fn, o) {
+    const key = btn.getAttribute("data-k");
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+    userNote[o.slot] = null;
+    paintUserNotes();
+    let ok = false;
+    try {
+      const r = await fn();
+      ok = true;
+      if (o.before) o.before(r);
+      await loadState(false);
+      if (o.after) o.after(r);
+      setUserNote(o.slot, { where: o.okAt, kind: "ok", text: typeof o.ok === "function" ? o.ok(r) : o.ok });
+    } catch (e) {
+      if (e.status !== 401) {
+        if (e.code !== "unavailable" && (e.status === 404 || e.status === 409)) await loadState(false);
+        setUserNote(o.slot, { where: o.errAt, kind: "error", text: e.message || "Algo deu errado. Tente de novo.", status: e.status });
+      }
+    } finally {
+      if (btn.isConnected) {
+        btn.disabled = false;
+        btn.removeAttribute("aria-busy");
+      }
+      refocus(key);
+      // o botão sumiu com a linha (usuário tirado ou liberado): o foco vai para a mensagem, no alto da tabela
+      const a = document.activeElement;
+      if (ok && o.okAt === "table" && (!a || a === document.body)) $("usersStatus").focus({ preventScroll: true });
+    }
+    return ok;
+  }
+
+  const allowedText = (email) => (r) =>
+    r && r.admin
+      ? "Essa é a conta do administrador: ela já conecta computadores e entra no painel."
+      : r && r.added === false
+        ? "Esse usuário já está liberado."
+        : `${email} liberado. Ele já pode conectar computadores pelo VS Code (Entrar com Google). O painel continua só do administrador.`;
+
+  /** "Tirar": em vez de uma janela, a própria tabela pergunta, numa faixa embaixo da linha (Tirar usuário / Cancelar). */
+  function askRemoveUser(r) {
+    userConfirm = r.key;
+    userNote.table = null;
+    paintUserNotes();
+    paint("users", true);
+    refocus(`user-no-${r.key}`);
+  }
+
+  function cancelRemoveUser(r) {
+    userConfirm = null;
+    if (userNote.table && userNote.table.where === r.key) userNote.table = null;
+    paint("users", true);
+    refocus(`user-del-${r.key}`);
+  }
+
+  function removeAllowed(r, btn) {
+    return userAct(btn, () => api("DELETE", `/web/api/allowed/${encodeURIComponent(r.email)}`), {
+      before: () => {
+        userConfirm = null;
+      },
+      after: () => {
+        if (needSessions()) loadSessions(false);
+      },
+      ok: `${r.email} não está mais liberado.`,
+      slot: "table",
+      okAt: "table",
+      errAt: r.key,
+    });
+  }
+
+  function allowAgain(r, btn) {
+    return userAct(btn, () => api("POST", "/web/api/allowed", { email: r.email }), { ok: allowedText(r.email), slot: "table", okAt: "table", errAt: r.key });
+  }
+
+  /** Uma linha da tabela (e, embaixo dela, a faixa de confirmação de "Tirar" ou o erro do último pedido da linha). */
+  function userRow(r, mine) {
+    const self = sameEmail(r.email, mine);
+    const asking = userConfirm === r.key && r.role === "user";
+    const err = userNote.table && userNote.table.where === r.key ? userNote.table.text : null;
+    const role =
+      r.role === "admin"
+        ? h("span", { class: "badge on", text: ROLE_LABEL.admin })
+        : r.role === "user"
+          ? h("span", { class: "badge", text: ROLE_LABEL.user })
+          : h("span", { class: "badge plain", text: ROLE_LABEL.gone, title: "Saiu da lista, mas os computadores que já conectou continuam" });
+    const devs = r.devices.length
+      ? h("span", null, h("b", { text: String(r.devices.length) }), h("span", { class: "muted", text: ` · ${r.devices.map(devName).join(", ")}` }))
+      : h("span", { class: "muted", text: "nenhum" });
+    let since;
+    if (r.since) since = h("span", { text: fmtDay(r.since) });
+    else if (r.role === "admin") since = h("span", { class: "muted", text: "definido no servidor" });
+    else if (r.firstDevice) since = h("span", null, fmtDay(r.firstDevice), h("span", { class: "muted small", text: " (1º computador)" }));
+    else since = h("span", { class: "muted", text: "—" });
+    let action;
+    if (r.role === "admin") {
+      action = h("span", { class: "muted small", text: "fixo" });
+    } else if (r.role === "user") {
+      action = asking
+        ? h("span", { class: "muted small", text: "confirme abaixo" })
+        : h("button", { type: "button", class: "danger subtle small", "data-k": `user-del-${r.key}`, text: "Tirar", "aria-label": `Tirar ${r.email}`, onclick: () => askRemoveUser(r) });
+    } else {
+      action = h("button", {
+        type: "button",
+        class: "secondary small",
+        "data-k": `user-add-${r.key}`,
+        text: "Liberar de novo",
+        "aria-label": `Liberar ${r.email} de novo`,
+        onclick: (e) => allowAgain(r, e.currentTarget),
+      });
+    }
+    const sub = asking || err;
+    const main = h(
+      "tr",
+      { class: [r.role === "gone" ? "gone" : null, sub ? "hassub" : null].filter(Boolean).join(" ") || null },
+      h("th", { scope: "row", "data-label": "Usuário" }, h("span", { class: "email", text: r.email }), self ? h("span", { class: "tag on", text: "você" }) : null),
+      h("td", { "data-label": "Situação" }, role),
+      h("td", { "data-label": "Serviços" }, devs),
+      h("td", { "data-label": "Desde" }, since),
+      h("td", { class: "actions" }, action)
+    );
+    if (!sub) return [main];
+    const box = h(
+      "div",
+      { class: "subin", role: asking ? "group" : null, "aria-label": asking ? `Tirar ${r.email}?` : null },
+      h(
+        "div",
+        { class: "subtext" },
+        asking
+          ? h("p", null, h("b", { text: `Tirar ${r.email}?` }), " Ele não conecta mais computadores novos. Os que ele já conectou continuam funcionando; para cortar, desconecte-os em Serviços.")
+          : null,
+        err ? h("p", { class: "badtext", role: "alert", text: err }) : null
+      ),
+      asking
+        ? h(
+            "div",
+            { class: "row gap wrap end" },
+            h("button", { type: "button", class: "danger small", "data-k": `user-yes-${r.key}`, text: "Tirar usuário", onclick: (e) => removeAllowed(r, e.currentTarget) }),
+            h("button", { type: "button", class: "secondary small", "data-k": `user-no-${r.key}`, text: "Cancelar", onclick: () => cancelRemoveUser(r) })
+          )
+        : null
+    );
+    const subRow = h("tr", { class: "subrow " + (asking ? "ask" : "error") }, h("td", { colspan: "5" }, box));
+    if (asking) {
+      subRow.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        e.preventDefault();
+        cancelRemoveUser(r);
+      });
+    }
+    return [main, subRow];
+  }
+
+  /**
+   * Tabela de usuários: e-mail, situação (Administrador / Liberado / Não liberado), serviços conectados (quantos e
+   * quais), desde quando e as ações que o servidor tem (Tirar, com confirmação na própria tabela; Liberar de
+   * novo). A busca da aba filtra as linhas; os cabeçalhos Usuário, Situação e Serviços ordenam.
+   */
   function renderUsers(box) {
     const mine = myEmail();
-    const rows = userRows();
-    const anySince = rows.some((r) => r.since);
+    const all = userRows();
     const note = $("usersNote");
-    if (!rows.length) {
+    paintUserSort();
+    if (userConfirm && !all.some((r) => r.key === userConfirm && r.role === "user")) userConfirm = null;
+    const tn = userNote.table;
+    if (tn && tn.where !== "table" && !all.some((r) => r.key === tn.where)) {
+      tn.where = "table"; // a linha saiu da tabela: a mensagem sobe para o alto dela
+      paintUserNotes();
+    }
+    if (!all.length) {
+      paintSearch("usuarios", 0, 0);
       box.replaceChildren(h("tr", null, h("td", { colspan: "5", class: "empty", text: "Nenhum usuário ainda." })));
       note.classList.add("hidden");
       return;
     }
-    box.replaceChildren(
-      ...rows.map((r, i) => {
-        const self = sameEmail(r.email, mine);
-        const role =
-          r.role === "admin"
-            ? h("span", { class: "badge on", text: "Administrador" })
-            : r.role === "user"
-              ? h("span", { class: "badge", text: "Usuário" })
-              : h("span", { class: "badge plain", text: "Não liberado", title: "Saiu da lista, mas os computadores que já conectou continuam" });
-        const devs = r.devices.length
-          ? h("span", null, h("b", { text: String(r.devices.length) }), h("span", { class: "muted", text: ` · ${r.devices.map(devName).join(", ")}` }))
-          : h("span", { class: "muted", text: "nenhum" });
-        let since;
-        if (r.since) since = h("span", { text: fmtDay(r.since) });
-        else if (r.role === "admin") since = h("span", { class: "muted", text: "definido no servidor" });
-        else if (r.firstDevice) since = h("span", null, fmtDay(r.firstDevice), h("span", { class: "muted small", text: " (1º computador)" }));
-        else since = h("span", { class: "muted", text: "—" });
-        let action;
-        if (r.role === "admin") {
-          action = h("span", { class: "muted small", text: "fixo" });
-        } else if (r.role === "user") {
-          action = h("button", { type: "button", class: "danger subtle small", "data-k": `user-del-${r.key}`, text: "Tirar", "aria-label": `Tirar ${r.email}` });
-          action.addEventListener("click", () => removeAllowed(r.email, action));
-        } else {
-          action = h("button", { type: "button", class: "secondary small", "data-k": `user-add-${r.key}`, text: "Liberar de novo", "aria-label": `Liberar ${r.email} de novo` });
-          action.addEventListener("click", () => allowEmail(r.email, action));
-        }
-        return h(
-          "tr",
-          { class: r.role === "gone" ? "gone" : null, "data-row": String(i) },
-          h("th", { scope: "row", "data-label": "E-mail" }, h("span", { class: "email", text: r.email }), self ? h("span", { class: "tag on", text: "você" }) : null),
-          h("td", { "data-label": "Papel" }, role),
-          h("td", { "data-label": "Computadores" }, devs),
-          h("td", { "data-label": "Desde" }, since),
-          h("td", { class: "actions" }, action)
-        );
-      })
-    );
+    const rows = sortUsers(searchFilter("usuarios", all, (r) => userWords(r, sameEmail(r.email, mine))));
+    paintSearch("usuarios", rows.length, all.length);
+    if (rows.length) box.replaceChildren(...rows.flatMap((r) => userRow(r, mine)));
+    else box.replaceChildren(h("tr", { class: "nonerow" }, h("td", { colspan: "5" }, h("div", { class: "emptystate" }, noResults("usuarios", "cada usuário (e-mail, situação e os serviços que ele conectou)")))));
     const parts = [];
-    if (!anySince && rows.some((r) => r.role !== "admin")) parts.push(`A data em que cada usuário foi liberado fica ${SOON}; por enquanto aparece quando ele conectou o primeiro computador.`);
-    if (rows.some((r) => r.role === "gone")) parts.push("“Não liberado”: saiu da lista, mas os computadores que já conectou continuam funcionando (desconecte-os em Serviços para cortar).");
+    if (!all.some((r) => r.since) && all.some((r) => r.role !== "admin")) parts.push(`A data em que cada usuário foi liberado fica ${SOON}; por enquanto aparece quando ele conectou o primeiro computador.`);
+    if (all.some((r) => r.role === "gone")) parts.push("“Não liberado”: saiu da lista, mas os computadores que já conectou continuam funcionando (desconecte-os em Serviços para cortar).");
     note.textContent = parts.join(" ");
     note.classList.toggle("hidden", !parts.length);
   }
 
-  async function removeAllowed(email, btn) {
-    const ok = await confirmBox({
-      title: `Tirar ${email}?`,
-      text: "Ele não conecta mais computadores novos. Os computadores que ele já conectou continuam funcionando; para cortar, desconecte-os em Serviços.",
-      ok: "Tirar usuário",
-    });
-    if (!ok) return;
-    await act(btn, () => api("DELETE", `/web/api/allowed/${encodeURIComponent(email)}`), {
-      ok: `${email} não está mais liberado.`,
-      after: () => {
-        if (needSessions()) loadSessions(false);
-      },
-    });
-  }
-
-  function allowEmail(email, btn) {
-    return act(btn, () => api("POST", "/web/api/allowed", { email }), {
-      ok: (r) =>
-        r && r.admin
-          ? "Essa é a conta do administrador: ela já conecta computadores e entra no painel."
-          : r && r.added === false
-            ? "Esse usuário já está liberado."
-            : `${email} liberado. Ele já pode conectar computadores pelo VS Code (Entrar com Google). O painel continua só do administrador.`,
-    });
-  }
-
+  /** Formulário "Liberar um usuário": o erro (do campo ou do servidor) e o resultado aparecem embaixo do campo. */
   async function addAllowed(e) {
     e.preventDefault();
     const input = $("allowEmail");
     const email = input.value.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    const invalid = (text) => {
       input.setAttribute("aria-invalid", "true");
       input.focus();
-      toast("Digite um e-mail válido, por exemplo pessoa@gmail.com.", "error");
-      return;
-    }
+      setUserNote("form", { kind: "error", text });
+    };
+    if (!email) return invalid("Digite o e-mail da conta Google que você quer liberar.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return invalid("Esse e-mail não parece válido. Use o formato pessoa@gmail.com.");
     input.removeAttribute("aria-invalid");
     if (isAdminEmail(email)) {
-      toast("Essa é a conta do administrador: ela já conecta computadores e entra no painel, sem precisar estar na lista.");
-      return;
+      return setUserNote("form", { kind: "ok", text: "Essa é a conta do administrador: ela já conecta computadores e entra no painel, sem precisar estar na lista." });
     }
-    if (allowedList().some((x) => sameEmail(x, email))) {
-      toast("Esse usuário já está liberado.");
-      return;
-    }
-    const ok = await allowEmail(email, $("btnAllow"));
+    if (allowedList().some((x) => sameEmail(x, email))) return setUserNote("form", { kind: "ok", text: "Esse usuário já está liberado." });
+    const ok = await userAct($("btnAllow"), () => api("POST", "/web/api/allowed", { email }), { ok: allowedText(email), slot: "form" });
     if (ok) input.value = "";
+    else if (userNote.form && userNote.form.status === 400) input.setAttribute("aria-invalid", "true"); // o servidor recusou o e-mail
   }
 
   function renderGoogleInfo() {
@@ -2597,6 +2961,11 @@
 
   function selectSection(sec, focusTab) {
     if (!SECTIONS.includes(sec)) sec = "contas";
+    if (currentSec === "usuarios" && sec !== "usuarios" && (userConfirm || userNote.table)) {
+      // saiu de Usuários: a pergunta "Tirar?" e a mensagem da tabela não ficam esperando
+      userConfirm = null;
+      setUserNote("table", null);
+    }
     currentSec = sec;
     try {
       history.replaceState(null, "", `#${sec}`);
@@ -2704,6 +3073,7 @@
   function init() {
     setupTabs();
     wireHolds();
+    wireSearch();
     wireDrawer("accountDlg", "accountClose");
     wireDrawer("historyDlg", "historyClose");
 
@@ -2733,6 +3103,11 @@
     setRulesDirty(false);
 
     $("allowForm").addEventListener("submit", addAllowed);
+    $("allowEmail").addEventListener("input", () => {
+      $("allowEmail").removeAttribute("aria-invalid");
+      if (userNote.form) setUserNote("form", null); // a mensagem era sobre o que estava no campo
+    });
+    for (const b of document.querySelectorAll(".utable .thsort")) b.addEventListener("click", () => sortUsersBy(b.closest("th").getAttribute("data-sort")));
     $("btnPair").addEventListener("click", (e) => makePairCode(e.currentTarget));
     $("btnCopyPair").addEventListener("click", copyPair);
     $("btnRecovery").addEventListener("click", (e) => showRecovery(e.currentTarget));

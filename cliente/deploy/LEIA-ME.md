@@ -124,8 +124,16 @@ também o andamento das rotinas: para voltar, limpe o modelo de cada uma com `he
   conta 6 renovou (5 min depois: o tempo de todos buscarem a conta nova mais os 3 min de tolerância) e, no mesmo
   instante, a regra "aproveitar ao máximo" levou os serviços de volta para ela. Nenhuma conversa do NoteWin teve erro
   de login nem de limite. Custo: duas trocas em 5 minutos, sem queda.
-- **Ainda não visto ao vivo** (até 17:02): um limite de verdade com o gancho de retomada no ar (o registro dele fica
-  em `~/.swap-plus/retomar.log`).
+- **Gancho de retomada visto ao vivo às 17:47** (NoteWin, ainda com a extensão 3.2.1 rodando): às 17:46:59 um
+  subagente da conversa "nexo" bateu o limite da sessão de 5 h na conta 23; às 17:47:05 o servidor trocou para a
+  conta 24 e o VS Code gravou às 17:47:06; às 17:47:08 o gancho postou "Troquei de conta, pode continuar." na
+  conversa (`retomar.log`: "conta gravada 6 s depois do erro; mensagem enviada"). A conversa principal estava no
+  meio de uma ferramenta, recebeu a mensagem quando ela terminou (17:49:49) e seguiu trabalhando, sem ninguém
+  digitar. Ainda não visto: o caso em que a conversa principal para de vez (aí a mensagem começa um turno novo; só
+  testado no ambiente isolado).
+- **Extensão 3.4.0 instalada no NoteWin às 20:07** a pedido do dono (`code --install-extension` com o `.vsix` da
+  release `plus-v3.4.0`, conferido antes: versão e o gancho iguais aos do repositório). Passa a valer quando a
+  janela do VS Code for recarregada.
 - **Voltar atrás:** servidor, a variável `SWAP_PLUS_VERSAO` com `2.5.4` (as imagens continuam lá); retomada, a opção
   na tela da extensão (ou `"enabled": false` em `~/.swap-plus/retomar.json`, que vale na hora).
 

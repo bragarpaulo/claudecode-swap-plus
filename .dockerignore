@@ -7,3 +7,12 @@
 !server/web/
 !server/entrypoint.sh
 !server/Dockerfile
+# O build do cliente sem VS Code (docker build -f cliente/deploy/Dockerfile .) usa o mesmo contexto: as bibliotecas
+# da extensão que ele reaproveita e o código dele.
+!plus/serverClient.js
+!plus/claudeAuth.js
+!plus/modelSwitch.js
+!cliente/package.json
+!cliente/bin/
+!cliente/src/
+!cliente/deploy/Dockerfile

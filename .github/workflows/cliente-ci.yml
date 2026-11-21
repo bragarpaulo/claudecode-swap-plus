@@ -1,0 +1,134 @@
+# Swap Plus Cliente (o cliente sem VS Code, em cliente/): testes e imagem Docker a cada push ou PR que mexa nele,
+# nas bibliotecas da extensão que ele reaproveita ou no que entra na imagem (.dockerignore).
+# Não publica nada: só confere que os testes passam nos três sistemas e que a imagem é gerada e roda como no
+# servidor (usuário sem privilégio, sistema de arquivos só de leitura).
+name: Swap Plus — cliente (testes e imagem)
+
+on:
+  push:
+    # Só branches (tag não dispara: o filtro de caminhos não vale para tags).
+    branches: ["**"]
+    paths:
+      - "cliente/**"
+      - "plus/serverClient.js"
+      - "plus/claudeAuth.js"
+      - "plus/rules.js"
+      - "plus/modelSwitch.js"
+      - ".dockerignore"
+      - ".github/workflows/cliente-ci.yml"
+  pull_request:
+    paths:
+      - "cliente/**"
+      - "plus/serverClient.js"
+      - "plus/claudeAuth.js"
+      - "plus/rules.js"
+      - "plus/modelSwitch.js"
+      - ".dockerignore"
+      - ".github/workflows/cliente-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cliente-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testes:
+    name: Testes do cliente (${{ matrix.os }}, Node 22)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Sintaxe (cliente/ e as bibliotecas de plus/ que ele usa)
+        run: |
+          shopt -s failglob
+          for f in cliente/bin/*.js cliente/src/*.js plus/serverClient.js plus/claudeAuth.js plus/rules.js plus/modelSwitch.js; do
+            node --check "$f"
+            echo "ok     $f"
+          done
+
+      - name: Testes do cliente (cliente/test)
+        # No Node 22 o `node --test` não aceita uma pasta: passa os arquivos. failglob: sem nenhum arquivo de
+        # teste, falha em vez de passar com 0 testes.
+        run: |
+          shopt -s failglob
+          node --test cliente/test/*.test.js
+
+  imagem:
+    name: Imagem Docker (build, usuário sem privilégio, só leitura)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      IMAGEM: swap-plus-cliente:ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gerar a imagem (contexto = raiz do repositório; nada é publicado)
+        run: docker build -f cliente/deploy/Dockerfile -t "$IMAGEM" .
+
+      - name: A imagem está configurada para rodar como o usuário node
+        run: |
+          USUARIO=$(docker image inspect -f '{{.Config.User}}' "$IMAGEM")
+          echo "USER da imagem: ${USUARIO:-(vazio = root)}"
+          [ "$USUARIO" = "node" ] || { echo "::error::a imagem precisa rodar como o usuário node (está: ${USUARIO:-root})"; exit 1; }
+
+      - name: A imagem só tem o código (nada de testes, deploy, .git nem a extensão inteira)
+        run: |
+          docker run --rm --entrypoint sh "$IMAGEM" -c 'cd /app && find . -type f | sort' > "$RUNNER_TEMP/imagem.txt"
+          echo "Arquivos em /app:"
+          cat "$RUNNER_TEMP/imagem.txt"
+          PROIBIDOS=$(grep -Ei '(^|/)(test|tests|deploy|\.git|server)/|\.test\.js$|extension\.js$' "$RUNNER_TEMP/imagem.txt" || true)
+          if [ -n "$PROIBIDOS" ]; then
+            echo "::error::a imagem tem arquivos que não deviam estar lá (confira o .dockerignore e o Dockerfile):"
+            echo "$PROIBIDOS"
+            exit 1
+          fi
+          for f in ./cliente/src/cli.js ./cliente/bin/swap-plus-cliente.js ./plus/serverClient.js ./plus/claudeAuth.js ./plus/rules.js ./plus/modelSwitch.js; do
+            grep -qx "$f" "$RUNNER_TEMP/imagem.txt" || { echo "::error::faltou $f na imagem"; exit 1; }
+          done
+
+      - name: Roda como no servidor (uid 10000, raiz só de leitura, sem capacidades) e grava só nas pastas montadas
+        run: |
+          BASE="$RUNNER_TEMP/cliente"
+          mkdir -p "$BASE/dados" "$BASE/login"
+          sudo chown -R 10000:10000 "$BASE"
+          sudo chmod 0700 "$BASE/dados" "$BASE/login"
+          rodar() {
+            docker run --rm --user 10000:10000 --network none --read-only --cap-drop ALL \
+              --security-opt no-new-privileges:true --tmpfs /tmp:size=16m,mode=1777 \
+              -e HOME=/dados -v "$BASE/dados:/dados" -v "$BASE/login:/login" "$IMAGEM" "$@"
+          }
+          [ "$(rodar versao)" = "$(node -p 'require("./cliente/package.json").version')" ] || { echo "::error::a imagem não respondeu a versão do cliente"; exit 1; }
+          # Sem conexão com servidor nenhum: um ciclo tem de terminar dizendo "não conectado" (saída 1), sem quebrar.
+          set +e
+          SAIDA=$(rodar uma-vez 2>&1); CODIGO=$?
+          set -e
+          echo "$SAIDA"
+          [ "$CODIGO" = 1 ] || { echo "::error::esperava saída 1 de 'uma-vez' sem conexão (veio $CODIGO)"; exit 1; }
+          echo "$SAIDA" | grep -q "não conectado" || { echo "::error::faltou a mensagem de não conectado"; exit 1; }
+          sudo test -f "$BASE/dados/situacao.json" || { echo "::error::o cliente não gravou a situação na pasta de dados"; exit 1; }
+          # O healthcheck da imagem diz "problema" enquanto não há login em dia.
+          set +e
+          rodar saude; CODIGO=$?
+          set -e
+          [ "$CODIGO" = 1 ] || { echo "::error::esperava saída 1 de 'saude' sem login (veio $CODIGO)"; exit 1; }
+
+      - name: Os scripts de implantação têm sintaxe válida
+        run: |
+          sh -n cliente/deploy/preparar.sh
+          bash -n cliente/deploy/parear.sh
+          docker compose -f cliente/deploy/compose.yaml config --no-interpolate > /dev/null

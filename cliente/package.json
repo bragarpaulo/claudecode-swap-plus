@@ -1,0 +1,16 @@
+{
+  "name": "swap-plus-cliente",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Swap Plus Cliente — mantém um login do Claude Code em dia a partir do servidor Swap Plus, sem VS Code (para o Hermes e outros serviços).",
+  "license": "MIT",
+  "bin": {
+    "swap-plus-cliente": "bin/swap-plus-cliente.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

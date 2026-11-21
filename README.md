@@ -7,12 +7,15 @@ delas chega perto do limite: sessão de 5 horas, limite semanal e limite semanal
 │  ✉  Sessão (5h): 2% usado — renova hoje 15h  ·  Semanal: 30% usado — renova hoje 18h  ·  Fable: 57% usado — renova hoje 18h  │
 ```
 
-Desde a **versão 3.0** o Swap Plus tem só duas partes, as duas neste repositório:
+O Swap Plus tem três partes, as três neste repositório:
 
 - a **extensão do VS Code** (código em [`plus/`](plus/)), instalada em cada computador, no Mac e no Windows. Ela se
   atualiza sozinha, dentro do VS Code;
 - o **servidor Swap Plus** (código em [`server/`](server/)), que guarda e renova os logins de todas as contas, decide
-  as trocas para todos os computadores e tem um painel no navegador (contas, computadores, usuários e regras de troca).
+  as trocas para todos os computadores e tem um painel no navegador (contas, computadores, usuários e regras de troca);
+- o **Swap Plus Cliente** (código em [`cliente/`](cliente/)), novo na 3.2 ([NOVIDADES-3.2.md](NOVIDADES-3.2.md)): faz
+  o trabalho da extensão sem o VS Code, para o Hermes e outros serviços em segundo plano usarem o Claude Code com as
+  mesmas contas. Manual em [`cliente/README.md`](cliente/README.md).
 
 O que mudou na 3.0: [NOVIDADES-3.0.md](NOVIDADES-3.0.md).
 
@@ -40,6 +43,7 @@ Depois, abra o VS Code, clique no Swap Plus na barra de baixo e, no aviso que ap
 | --- | --- |
 | [`plus/`](plus/) | a extensão Swap Plus e os instaladores (`plus/scripts/`). Detalhes, regras de troca e como publicar uma versão nova: [`plus/README.md`](plus/README.md) |
 | [`server/`](server/) | o servidor Swap Plus (Node, em Docker) e o painel web. Especificação em [`server/SPEC.md`](server/SPEC.md) e [`server/WEB-SPEC.md`](server/WEB-SPEC.md); instalação e operação em [`server/deploy/LEIA-ME.md`](server/deploy/LEIA-ME.md) |
+| [`cliente/`](cliente/) | o Swap Plus Cliente (Node, sem dependências): o trabalho da extensão sem o VS Code, para o Hermes e outros serviços. Manual em [`cliente/README.md`](cliente/README.md); instalação no servidor (Docker) em [`cliente/deploy/LEIA-ME.md`](cliente/deploy/LEIA-ME.md) |
 | [`.github/workflows/`](.github/workflows/) | `plus-release.yml` (testa e publica a extensão), `plus-install-test.yml` (instala num Mac e num Windows limpos) e `server-ci.yml` (testes e imagem do servidor) |
 
 **O motor foi aposentado.** Até a 2.x existia também o motor, o comando `swap-plus` (CLI Python, fork do

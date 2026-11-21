@@ -1,0 +1,84 @@
+# Swap Plus Cliente do Hermes — mantém em dia o login do Claude Code que o Hermes usa, no Contabo.
+#
+# O que faz: é mais um "computador" do Swap Plus (aparece no painel como "Hermes (servidor)"). Recebe do servidor do
+# Swap Plus só o acesso da conta escolhida para ele e grava na pasta de login que o Hermes usa pelo plugin
+# claude-subscription-directsdk. Não renova nada sozinho (quem renova é o Swap Plus) e não envia logins.
+# Funcionamento em cliente/README.md; instalação e operação em cliente/deploy/LEIA-ME.md (repositório
+# claudecode-swap-plus, copiado em /opt/swap-plus/app).
+#
+# Como os outros grupos do servidor:
+#  · projeto, container e rede próprios (`swap-plus-cliente`, 10.88.3.0/24): só este container. Sem porta no host e
+#    sem ninguém chamando: ele só sai para https://swap.assistentes.si (o mesmo caminho da extensão e do comando-ia);
+#  · imagem construída no host a partir do repositório
+#    (`docker build -f /opt/swap-plus/app/cliente/deploy/Dockerfile -t swap-plus-cliente:<versão> /opt/swap-plus/app`,
+#    o preparar.sh faz). A versão vem da variável SWAP_PLUS_CLIENTE_VERSAO da stack; uma etiqueta = uma imagem, nunca
+#    reconstruída por cima;
+#  · dados em /opt/swap-plus-cliente/hermes/dados (10000:10000, 700): conexao.json é o acesso deste cliente ao Swap
+#    (pode trocar de conta, mudar regras e revogar computadores pela API: é segredo). Esta pasta NÃO entra no Hermes;
+#  · login em /opt/swap-plus-cliente/hermes/login (10000:10000, 700): a pasta que o Hermes também monta. Dentro dela,
+#    claude/ é a pasta de login do Claude Code (acesso de até ~8 h, sem refresh token);
+#  · roda como 10000:10000, o usuário do Hermes: os dois leem e gravam a mesma pasta de login (como o Obsidian faz
+#    com o cofre do Hermes);
+#  · sem backup: nada aqui precisa ser guardado. Perdeu a pasta de dados → parear de novo (parear.sh).
+# Stack do Portainer (controle total): criada pelo Portainer com este arquivo; caminhos absolutos.
+name: swap-plus-cliente-hermes
+
+services:
+  swap-plus-cliente-hermes:
+    image: swap-plus-cliente:${SWAP_PLUS_CLIENTE_VERSAO:?defina SWAP_PLUS_CLIENTE_VERSAO nas variaveis da stack}
+    pull_policy: never
+    container_name: swap-plus-cliente-hermes
+    restart: unless-stopped
+    user: "10000:10000"
+    # Um processo Node só, que acorda a cada 30 s.
+    cpus: "0.25"
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 32
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    environment:
+      # Horário de Brasília em tudo.
+      TZ: America/Sao_Paulo
+      HOME: /dados
+      SWAP_PLUS_CLIENTE_DIR: /dados
+      SWAP_PLUS_CLAUDE_DIR: /login/claude
+      # auto: só conta como computador ativo no Swap enquanto o Hermes está usando o Claude Code (e 10 min depois).
+      # sempre: ativo o tempo todo — com a regra "computadores separados", segura uma conta só para o Hermes e gasta
+      # mais do orçamento de leitura de uso do Swap. Ver cliente/README.md, "Presença".
+      SWAP_PLUS_PRESENCA: ${SWAP_PLUS_CLIENTE_PRESENCA:-auto}
+      # Opcional: os modelos que o Hermes usa pelo Claude Code (o plugin do Hermes não deixa transcrição, então o
+      # cliente não descobre sozinho). Hoje é só informação para o Swap: a decisão de troca não depende desta lista.
+      SWAP_PLUS_MODELOS: ${SWAP_PLUS_CLIENTE_MODELOS:-}
+    volumes:
+      - type: bind
+        source: /opt/swap-plus-cliente/hermes/dados
+        target: /dados
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /opt/swap-plus-cliente/hermes/login
+        target: /login
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "node", "/app/cliente/bin/swap-plus-cliente.js", "saude"]
+      interval: 60s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "3"}
+    networks:
+      saida:
+        aliases: [swap-plus-cliente-hermes]
+
+networks:
+  saida:
+    # docker network create --subnet 10.88.3.0/24 --label io.servidor.managed=true swap-plus-cliente
+    # (o preparar.sh cria)
+    name: swap-plus-cliente
+    external: true

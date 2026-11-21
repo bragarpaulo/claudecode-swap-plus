@@ -17,8 +17,9 @@ Neste manual:
 2. [Contas novas](#contas-novas)
 3. [No dia a dia](#no-dia-a-dia)
 4. [O painel do servidor](#o-painel-do-servidor)
-5. [Se algo der errado](#se-algo-der-errado)
-6. [Remover](#remover)
+5. [Hermes e outros serviços (sem VS Code)](#hermes-e-outros-serviços-sem-vs-code)
+6. [Se algo der errado](#se-algo-der-errado)
+7. [Remover](#remover)
 
 ---
 
@@ -443,6 +444,21 @@ backup**. Juntas, elas são o **kit de recuperação**. Guarde as duas **FORA do
 Sem essas duas chaves, o backup não abre. A restauração em si é feita por quem cuida do servidor, seguindo o
 [guia do servidor](server/deploy/LEIA-ME.md). Depois de restaurar, algumas contas podem aparecer como **Login
 morto**: entre de novo com cada uma (veja [Quando o login de uma conta vence](#quando-o-login-de-uma-conta-vence)).
+
+---
+
+## Hermes e outros serviços (sem VS Code)
+
+O **Swap Plus Cliente** faz o trabalho da extensão sem o VS Code. Ele serve para o Hermes (o assistente de IA que
+fica sempre ligado) e para outros serviços e rotinas em segundo plano usarem o Claude Code com as contas do servidor.
+
+- No painel, o cliente aparece em **Computadores**, como mais um computador, com o nome que você deu a ele. Dá para
+  renomear, trocar de conta e desconectar, como os outros.
+- Ele tem a própria pasta de login do Claude Code. Não mexe no Claude Code do VS Code.
+- Para o Hermes usar só algumas contas, escolha em **Contas** → **Ajustes desta conta** → **Computadores permitidos**.
+- O uso pelo Hermes ainda não foi testado de ponta a ponta.
+
+Como instalar, conectar e usar: [manual do cliente](cliente/README.md).
 
 ---
 

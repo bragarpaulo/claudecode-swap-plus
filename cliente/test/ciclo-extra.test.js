@@ -1163,3 +1163,93 @@ test("rodar(): um ciclo que lança não derruba o laço; o erro vai para o log e
   assert.equal(estado.situacao().estado, "ok", "o segundo ciclo rodou normalmente");
   assert.equal(lerCredencial().claudeAiOauth.accessToken, servidor.contas[1].accessToken);
 });
+
+// ------------------------------------------------------------------ aviso de limite deixado na pasta (1.1.0)
+
+/** Quem chama o Claude Code (o Hermes, que não deixa transcrição) deixa o aviso na pasta de login. */
+function avisarLimite(c, corpo = {}) {
+  const dir = path.join(c.pastaClaude, "swap-plus");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "limite.json"), JSON.stringify({ at: c.relogio.t, ...corpo }));
+}
+
+test("aviso de limite na pasta (Hermes): o cliente avisa o servidor no ciclo seguinte, grava a conta nova e não avisa de novo", async (t) => {
+  const c = await cenario(t);
+  const { servidor, cliente, relogio, lerCredencial, lerGlobal } = c;
+  await cliente.ciclo({ forcar: true });
+  servidor.aoLimite = () => {
+    servidor.atribuida = 2;
+    return { switched: true, text: "trocou para a conta 2" };
+  };
+
+  relogio.t += 30 * SEG;
+  avisarLimite(c);
+  const s = await cliente.ciclo();
+  assert.deepEqual(eventos(servidor), [{ kind: "limit_hit", label: "limite de uso" }]);
+  assert.equal(s.conta.numero, 2);
+  assert.equal(lerCredencial().claudeAiOauth.accessToken, servidor.contas[2].accessToken, "a conta nova é gravada no mesmo ciclo");
+  assert.equal(lerGlobal().oauthAccount.emailAddress, "conta2@exemplo.com", "é por aqui que o Hermes vê que a conta mudou");
+
+  // O mesmo aviso não é mandado de novo; um aviso novo, sim.
+  relogio.t += 30 * SEG;
+  await cliente.ciclo();
+  assert.equal(eventos(servidor).length, 1);
+  servidor.aoLimite = () => ({ switched: false, text: "nenhuma outra conta tem folga" });
+  relogio.t += 30 * SEG;
+  avisarLimite(c);
+  await cliente.ciclo();
+  assert.equal(eventos(servidor).length, 2);
+});
+
+test("aviso de limite sem dizer qual: com o Fable da conta no fim (e sessão e semanal folgados) vai como limite do Fable; na regra “mesma conta”, não troca", async (t) => {
+  const c = await cenario(t);
+  const { servidor, cliente, relogio } = c;
+  servidor.regras.onModelLimit = "switchAccount";
+  const usoFable = (pct) => ({ fiveHour: { pct: 10, resetsAt: null }, sevenDay: { pct: 20, resetsAt: null }, scoped: [{ name: "Fable", pct, resetsAt: null }] });
+  servidor.contas[1].publica.usage = usoFable(97);
+  await cliente.ciclo({ forcar: true });
+
+  relogio.t += 30 * SEG;
+  avisarLimite(c);
+  await cliente.ciclo();
+  assert.deepEqual(eventos(servidor), [{ kind: "limit_hit", label: "limite do Fable" }]);
+
+  // Fable com folga: é limite da conta (rótulo genérico).
+  servidor.contas[1].publica.usage = usoFable(40);
+  relogio.t += 3 * MIN;
+  await cliente.ciclo({ forcar: true });
+  relogio.t += 30 * SEG;
+  avisarLimite(c);
+  await cliente.ciclo();
+  assert.deepEqual(eventos(servidor)[1], { kind: "limit_hit", label: "limite de uso" });
+
+  // Regra "seguir na mesma conta": limite do Fable não troca de conta — nada é mandado.
+  servidor.regras.onModelLimit = "sameAccount";
+  servidor.contas[1].publica.usage = usoFable(99);
+  relogio.t += 3 * MIN;
+  await cliente.ciclo({ forcar: true });
+  relogio.t += 30 * SEG;
+  avisarLimite(c);
+  await cliente.ciclo();
+  assert.equal(eventos(servidor).length, 2);
+});
+
+test("aviso de limite que traz o texto ou o tipo do erro: segue a mesma leitura das transcrições", async (t) => {
+  const c = await cenario(t);
+  const { servidor, cliente, relogio } = c;
+  servidor.regras.onModelLimit = "switchAccount";
+  await cliente.ciclo({ forcar: true });
+  relogio.t += 30 * SEG;
+  avisarLimite(c, { text: TXT_SESSAO });
+  await cliente.ciclo();
+  relogio.t += 30 * SEG;
+  avisarLimite(c, { text: TXT_FABLE });
+  await cliente.ciclo();
+  relogio.t += 30 * SEG;
+  avisarLimite(c, { rateLimitType: "seven_day_overage_included" });
+  await cliente.ciclo();
+  relogio.t += 30 * SEG;
+  avisarLimite(c, { text: TXT_PASSAGEIRO });
+  await cliente.ciclo();
+  assert.deepEqual(eventos(servidor).map((e) => e.label), ["limite da sessão de 5h", "limite do Fable", "limite do Fable"], "o erro passageiro não é limite da conta");
+});

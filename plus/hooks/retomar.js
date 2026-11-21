@@ -18,8 +18,11 @@
 // que grava um login no Claude Code. Sem esse arquivo (versão antiga), vale a data do ~/.claude/.credentials.json.
 //
 // Regras:
-//   - só age em `rate_limit` (limite de uso) e `authentication_failed` (acesso cancelado ou vencido);
-//   - só posta se houve troca (ou login novo) depois do erro, ou até 20 s antes dele. Sem troca em 5 min, desiste;
+//   - só age nos erros que são DA CONTA, os que uma conta nova resolve: `rate_limit` (limite de uso),
+//     `authentication_failed` (acesso cancelado ou vencido: renovação, relogin), `billing_error`,
+//     `account_on_hold` e `oauth_org_not_allowed`. Erro do servidor da Anthropic, do pedido ou do modelo: nada;
+//   - só posta se houve login novo gravado pelo Swap depois do erro, ou até 20 s antes dele — troca automática,
+//     troca manual no painel ou relogin, tanto faz. Espera até 30 min; sem login novo nesse tempo, desiste;
 //   - uma retomada por troca: se a conta nova também falhar, espera a PRÓXIMA troca (não vira laço);
 //   - no máximo 6 retomadas por hora por conversa;
 //   - desligado em ~/.swap-plus/retomar.json ({ "enabled": false }), nada acontece;
@@ -36,19 +39,23 @@ const num = (v, def) => (v !== undefined && v !== "" && Number.isFinite(Number(v
 
 // A mesma conta de resume.js (swapDir): ~/.swap-plus, ou <CLAUDE_CONFIG_DIR>/swap-plus quando a pasta do Claude Code é outra.
 const DIR = process.env.SWAP_PLUS_DIR || (process.env.CLAUDE_CONFIG_DIR ? path.join(process.env.CLAUDE_CONFIG_DIR, "swap-plus") : path.join(os.homedir(), ".swap-plus"));
-const WAIT_MS = num(process.env.SWAP_PLUS_RESUME_WAIT_MS, 5 * 60 * 1000); // quanto espera a troca
+const WAIT_MS = num(process.env.SWAP_PLUS_RESUME_WAIT_MS, 30 * 60 * 1000); // quanto espera a troca (cobre troca manual e relogin)
 const SETTLE_MS = num(process.env.SWAP_PLUS_RESUME_SETTLE_MS, 3000); // depois da troca, antes de postar
 const SLACK_MS = 20 * 1000; // troca gravada até 20 s antes do erro também vale (o pedido já estava a caminho)
 const POLL_MS = 1000;
 const MAX_PER_HOUR = 6;
 const LOG_MAX = 200 * 1024;
 
-const WATCHED = new Set(["rate_limit", "authentication_failed"]);
 const DEFAULT_TEXT = "Troquei de conta, pode continuar.";
+const OTHER_ACCOUNT = "a conta em uso não podia mais atender e o Swap Plus já gravou outro login";
 const WHY = {
   rate_limit: "a conta em uso bateu o limite e o Swap Plus já trocou para outra",
-  authentication_failed: "o acesso da conta foi renovado e o Swap Plus já gravou o novo",
+  authentication_failed: "o acesso da conta foi renovado ou trocado e o Swap Plus já gravou o novo",
+  billing_error: OTHER_ACCOUNT,
+  account_on_hold: OTHER_ACCOUNT,
+  oauth_org_not_allowed: OTHER_ACCOUNT,
 };
+const WATCHED = new Set(Object.keys(WHY));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

@@ -269,8 +269,9 @@ Os passos:
 
 O que é diferente com o Hermes:
 
-- O plugin não deixa as conversas gravadas na pasta. Por isso o cliente **não vê** quando a conta bate o limite nem
-  qual modelo está em uso. A troca de conta pelas regras do servidor continua valendo; veja
+- O plugin não deixa as conversas gravadas na pasta. Por isso o cliente **não vê** sozinho quando a conta bate o
+  limite nem qual modelo está em uso. Desde a 1.1.0 o Hermes **avisa** o limite deixando um recado na pasta de login,
+  e o cliente leva o aviso ao servidor. A troca de conta pelas regras do servidor continua valendo; veja
   [Limites e troca de conta](#limites-e-troca-de-conta).
 - Se o Hermes roda em contêiner, o cliente e o Hermes precisam enxergar a mesma pasta de login. Compartilhe a pasta
   **de cima** dela, e nunca a pasta de dados do cliente. O porquê está em [Segurança](#segurança); o roteiro para o
@@ -475,7 +476,28 @@ em **Ajustes desta conta** → **Serviços permitidos**.
   ("You've hit your limit") e avisa o servidor, que decide a troca na hora. O erro passageiro "Server is temporarily
   limiting requests (not your usage limit)" não conta.
 - **Com o Hermes**, o plugin não grava as conversas, então o cliente não vê o erro. Normalmente o servidor troca
-  antes, pela linha de uso. Se mesmo assim a conta bater o limite, avise à mão (ou por um script seu):
+  antes, pela linha de uso. Para quando a conta bate o limite mesmo assim, há dois jeitos de avisar:
+
+  **1. O recado na pasta de login (desde a 1.1.0; é o que o Hermes usa).** Quem chama o Claude Code grava o arquivo
+  `swap-plus/limite.json` dentro da pasta de login:
+
+  ```json
+  { "at": 1795288357506, "text": "", "rateLimitType": "five_hour", "resetsAt": 1795291957506 }
+  ```
+
+  Só `at` (a hora do erro, em milissegundos) é obrigatório. O cliente lê a cada ciclo (30 segundos), avisa o servidor
+  e grava a conta nova se ele trocar. Cada recado é levado uma vez só. Com `text` (o texto do erro) ou
+  `rateLimitType`, o cliente sabe qual limite foi, como nas conversas gravadas. Sem nenhum dos dois, ele decide pelo
+  uso da conta: se o limite do modelo preferido (Fable) está em 90% ou mais e a sessão e o semanal estão abaixo das
+  linhas de troca, vai como "limite do Fable"; senão, como "limite de uso". A diferença importa: no limite do Fable
+  o servidor só troca para uma conta que ainda tenha Fable.
+
+  No Hermes quem grava o recado é a regra `_swap_limit_notice`, em `/opt/data/extra_pkgs/hermes_model_lock.py`, no
+  momento em que ele arma a espera por limite. Depois que o cliente grava a conta nova, a regra
+  `apply_swap_account_recovery`, do mesmo arquivo, devolve a conversa ao modelo principal na mensagem seguinte. A
+  mensagem em que o limite bateu ainda é respondida pela reserva.
+
+  **2. À mão, ou por um script seu:**
 
   ```bash
   swap-plus-cliente limite "limite da sessão de 5h"

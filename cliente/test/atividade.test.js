@@ -253,3 +253,65 @@ test("transcrição grande: só o fim do arquivo é lido, e a primeira linha cor
   assert.deepEqual(r.modelos, ["claude-fable-5-2"]);
   assert.equal(r.limite.text, "erro no fim");
 });
+
+// ------------------------------------------------------------------ aviso de limite deixado na pasta (1.1.0)
+
+/** Quem chama o Claude Code (o Hermes) deixa o aviso em swap-plus/limite.json, dentro da pasta de login. */
+function avisar(pasta, corpo) {
+  const dir = path.join(pasta, "swap-plus");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "limite.json"), typeof corpo === "string" ? corpo : JSON.stringify(corpo));
+}
+
+test("aviso de limite na pasta (swap-plus/limite.json): vale quando é mais novo que desdeLimite; a pasta dos recados não conta como uso", async (t) => {
+  const pasta = pastaDeLogin(t);
+  avisar(pasta, { at: AGORA - 10 * SEG });
+  definirMtime(path.join(pasta, "swap-plus"), AGORA);
+  const r = await detectar(pasta, { agora: AGORA, desdeLimite: AGORA - MIN });
+  assert.deepEqual(r.limite, { ts: AGORA - 10 * SEG, text: "", rateLimitType: null, resetsAt: null, aviso: true });
+  assert.equal(r.ultimaAtividade, 0, "o recado não é sinal de uso do Claude Code");
+  assert.equal(ehProprio("swap-plus"), true);
+
+  // Mais velho que desdeLimite (já avisado, ou de antes de o cliente subir): não vale.
+  assert.equal((await detectar(pasta, { agora: AGORA, desdeLimite: AGORA - 10 * SEG })).limite, null);
+  assert.equal((await detectar(pasta, { agora: AGORA, desdeLimite: AGORA })).limite, null);
+  // desdeLimite null: não procura.
+  assert.equal((await detectar(pasta, { agora: AGORA })).limite, null);
+});
+
+test("aviso de limite: texto, tipo e hora de renovação passam adiante; arquivo quebrado, sem data ou com data no futuro não vale", async (t) => {
+  const pasta = pastaDeLogin(t);
+  const TEXTO = "You have hit your Fable limit · resets 10pm";
+  avisar(pasta, { at: AGORA - SEG, text: TEXTO, rateLimitType: "seven_day_overage_included", resetsAt: AGORA + 60 * MIN, outra: "coisa" });
+  assert.deepEqual((await detectar(pasta, { agora: AGORA, desdeLimite: 0 })).limite, {
+    ts: AGORA - SEG,
+    text: TEXTO,
+    rateLimitType: "seven_day_overage_included",
+    resetsAt: AGORA + 60 * MIN,
+    aviso: true,
+  });
+  avisar(pasta, { at: AGORA - SEG, text: "x".repeat(1000), rateLimitType: 7, resetsAt: "amanhã" });
+  const longo = (await detectar(pasta, { agora: AGORA, desdeLimite: 0 })).limite;
+  assert.equal(longo.text.length, 400);
+  assert.equal(longo.rateLimitType, null);
+  assert.equal(longo.resetsAt, null);
+
+  for (const ruim of ["{ isto não é json", "[]", '"texto"', JSON.stringify({ text: "sem data" }), JSON.stringify({ at: "ontem" }), JSON.stringify({ at: AGORA + 6 * MIN })]) {
+    avisar(pasta, ruim);
+    assert.equal((await detectar(pasta, { agora: AGORA, desdeLimite: 0 })).limite, null, ruim);
+  }
+  avisar(pasta, { at: AGORA + 4 * MIN }); // relógios um pouco diferentes entre quem avisa e o cliente: vale
+  assert.equal((await detectar(pasta, { agora: AGORA, desdeLimite: 0 })).limite.ts, AGORA + 4 * MIN);
+});
+
+test("aviso de limite e erro na transcrição ao mesmo tempo: vale o mais novo dos dois", async (t) => {
+  const pasta = pastaDeLogin(t);
+  gravarTranscricao(pasta, { linhas: [linhaDeLimite("You have hit your session limit · resets 3pm", AGORA - 30 * SEG)], mtime: AGORA - 30 * SEG });
+  avisar(pasta, { at: AGORA - 5 * SEG });
+  let r = await detectar(pasta, { agora: AGORA, desdeLimite: AGORA - MIN });
+  assert.equal(r.limite.aviso, true, "o aviso é mais novo");
+  avisar(pasta, { at: AGORA - 50 * SEG });
+  r = await detectar(pasta, { agora: AGORA, desdeLimite: AGORA - MIN });
+  assert.equal(r.limite.aviso, undefined, "o erro da transcrição é mais novo");
+  assert.match(r.limite.text, /session limit/);
+});

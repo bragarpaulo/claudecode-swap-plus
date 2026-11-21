@@ -265,7 +265,7 @@ class Cliente {
     return passou(w.session, linhas.session) || passou(w.weekly, linhas.weekly);
   }
 
-  /** Erro de limite novo nas transcrições → { rotulo, ts } quando há o que avisar ao servidor. */
+  /** Erro de limite novo (numa transcrição, ou avisado na pasta) → { rotulo, ts } quando há o que avisar ao servidor. */
   limiteVisto(ativ, resp) {
     const h = ativ.limite;
     if (!h) return null;
@@ -274,13 +274,37 @@ class Cliente {
       return null;
     };
     // Limite de um modelo (Fable, Opus, Sonnet): só o do Fable troca de conta, e só se a regra do servidor mandar.
-    const modelo = this.modelSwitch.limitModel(h.text, h.rateLimitType);
+    // Aviso que não diz qual limite foi (o Hermes só sabe "bateu"): decide pelo uso da conta (modeloPeloUso).
+    const modelo = this.modelSwitch.limitModel(h.text, h.rateLimitType) || (h.aviso && !h.text && !h.rateLimitType ? this.modeloPeloUso(resp) : null);
     if (modelo) {
       if (modelo === "Fable" && resp.rules && resp.rules.onModelLimit === "switchAccount") return { rotulo: "limite do Fable", ts: h.ts };
       return semAviso();
     }
     const rotulo = this.rotuloDaConta(h.text);
     return rotulo ? { rotulo, ts: h.ts } : semAviso();
+  }
+
+  /**
+   * Aviso de limite sem dizer qual: se, na última leitura da conta em uso, o limite do modelo preferido está no fim
+   * (90% ou mais) e a sessão e o semanal estão abaixo das linhas de troca, foi o do modelo. → o nome dele, ou null.
+   * Importa porque o servidor trata os dois de jeitos diferentes: limite da conta troca para qualquer conta com
+   * folga; limite do modelo só troca para conta que ainda tem o modelo (senão ficaria pulando de conta à toa).
+   */
+  modeloPeloUso(resp) {
+    try {
+      const cred = resp.credential;
+      const acc = cred ? resp.list.accounts.find((a) => a && a.number === cred.number) : null;
+      const r = { ...this.regras.RULE_DEFAULTS, ...(resp.rules || {}) };
+      const w = acc ? this.regras.windows(acc) : null;
+      if (!w || !r.preferModel) return null;
+      const m = w.models.find((x) => x.name === r.preferModel);
+      if (!m || !(Number(m.pct) >= 90)) return null;
+      const linhas = this.regras.linesFor(acc, r, resp.records);
+      const abaixo = (j, linha) => !j || typeof j.pct !== "number" || j.pct < linha;
+      return abaixo(w.session, linhas.session) && abaixo(w.weekly, linhas.weekly) ? r.preferModel : null;
+    } catch {
+      return null;
+    }
   }
 
   /** Igual ao limitLabel da extensão. */

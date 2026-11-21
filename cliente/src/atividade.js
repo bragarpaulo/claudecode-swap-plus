@@ -5,6 +5,10 @@
 //     servidor enquanto alguém está usando);
 //   · quais modelos estão em uso e se a conta bateu um limite — só quando o Claude Code grava transcrições
 //     (uso direto, `claude -p`). O plugin do Hermes roda com --no-session-persistence: não deixa transcrição.
+//   · um AVISO DE LIMITE deixado por quem chama o Claude Code (1.1.0): o arquivo swap-plus/limite.json dentro da
+//     pasta de login. É assim que o Hermes, que não deixa transcrição, diz ao Swap que a conta bateu o limite:
+//       { "at": <epoch ms>, "text": "<texto do erro, se houver>", "rateLimitType": "<five_hour…>", "resetsAt": <epoch ms> }
+//     Só `at` é obrigatório. O cliente só lê; quem grava é o outro lado.
 //
 // Sinal de uso: a data de alteração do que o Claude Code cria e mexe no primeiro nível da pasta (sessions/,
 // policy-limits.json, remote-settings.json…: mudam a cada execução, mesmo sem transcrição) e das transcrições em
@@ -19,7 +23,11 @@ const CAUDA_LIMITE = 128 * 1024;
 const MODELO_RE = /"model":"(claude-[^"]+)"/g;
 
 // Arquivos que o cliente grava (ou as travas que ele pega) na pasta de login: não são sinal de uso.
-const PROPRIOS = new Set([".credentials.json", ".claude.json", ".config.json"]);
+// "swap-plus" é a pasta dos recados do Swap Plus (o aviso de limite, acima): também não é uso.
+const PROPRIOS = new Set([".credentials.json", ".claude.json", ".config.json", "swap-plus"]);
+const PASTA_RECADOS = "swap-plus";
+const AVISO_LIMITE = "limite.json";
+const AVISO_FUTURO_MS = 5 * 60 * 1000; // aviso com data mais de 5 min à frente do relógio daqui não vale (relógio errado)
 function ehProprio(nome) {
   return PROPRIOS.has(nome) || /\.(lock|takeover|tmp)$/i.test(nome);
 }
@@ -114,6 +122,28 @@ async function limiteMaisNovo(arquivos, desdeMs) {
 }
 
 /**
+ * Aviso de limite deixado por quem chama o Claude Code (swap-plus/limite.json), se for mais novo que `desdeMs`.
+ * → { ts, text, rateLimitType, resetsAt, aviso: true } | null. Arquivo ausente, ilegível ou sem `at`: null.
+ */
+async function avisoDeLimite(pasta, desdeMs, agora) {
+  let d;
+  try {
+    d = JSON.parse(await fs.promises.readFile(path.join(pasta, PASTA_RECADOS, AVISO_LIMITE), "utf8"));
+  } catch {
+    return null;
+  }
+  const ts = d && typeof d === "object" ? Number(d.at) : NaN;
+  if (!Number.isFinite(ts) || ts <= desdeMs || ts > agora + AVISO_FUTURO_MS) return null;
+  return {
+    ts,
+    text: typeof d.text === "string" ? d.text.slice(0, 400) : "",
+    rateLimitType: typeof d.rateLimitType === "string" ? d.rateLimitType.slice(0, 60) : null,
+    resetsAt: Number(d.resetsAt) > 0 ? Number(d.resetsAt) : null,
+    aviso: true,
+  };
+}
+
+/**
  * @param {string} pasta  pasta de login do Claude Code
  * @param {{ agora?: number, desdeLimite?: number|null }} op  desdeLimite: só erros de limite depois desse instante (null = não procurar)
  * @returns {Promise<{ ultimaAtividade: number, modelos: string[], limite: object|null }>}
@@ -152,9 +182,15 @@ async function detectar(pasta, { agora = Date.now(), desdeLimite = null } = {}) 
     if (id && id.length <= 100 && (!vistos.has(id) || vistos.get(id) < a.mtimeMs)) vistos.set(id, a.mtimeMs);
   }
   const modelos = [...vistos.entries()].sort((x, y) => y[1] - x[1]).map((x) => x[0]);
-  const limite = desdeLimite === null || desdeLimite === undefined ? null : await limiteMaisNovo(arquivos, desdeLimite);
+  let limite = null;
+  if (desdeLimite !== null && desdeLimite !== undefined) {
+    // O mais novo entre o erro visto numa transcrição e o aviso deixado na pasta (quem não deixa transcrição).
+    const visto = await limiteMaisNovo(arquivos, desdeLimite);
+    const avisado = await avisoDeLimite(pasta, desdeLimite, agora);
+    limite = avisado && (!visto || avisado.ts > visto.ts) ? avisado : visto;
+  }
   // Relógio de arquivo adiantado não pode prender o cliente em "ativo" para sempre.
   return { ultimaAtividade: Math.min(ultima, agora), modelos, limite };
 }
 
-module.exports = { detectar, ehProprio, JANELA_MODELOS_MS };
+module.exports = { detectar, ehProprio, JANELA_MODELOS_MS, PASTA_RECADOS, AVISO_LIMITE };

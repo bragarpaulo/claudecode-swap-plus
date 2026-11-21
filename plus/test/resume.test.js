@@ -258,22 +258,30 @@ test("retomar.js: troca gravada até 20 s ANTES do erro também vale; mais velha
   assert.equal(got.length, 1, "1 min antes: não vale");
 });
 
-test("retomar.js: acesso cancelado (authentication_failed) retoma com o motivo certo; os outros erros não fazem nada", async (t) => {
+test("retomar.js: acesso cancelado e os outros erros DA CONTA retomam com o motivo certo; erro do servidor, do pedido ou do modelo não faz nada", async (t) => {
   const { root, dir, claude } = tmp(t);
   const { sock, got } = await inbox(t, root);
   resume.markApplied({ number: 6, gen: 4 }, dir);
   await runHook({ dir, claude, input: event(sid(), "authentication_failed"), sock });
   await settle();
   assert.equal(got.length, 1);
-  assert.match(got[0][1].message.content, /o acesso da conta foi renovado/);
-  for (const error of ["server_error", "billing_error", "max_output_tokens", "unknown", ""]) {
+  assert.match(got[0][1].message.content, /o acesso da conta foi renovado ou trocado/);
+  // Os outros erros da conta (cobrança, conta suspensa, organização não permitida) também retomam depois de um login novo.
+  for (const error of ["billing_error", "account_on_hold", "oauth_org_not_allowed"]) {
+    resume.markApplied({ number: 8, gen: 1 }, dir);
+    await runHook({ dir, claude, input: event(sid(), error), sock });
+  }
+  await settle();
+  assert.equal(got.length, 4);
+  assert.match(got[3][1].message.content, /a conta em uso não podia mais atender/);
+  for (const error of ["server_error", "invalid_request", "model_not_found", "max_output_tokens", "cloud_credential_error", "unknown", ""]) {
     resume.markApplied({ number: 7, gen: 1 }, dir);
     const r = await runHook({ dir, claude, input: event(sid(), error), sock, waitMs: 800 });
     assert.equal(r.code, 0);
     assert.ok(r.ms < 3000, `${error || "(vazio)"}: sai na hora, sem esperar`);
   }
   await settle();
-  assert.equal(got.length, 1, "nada postado para os outros erros");
+  assert.equal(got.length, 4, "nada postado para os erros que não são da conta");
 });
 
 test("retomar.js: desligado na opção não posta; texto próprio vai no lugar do padrão", async (t) => {

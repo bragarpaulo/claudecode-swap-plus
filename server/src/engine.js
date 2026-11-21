@@ -25,23 +25,40 @@
 // - Avisos por e-mail ao dono (notify.js, opção `notify` do construtor): login que vence em menos de 3 dias (junto
 //   com o alerta diário do histórico: 1 por conta por dia), conta que morre (1 na hora) e cofre que para de gravar
 //   (1 por incidente). O motor só chama notify({ subject, text }); sem `notify`, nada é avisado. Nunca derruba nada.
-// - Presença dos serviços (só para mostrar; as decisões continuam no isActive): o servidor avisa cada pedido
+// - Presença dos serviços (para mostrar; as trocas por uso continuam no isActive, e só a renovação da conta em uso,
+//   abaixo, a consulta para saber quem segura cada conta): o servidor avisa cada pedido
 //   autenticado (touch) e o motor guarda a hora SÓ NA MEMÓRIA. A lista de serviços (devicesList: painel e
 //   StateResponse) leva lastContact, connected e presence: "active" (batimento nos últimos 5 min), "connected"
 //   (falou com o servidor nos últimos 5 min, sem batimento — ex.: o cliente do Hermes ocioso), "waiting" (ainda não
 //   chamou desde que este processo subiu, há menos de 5 min) ou "none" (sem contato).
+// - Renovação da conta em uso (2.5.5): renovar cancela NA HORA o acesso antigo da conta (a Anthropic não deixa os dois
+//   valendo: diag.oldTokenValidAfterRefresh = false), e o serviço que está com ele só busca o novo no contato
+//   seguinte. Até lá, toda chamada dele ao Claude falha com 401 e o Claude Code encerra a conversa (21/11/2026 09:53:
+//   três conversas paradas por um buraco de 19 s). Troca de conta não tem esse buraco: o acesso da conta antiga
+//   continua valendo até o serviço gravar a nova. Por isso a conta que algum serviço por perto SEGURA (holders: o
+//   último acesso que ele buscou é o atual dela, ou era até 3 min atrás) não renova na antecedência normal:
+//     - até faltar metade da antecedência (drainMs, 60 min): espera — numa troca comum os serviços saem dela sozinhos;
+//     - abaixo disso: o motor tira os serviços dela (drainStep: "o login da conta N vai ser renovado") e renova
+//       quando o último buscar o acesso da conta nova; até renovar, ela não é destino de troca (leaving);
+//     - no piso (holdFloorMs, 30 min) renova assim mesmo: acesso vencido é pior que o buraco.
 
 const crypto = require("crypto");
-const { RULE_DEFAULTS, STRATEGY_LABELS, decide, windows, linesFor } = require("../../plus/rules");
+const { RULE_DEFAULTS, STRATEGY_LABELS, CAND_STALE_SEC, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.5.4";
+const VERSION = "2.5.5";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
-// Presença (só para mostrar; nenhuma decisão usa): contato = qualquer pedido autenticado do serviço. Quem falou com
+// Presença (para mostrar e, desde a 2.5.5, para saber quem segura cada conta: holders): contato = qualquer pedido autenticado do serviço. Quem falou com
 // o servidor nesta janela e não está ativo aparece como "conectado" (ex.: o cliente do Hermes ocioso, que só lê o
 // estado a cada 2 min). A mesma janela vale depois de um reinício: até lá, quem ainda não chamou fica "aguardando".
 const CONTACT_MS = ACTIVE_MS;
+// Quem segura uma conta (holders, 2.5.5). Vale por mais tempo que a presença da tela: um cliente que pausa 5 a 10 min
+// depois de um 403/429 some da tela ("sem contato") e continua com o acesso na mão.
+const HOLD_CONTACT_MS = 15 * 60 * 1000;
+// Depois de buscar o acesso de OUTRA conta, o serviço ainda segura a anterior por 3 min: a busca não prova que ele
+// gravou (a gravação local pode falhar e só é tentada de novo em 1 min; a resposta pode se perder no caminho).
+const HELD_GRACE_MS = 3 * 60 * 1000;
 const POLL_ACTIVE_MS = 3 * 60 * 1000; // conta de dispositivo ativo: uso a cada 3 min
 const POLL_IDLE_MS = 20 * 60 * 1000; // as outras: a cada 20 min
 const POLL_BACKOFF_MIN = [2, 5, 10];
@@ -349,6 +366,8 @@ class Engine {
     this.diagPending = null; // { number, accessToken, expiresAt, attempts } — token ANTIGO, nunca logar
     this.notes = new Map(); // deviceId → { key, at } (avisos repetidos no histórico)
     this.contacts = new Map(); // deviceId → ms do último pedido autenticado, de qualquer rota (touch); nunca vai para o cofre
+    this.leaving = new Map(); // conta → gen: o motor tirou os serviços dela para renovar; até renovar, não é destino de troca
+    this.deferNoted = new Map(); // conta → gen: renovação adiada já dita no log (uma vez por acesso)
     this.startedAt = now(); // quando este processo subiu: quem não chamou desde então pode estar só "aguardando contato"
     this.dirty = false;
     this.saveFailed = false;
@@ -829,13 +848,29 @@ class Engine {
    * rotação". dev null → sem restrição.
    */
   recordsFor(dev) {
-    return access.filterRecordsForDevice(this.records(), this.st, dev);
+    return this.withoutLeaving(access.filterRecordsForDevice(this.records(), this.st, dev));
   }
 
   withDisabled(records, numbers) {
     const out = { ...records };
     for (const n of numbers) out[String(n)] = { ...(out[String(n)] || {}), disabled: true };
     return out;
+  }
+
+  /**
+   * Tira das escolhas as contas de onde o motor acabou de tirar os serviços para renovar (drainStep) e que ainda não
+   * renovaram: voltar para uma delas antes da renovação poria o serviço de novo com o acesso que vai ser cancelado.
+   * A marca cai sozinha quando a conta renova (o gen muda), morre ou é removida.
+   */
+  withoutLeaving(records) {
+    if (!this.leaving.size) return records;
+    const out = [];
+    for (const [n, gen] of this.leaving) {
+      const a = this.acc(n);
+      if (!a || a.dead || a.gen !== gen) this.leaving.delete(n);
+      else out.push(n);
+    }
+    return out.length ? this.withDisabled(records, out) : records;
   }
 
   usageStatusOf(a) {
@@ -995,6 +1030,7 @@ class Engine {
   start() {
     if (this.timer) return;
     this.stopping = false;
+    if (this.store.state) this.adoptHeld();
     this.timer = setInterval(() => {
       this.tick().catch(() => {});
     }, TICK_MS);
@@ -1059,8 +1095,77 @@ class Engine {
       if (t < (Number(acc.refreshBackoffUntil) || 0)) continue;
       // refreshRetry: a última ficou sem resposta (ou um invalid_grant espera confirmação): tenta de novo mesmo com o acesso valendo.
       const ahead = this.aheadMs(acc);
-      if (!acc.refreshRetry && (Number(acc.cred.expiresAt) || 0) - t >= ahead) continue;
+      const left = (Number(acc.cred.expiresAt) || 0) - t;
+      if (!acc.refreshRetry && left >= ahead) continue;
+      if (!acc.refreshRetry) {
+        // Conta que algum serviço presente segura: renovar agora cancelaria o acesso que ele tem (ver o começo do arquivo).
+        const held = this.holders(acc, t);
+        if (held.length) {
+          const who = joinNames(held.map(devName));
+          if (left > this.holdFloorMs(acc)) {
+            if (this.deferNoted.get(acc.number) !== acc.gen) {
+              this.deferNoted.set(acc.number, acc.gen);
+              this.log.info(`[renovação] conta ${acc.number}: adiada, ${who} ${held.length > 1 ? "estão" : "está"} com o acesso dela (vale até ${this.iso(acc.cred.expiresAt)}); renovo quando sair`);
+            }
+            continue;
+          }
+          this.log.warn(
+            `[renovação] conta ${acc.number}: faltam ${Math.max(0, Math.round(left / 60000))} min para o acesso vencer e ${who} ainda ${held.length > 1 ? "estão" : "está"} com ele; renovo assim mesmo (até buscar o acesso novo, o Claude desse serviço pode falhar)`
+          );
+        }
+      }
       await this.refreshAccount(acc.number, { minValidMs: acc.refreshRetry ? Infinity : ahead });
+    }
+  }
+
+  /**
+   * Serviços por perto (around) que estão com o acesso ATUAL da conta: o último que buscaram (credentialFor →
+   * deliver) é o deste gen — ou era, até 3 min atrás (heldBefore: quem acabou de buscar o de outra conta pode ainda
+   * não ter gravado). Serviço trocado de conta que ainda não buscou a nova continua segurando a antiga.
+   */
+  holders(acc, t = this.now()) {
+    const mine = (h) => isObj(h) && Number(h.number) === acc.number && h.gen === acc.gen;
+    const out = [];
+    for (const d of this.deviceList()) {
+      const before = isObj(d.heldBefore) && Number(d.heldBefore.until) > t ? d.heldBefore : null;
+      if ((mine(d.held) || mine(before)) && this.around(d, t)) out.push(d);
+    }
+    return out;
+  }
+
+  /**
+   * O serviço está por perto: ativo, conectado ou aguardando contato depois de um reinício (presenceOf), ou falou com
+   * o servidor nos últimos 15 min (HOLD_CONTACT_MS). Quem está há mais tempo sem contato (serviço desligado) não
+   * segura conta nenhuma — ao voltar, o primeiro contato dele já busca o acesso novo.
+   */
+  around(dev, t = this.now()) {
+    if (this.presenceOf(dev, t).presence !== "none") return true;
+    const last = this.lastContactOf(dev);
+    return last !== null && t - last <= HOLD_CONTACT_MS;
+  }
+
+  /** Abaixo disto o motor tira os serviços da conta para poder renovar (drainStep): metade da antecedência (60 min). */
+  drainMs(acc) {
+    return this.aheadMs(acc) / 2;
+  }
+
+  /** Piso: abaixo disto a conta renova mesmo com serviço nela — 30 min (o mínimo que o credentialFor entrega). */
+  holdFloorMs(acc) {
+    return Math.min(this.credMinMs(acc), this.aheadMs(acc) / 4);
+  }
+
+  /**
+   * Serviços conectados antes da 2.5.5 não têm `held`: quem está numa conta viva já buscou o acesso dela (os
+   * serviços buscam assim que a conta ou o gen mudam). Sem isto, a primeira renovação depois da atualização ainda
+   * cancelaria o acesso de quem está trabalhando.
+   */
+  adoptHeld() {
+    for (const d of this.deviceList()) {
+      if (d.held !== undefined) continue;
+      const a = this.acc(d.assigned);
+      if (!a || a.dead) continue;
+      d.held = { number: a.number, gen: a.gen };
+      this.dirty = true;
     }
   }
 
@@ -1135,6 +1240,8 @@ class Engine {
         acc.lastAmbiguousAt = null;
         acc.invalidGrantAt = null;
         acc.refreshRetry = false;
+        this.leaving.delete(acc.number);
+        this.deferNoted.delete(acc.number);
         try {
           await this.save(); // ANTES de qualquer uso do token novo
         } catch {
@@ -1477,7 +1584,90 @@ class Engine {
   // ------------------------------------------------------------------ 3) decisões
 
   async decisionStep() {
-    if (this.decideAll()) await this.saveQuiet();
+    const drained = this.drainStep();
+    if (this.decideAll() || drained) await this.saveQuiet();
+  }
+
+  /**
+   * Tira os serviços das contas que precisam renovar e que alguém presente ainda segura (síncrono; true = mudou algo).
+   * Vale quando o acesso da conta tem menos de drainMs (60 min) e a troca automática está ligada. Sem outra conta
+   * com folga para onde ir, ninguém sai: a conta renova no piso (refreshStep), com o buraco de sempre.
+   */
+  drainStep(t = this.now()) {
+    if (this.st.autoSwitch === false) return false;
+    let changed = false;
+    for (const acc of this.accountList()) {
+      if (acc.dead || !acc.cred || !acc.cred.refreshToken || acc.refreshRetry) continue;
+      const left = (Number(acc.cred.expiresAt) || 0) - t;
+      if (left >= this.drainMs(acc) || !this.holders(acc, t).length) continue;
+      if (this.drainAccount(acc, t)) changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * Leva para outra conta os serviços por perto que estão na conta `acc` (que vai renovar):
+   *   - "juntos", e ela é a conta do grupo: o grupo inteiro vai junto, como numa troca automática;
+   *   - os outros (parados — só conectados —, quem segue sozinho no "juntos", cada um no "separados"): um a um, para
+   *     a conta do grupo se puderem usá-la, senão para a melhor conta deles.
+   * Destino: renewTarget. Ou saem todos, ou ninguém: se um só ficasse (sem destino, ou só pode usar esta conta), ela
+   * continuaria segurada e, marcada como "saindo", ficaria fora dos destinos à toa até o piso. → true se trocou.
+   */
+  drainAccount(acc, t = this.now()) {
+    const n = acc.number;
+    const here = this.deviceList().filter((d) => Number(d.assigned) === n && this.around(d, t));
+    if (!here.length) return false; // só falta alguém buscar o acesso da conta nova (ou passarem os 3 min)
+    const reason = `o login da conta ${n} vai ser renovado`;
+    const active = this.together() ? this.deviceList().filter((d) => this.isActive(d, t)) : [];
+    let group = null; // conta do grupo ("juntos", com alguém ativo)
+    let groupTo = null; // para onde o grupo vai, se a conta dele é esta
+    if (active.length) {
+      const g = this.groupAccount(active, t);
+      group = g ? g.account : null;
+      if (group === n) {
+        groupTo = this.renewTarget(null, this.sharedRecords(active.filter((d) => access.canUse(this.st, d, n))), t);
+        if (groupTo === null) return false; // o grupo fica: tirar só os parados não deixaria a conta livre
+        group = groupTo;
+      }
+    }
+    // A conta do grupo só serve de destino para os outros se ela mesma não estiver para renovar (senão sairiam de novo logo).
+    const ga = group !== null && group !== n ? this.acc(group) : null;
+    const groupOk = !!ga && !ga.dead && !!ga.cred && (Number(ga.cred.expiresAt) || 0) - t >= this.aheadMs(ga);
+    const alone = []; // [serviço, destino] de quem sai um a um
+    for (const d of here) {
+      if (groupTo !== null && this.isActive(d, t) && access.canUse(this.st, d, groupTo)) continue; // vai com o grupo
+      const to = groupOk && access.canUse(this.st, d, group) ? group : this.renewTarget(d, this.recordsFor(d), t);
+      if (to === null || to === n) return false; // este ficaria: ninguém sai
+      alone.push([d, to]);
+    }
+    if (groupTo !== null) this.moveGroup(active.filter((d) => access.canUse(this.st, d, groupTo)), groupTo, "auto", reason);
+    // "renew" não define a conta do grupo (GROUP_LEADER_BY): quem sai sozinho não puxa os outros atrás dele.
+    for (const [d, to] of alone) this.applySwitch(d, to, "renew", "switch", `Trocou da conta ${n} para a conta ${to}: ${reason}`);
+    this.leaving.set(n, acc.gen);
+    return true;
+  }
+
+  /**
+   * Destino de uma troca feita só para liberar a renovação: a melhor conta (bestAccountFor) abaixo das linhas, com
+   * leitura de uso recente (até 1 h, como os destinos do decide()) e com o acesso longe de vencer. Primeiro entre as
+   * que têm pelo menos o dobro da antecedência pela frente (4 h: ninguém precisa sair de novo logo); depois entre as
+   * que só não estão na vez de renovar. É troca voluntária: sem conta assim, null (melhor ficar onde está).
+   */
+  renewTarget(dev, records, t = this.now()) {
+    const stale = new Set();
+    for (const p of this.publicList(null).accounts) {
+      const w = windows(p);
+      if (!w || typeof w.ageSeconds !== "number" || w.ageSeconds > CAND_STALE_SEC) stale.add(p.number);
+    }
+    for (const times of [2, 1]) {
+      const skip = new Set(stale);
+      for (const a of this.accountList()) {
+        if (!a.cred || (Number(a.cred.expiresAt) || 0) - t < times * this.aheadMs(a)) skip.add(a.number);
+      }
+      const to = this.bestAccountFor(dev, { requireOk: true, records: this.withDisabled(records, skip) });
+      if (to !== null) return to;
+    }
+    return null;
   }
 
   /** Decide a conta de todos os dispositivos ativos (síncrono). true = mudou algo. */
@@ -1556,7 +1746,7 @@ class Engine {
 
   /** records() com `disabled` nas contas que algum destes serviços não pode usar. */
   sharedRecords(devs) {
-    return devs.reduce((recs, d) => access.filterRecordsForDevice(recs, this.st, d), this.records());
+    return this.withoutLeaving(devs.reduce((recs, d) => access.filterRecordsForDevice(recs, this.st, d), this.records()));
   }
 
   /** publicList com a conta `n` como a ativa (para o decide() do grupo). */
@@ -1923,9 +2113,9 @@ class Engine {
       if (!acc || acc.dead || !acc.cred || !acc.cred.accessToken || !access.canUse(this.st, dev, acc.number)) return null;
       const minMs = this.credMinMs(acc);
       const left = (Number(acc.cred.expiresAt) || 0) - this.now();
-      if (left >= minMs) return this.credentialPayload(acc);
+      if (left >= minMs) return this.deliver(dev, acc);
       // Encerrando: não renova (o token novo poderia não chegar ao disco); entrega o atual se ainda vale.
-      if (this.stopping) return left > EXPIRED_SLACK_MS ? this.credentialPayload(acc) : null;
+      if (this.stopping) return left > EXPIRED_SLACK_MS ? this.deliver(dev, acc) : null;
       const rr = await this.refreshAccount(acc.number, { minValidMs: minMs });
       if (!rr.ok && rr.error === "save_failed") return null; // token novo ainda não está no cofre: não entrega
       const d2 = this.device(deviceId);
@@ -1933,12 +2123,31 @@ class Engine {
       // Morreu, foi removida, o dispositivo trocou ou a conta deixou de estar liberada para ele: de novo
       // (na volta o needsAssign → "not_allowed" troca a conta).
       if (!cur || cur.dead || cur !== acc || !access.canUse(this.st, d2, cur.number)) continue;
-      if (rr.ok) return this.credentialPayload(cur);
+      if (rr.ok) return this.deliver(d2, cur);
       // Renovação falhou agora (temporário): entrega o que tem se ainda vale.
-      if ((Number(cur.cred.expiresAt) || 0) > this.now() + EXPIRED_SLACK_MS) return this.credentialPayload(cur);
+      if ((Number(cur.cred.expiresAt) || 0) > this.now() + EXPIRED_SLACK_MS) return this.deliver(d2, cur);
       return null;
     }
     return null;
+  }
+
+  /**
+   * Entrega ao serviço a credencial da conta e anota que é esse o acesso que ele tem agora (`held`: conta e gen).
+   * É por aí que o motor sabe quem segura cada conta (holders) e não renova a conta de quem está trabalhando.
+   */
+  async deliver(dev, acc) {
+    const out = this.credentialPayload(acc); // montado já: é deste gen que o `held` abaixo fala
+    const h = dev.held;
+    if (!isObj(h) || h.number !== acc.number || h.gen !== acc.gen) {
+      // Vindo de outra conta: ela continua segurada por 3 min (HELD_GRACE_MS), até ele gravar esta de fato.
+      if (isObj(h) && h.number !== acc.number) dev.heldBefore = { number: h.number, gen: h.gen, until: this.now() + HELD_GRACE_MS };
+      dev.held = { number: acc.number, gen: acc.gen };
+      this.dirty = true;
+      // Grava já, e não no próximo ciclo: se o servidor cair nesses segundos, o motor novo ainda sabe quem segura o quê.
+      // (Encerrando, não: quem grava é o encerramento, depois que o motor para.)
+      if (!this.stopping) await this.saveQuiet();
+    }
+    return out;
   }
 
   /**

@@ -1,5 +1,26 @@
 # Novidades do Swap Plus 3.2
 
+## Servidor 2.5.5 (21/11/2026): a conta em uso não é mais renovada com serviço nela
+
+- **O problema:** a cada 6 horas o servidor renova o login de cada conta. Quando ele renova, a Anthropic cancela o
+  acesso antigo no mesmo instante, e o serviço que estava com ele só busca o novo no contato seguinte com o servidor
+  (até 30 segundos no VS Code, até 2 minutos no Hermes parado). Uma conversa que chamasse o Claude nesse intervalo
+  parava com "OAuth token revoked". Aconteceu em 21/11 às 09:53: a conta 6 foi renovada em uso, o VS Code buscou o
+  acesso novo 19 segundos depois, e nesse meio tempo três conversas pararam. Já tinha acontecido em 16/11 às 09:51.
+- **O que mudou:** o servidor passou a saber qual serviço está com o acesso de cada conta, e não renova uma conta
+  enquanto algum serviço ligado estiver com ele:
+  - quando chega a hora de renovar (faltando 2 horas para o acesso vencer), ele **espera**. Numa troca comum os
+    serviços saem da conta sozinhos, e ela renova logo em seguida;
+  - se faltar menos de 1 hora e eles ainda estiverem nela, o servidor **troca os serviços para outra conta** e só
+    renova a antiga depois que todos gravarem a nova. No histórico aparece "o login da conta N vai ser renovado".
+    Troca de conta não derruba conversa: o acesso da conta antiga continua valendo até o serviço gravar a nova;
+  - se não houver outra conta com folga para onde ir, ou se a troca automática estiver desligada, a conta é renovada
+    quando faltam 30 minutos, com o risco de antes. O registro do servidor avisa quando isso acontece.
+- **O que você vai notar:** de vez em quando uma troca de conta a mais, com esse motivo. Com o VS Code aberto e sem
+  uso, é mais ou menos uma a cada 6 horas.
+- **O que não mudou:** as regras de troca, as contas, a extensão e o cliente do Hermes. Contas que ninguém está
+  usando continuam renovando 2 horas antes de vencer.
+
 ## Extensão 3.2.1 (21/11/2026): dois acertos na tela de Configurações
 
 - Em janela estreita, o nome da conta em uso não quebra mais no meio ("Conta 3" fica junto e o e-mail vai inteiro para a

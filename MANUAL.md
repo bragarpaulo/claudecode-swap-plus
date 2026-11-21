@@ -206,6 +206,9 @@ login para de valer. Enquanto isso, a troca automática nunca vai para essa cont
 - **O servidor é o único que guarda e renova os logins.** Os serviços conectados recebem só o **acesso** da conta que
   o servidor escolheu para cada um.
 - **O acesso dura cerca de 8 horas.** O servidor renova sozinho, 2 horas antes de vencer. Você não faz nada.
+  A conta que está em uso ele não renova na hora: renovar cancela o acesso antigo, e uma conversa em andamento
+  pararia. Ele espera os serviços saírem dela e, se faltar menos de 1 hora, troca os serviços para outra conta antes
+  de renovar. Por isso o histórico às vezes mostra uma troca com o motivo "o login da conta N vai ser renovado".
 - **O login vence de vez em cerca de um mês.** O painel avisa quando faltam menos de 3 dias, e o servidor manda
   e-mail ao dono. Veja [Quando o login de uma conta vence](#quando-o-login-de-uma-conta-vence).
 - **As regras de troca ficam no servidor** e valem para todos os serviços. Para mudar as regras, use o painel do

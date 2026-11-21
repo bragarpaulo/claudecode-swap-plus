@@ -48,7 +48,7 @@ const {
 const { createWeb, webReplacer, uaSummary } = require("./web");
 const access = require("./access");
 
-const VERSION = "2.5.4";
+const VERSION = "2.5.5";
 const MAX_BODY = 256 * 1024; // corpo máximo aceito
 const HARD_BODY = MAX_BODY * 4; // acima disso nem lê o resto: responde 413 e fecha
 const PAIR_TTL_MS = 10 * 60 * 1000;

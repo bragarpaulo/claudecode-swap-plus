@@ -104,7 +104,9 @@ Account = {
 }
 Usage = { fiveHour?: { pct, resetsAt }, sevenDay?: { pct, resetsAt }, scoped?: [ { name, pct, resetsAt } ] }
 Device = { id, name, platform, googleEmail: "e-mail"|null /*null = pareado por código*/, tokenHash, createdAt, lastSeen, assigned: n|null, lastSwitchAt: 0, models: [],
-           lastSwitchBy /* "assign" | "auto" | "limit" | "manual" | "painel" | "group" | "follow" (só o motor lê) */ }
+           lastSwitchBy /* "assign" | "auto" | "limit" | "manual" | "painel" | "group" | "follow" | "renew" (só o motor lê) */,
+           held? /* { number, gen }: o último acesso que o serviço buscou (2.5.5); ausente = ainda não buscou nenhum */,
+           heldBefore? /* { number, gen, until }: a conta de antes, ainda segurada até `until` (3 min depois da busca) */ }
 // lastSeen = criação, último batimento (heartbeat) ou último limite batido: é o uso, e só ele diz quem está ativo.
 // O contato de cada serviço (presença, 2.5.3) fica só na memória do motor: nada de `contacts`, `lastContact`,
 // `connected` ou `presence` entra no cofre.
@@ -196,6 +198,46 @@ Diagnóstico único: na 1ª renovação bem-sucedida com `diag.oldTokenValidAfte
 (conta no orçamento) e gravar true/false + log ("acesso antigo continua valendo depois de renovar: sim/não").
 Se o token tiver vencido mesmo assim (servidor parado), renovar antes de usar.
 
+Renovação da conta em uso (desde a 2.5.5). O diagnóstico acima deu **não** em 15/11/2026: a Anthropic cancela o acesso antigo
+no instante da renovação, e o serviço que está com ele só busca o novo no contato seguinte (a extensão, em até 30 s; o cliente
+parado, em até ~2 min). Nesse intervalo toda chamada dele ao Claude falha com `401 OAuth access token has been revoked` e o
+Claude Code encerra a conversa depois de duas tentativas (21/11/2026 09:53: buraco de 19 s, três conversas paradas; o mesmo em
+16/11 09:51). Troca de conta não tem esse buraco: o acesso da conta antiga continua valendo até o serviço gravar a nova.
+- **Quem segura a conta** (`holders(acc)`): os serviços **por perto** (`around`: presença ≠ `"none"` — ativo, conectado ou
+  aguardando contato depois de um reinício — ou último contato há no máximo 15 min, `HOLD_CONTACT_MS`: um cliente que pausa
+  5 a 10 min depois de um 403/429 some da tela e continua com o acesso na mão) cujo `held` é
+  `{ number: acc.number, gen: acc.gen }`. `held` é gravado em toda entrega de credencial (`credentialFor` → `deliver`) e vai
+  para o cofre **na hora** (não no ciclo seguinte: uma queda nesses segundos deixaria o motor novo sem saber quem segura o quê).
+  Serviço trocado de conta que ainda não buscou a nova continua segurando a antiga; e, **por 3 min depois de buscar a nova**
+  (`heldBefore: { number, gen, until }`, `HELD_GRACE_MS`), segura as duas: buscar não prova que gravou (a gravação local pode
+  falhar e só é tentada de novo em 1 min). Serviço sem contato há mais de 15 min (desligado) não segura nada — ao voltar, o
+  primeiro contato dele busca o acesso novo.
+  `start()` chama `adoptHeld()`: serviço sem `held` (conectado antes da 2.5.5) e atribuído a uma conta viva ganha o da conta dele.
+- Conta que ninguém segura: renova como acima, quando faltam menos de `REFRESH_AHEAD_MIN` (120 min).
+- Conta que alguém segura, com `ahead` = a antecedência dela (`aheadMs`):
+  - faltando mais de `ahead/2` (60 min): **espera** (o log diz uma vez por acesso: "conta N: adiada, X está com o acesso
+    dela"). Numa troca comum os serviços saem dela sozinhos, e ela renova no ciclo seguinte à busca do último;
+  - faltando menos de `ahead/2`: o `drainStep` (começo do passo 3, só com `autoSwitch`) **tira os serviços dela**. No modo
+    `"together"`, se ela é a conta do grupo, o grupo inteiro vai junto, como numa troca automática (`lastSwitchBy = "auto"`,
+    histórico "Serviços trocados juntos para a conta Y: o login da conta N vai ser renovado — A e B"). Os outros presentes
+    nela (os parados, quem segue sozinho, cada um no modo `"separate"`) saem um a um, para a conta do grupo se puderem usá-la,
+    senão para a melhor deles ("Trocou da conta N para a conta Y: o login da conta N vai ser renovado"; quem sai um a um
+    fica com `lastSwitchBy = "renew"`, que não define a conta do grupo). Até renovar, a conta N **não é destino de troca**
+    (`engine.leaving`, só na memória; `recordsFor`/`sharedRecords` a marcam `disabled` para as escolhas);
+  - faltando `min(30 min, ahead/4)` (o piso; 30 min é o mínimo que o `credentialFor` entrega): **renova assim mesmo**, com o
+    buraco de sempre, e o log avisa ("faltam N min para o acesso vencer e X ainda está com ele; renovo assim mesmo").
+- Destino da troca para renovar (`renewTarget`): `bestAccountFor` com `requireOk` (abaixo das linhas, com margem; no modo
+  `"separate"`, só conta livre), entre as contas com leitura de uso de até 1 h (`CAND_STALE_SEC`) e com o acesso longe de
+  vencer — primeiro as que têm `2 × ahead` (4 h) pela frente, depois as que só não estão na vez de renovar.
+- **Ou saem todos, ou ninguém.** Se um só dos serviços por perto ficaria na conta (o grupo sem destino, ou um serviço que só
+  pode usar esta conta — "Serviços permitidos"), ninguém é trocado e a conta não é marcada em `leaving`: ela continuaria
+  segurada de qualquer jeito e ficaria fora dos destinos à toa. Renova no piso.
+- Limites conhecidos (aceitos na 2.5.5): no caminho do piso a folga contra uma falha da Anthropic ao renovar é de 30 min
+  (era de 120; no caminho normal, com troca, fica perto de 60); `credentialFor` chamado no meio da renovação da mesma conta
+  pode entregar o acesso que acabou de ser cancelado (janela de menos de 1 s, já existia).
+- `refreshRetry` (renovação sem resposta) e a renovação por 401 na leitura de uso não esperam ninguém: nas duas o acesso
+  antigo já pode ter sido cancelado.
+
 Uso (passo 2): orçamento `USAGE_MAX_PER_HOUR` (balde que recarrega continuamente e guarda no máximo 6 leituras, ou o
 orçamento de 1 hora se ele for menor que 6). Uma leitura por ciclo, nesta ordem:
 1. conta marcada para ler logo (limite batido, login novo);
@@ -257,7 +299,8 @@ em todo `decideDevice`):
 - `assignBest` (sem conta, morta, removida, não liberada, desativada): a conta do grupo dos outros ativos, se puder usá-la; senão a melhor
   liberada para ele.
 
-Presença dos serviços (desde a 2.5.3; **só para mostrar** — painel e `StateResponse.devices` —, nenhuma decisão usa):
+Presença dos serviços (desde a 2.5.3; **para mostrar** — painel e `StateResponse.devices` — e, desde a 2.5.5, para saber quem
+segura cada conta na hora de renovar (`holders`, acima); nenhuma decisão de troca por uso a consulta):
 - Por quê: `lastSeen` só sobe no batimento (`heartbeat`) e no limite batido (`limitHit`), e é ele que diz quem está **ativo**
   (`isActive`: `lastSeen` há no máximo `ACTIVE_MS` = 5 min). O cliente sem VS Code (`cliente/`, o do Hermes), quando está sem uso,
   não manda batimento: só lê `GET /v1/state` a cada ~2 min, o que não mexe no `lastSeen`. Até a 2.5.2 a tela o mostrava como

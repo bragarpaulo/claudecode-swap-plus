@@ -242,6 +242,21 @@ No `status` e no `devices`, "visto há …" conta do último batimento do servi�
 uso (o cliente do Hermes entre uma tarefa e outra) pode aparecer ali como "visto há 3 h" e estar conectado. Quem
 mostra o contato é o painel, em **Serviços**: **ativo agora**, **conectado · sem uso agora** ou **sem contato**.
 
+Desde a 2.5.5 o servidor não renova o login de uma conta enquanto um serviço ligado estiver com o acesso dela
+(renovar cancela o acesso antigo na hora). Para conferir, procure estas linhas:
+
+```sh
+docker logs --since 8h swap-plus 2>&1 | grep -E "renovação\]|vai ser renovado"
+```
+
+- `[renovação] conta N: adiada, X está com o acesso dela …` — chegou a hora de renovar e ele esperou. Normal.
+- `[histórico] … o login da conta N vai ser renovado` — faltava menos de 1 hora e ele trocou os serviços de conta
+  antes de renovar. Normal.
+- `[renovação] conta N renovada …` logo depois de uma das duas acima — renovou sem ninguém nela. É o que se quer.
+- `[renovação] conta N: faltam … min … renovo assim mesmo` — não havia outra conta com folga (ou a troca automática
+  está desligada) e ele renovou com serviço na conta. Uma conversa em andamento nesse serviço pode ter parado com
+  "OAuth token revoked". Se aparecer com frequência, faltam contas com folga.
+
 ## Avisos por e-mail ao dono
 
 Desde a 2.4.0 o servidor avisa o dono por e-mail. Desde a 2.5.0 os avisos do vencimento dos logins são dois:

@@ -1,4 +1,11 @@
-# Novidades do Swap Plus 3.2
+# Novidades do Swap Plus 3.2
+
+## Extensão 3.2.1 (21/11/2026): dois acertos na tela de Configurações
+
+- Em janela estreita, o nome da conta em uso não quebra mais no meio ("Conta 3" fica junto e o e-mail vai inteiro para a
+  linha de baixo).
+- Com o Swap Plus desligado, o servidor fora do ar ou o acesso recusado, o cartão "Conexão" passa a mostrar o endereço
+  do servidor (antes ele só aparecia quando estava conectado).
 
 ## Servidor 2.5.4 (21/11/2026): a conta em uso passa a ser lida a tempo
 

@@ -341,6 +341,10 @@
     // Uma linha: nome deste serviço no servidor, com que conta entrou e o último contato.
     const facts = [];
     if (sv.connected) {
+      // Conectado e funcionando, o endereço já está na linha de cima ("Conectado a …"); conectando, na frase de baixo.
+      // Desligado, fora do ar ou recusado, ele só aparece aqui.
+      const hostShown = S.swapOn && (sv.status === "online" || sv.status === "connecting");
+      if (sv.host && !hostShown) facts.push(["servidor: ", h("b", { text: sv.host })]);
       if (sv.deviceName) facts.push(["Este serviço: ", h("b", { text: sv.deviceName })]);
       if (sv.myGoogle) facts.push(["entrou com ", h("span", { class: "mail", text: sv.myGoogle })]);
       else if (sv.via === "code") facts.push(["entrou com código de conexão"]);

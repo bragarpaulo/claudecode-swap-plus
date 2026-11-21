@@ -155,9 +155,9 @@ input:focus-visible, button:focus-visible, summary:focus-visible, #acctNow:focus
 
 /* ---------- conta em uso aqui */
 #acctNow { margin-top: 8px; border-radius: 3px; }
-.nowhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
-.nowname { font-size: 1.08em; min-width: 0; overflow-wrap: anywhere; }
-.n { font-weight: 600; margin-right: 6px; }
+.nowhead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 4px 8px; }
+.nowname { font-size: 1.08em; min-width: 0; flex: 1 1 12em; overflow-wrap: anywhere; }
+.n { font-weight: 600; margin-right: 6px; white-space: nowrap; } /* "Conta 3" nunca quebra no meio */
 .alias { margin-right: 6px; }
 .sub { color: var(--soft); font-size: 0.9em; overflow-wrap: anywhere; }
 .badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; flex: none; max-width: 55%; }
@@ -283,6 +283,10 @@ details.more > summary:focus-visible { outline-offset: -1px; }
   .foot { grid-template-columns: minmax(0, 1fr); }
   .foot button { justify-self: start; }
   .badges { max-width: 45%; }
+  /* Conta em uso: o nome ocupa a linha inteira (o e-mail vai para a linha de baixo, sem ser cortado) e os selos descem. */
+  .nowname { flex-basis: 100%; }
+  .nowname .mail { display: block; font-size: 0.9em; }
+  .nowhead .badges { max-width: 100%; justify-content: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {

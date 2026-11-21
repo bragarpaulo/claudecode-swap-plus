@@ -571,3 +571,24 @@ test("estado incompleto ou estragado nunca derruba a tela; texto com marcação 
   inteira(tela, "depois de voltar ao normal");
   assert.equal(tela.$("acctList").children.length, 4);
 });
+
+test("conexão: fora do ar ou desligado, o endereço do servidor aparece na linha dos dados; conectado, não repete (3.2.1)", () => {
+  const tela = abrirTela();
+  tela.levar();
+  tela.entregar(estado((s) => Object.assign(s.server, { status: "offline", statusText: "tempo esgotado." })));
+  assert.match(tela.texto(tela.$("connFacts")), /^servidor: swap\.exemplo\.com Este serviço: PC de teste/);
+  tela.entregar(estado((s) => { s.swapOn = false; }));
+  assert.equal(tela.texto(tela.$("connStatus")), "Desligado");
+  assert.match(tela.texto(tela.$("connFacts")), /^servidor: swap\.exemplo\.com/);
+  tela.entregar(estado());
+  assert.doesNotMatch(tela.texto(tela.$("connFacts")), /servidor:/);
+});
+
+test("panel.css: “Conta N” não quebra no meio e, em janela estreita, o nome da conta em uso ocupa a linha inteira (3.2.1)", () => {
+  const css = fs.readFileSync(path.join(MEDIA, "panel.css"), "utf8");
+  assert.match(css, /\.n \{[^}]*white-space: nowrap/);
+  assert.match(css, /\.nowhead \{[^}]*flex-wrap: wrap/);
+  const estreita = css.slice(css.indexOf("@media (max-width: 560px)"));
+  assert.match(estreita, /\.nowname \{ flex-basis: 100%; \}/);
+  assert.match(estreita, /\.nowname \.mail \{ display: block;/);
+});

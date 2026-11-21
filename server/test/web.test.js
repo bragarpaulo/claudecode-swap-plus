@@ -948,6 +948,14 @@ test("painel: cada rota chama o engine certo; PanelState no formato da WEB-SPEC;
   assert.equal(r.status, 400);
   r = await call(ctx, "PUT", "/web/api/rules", { s, body: {} });
   assert.equal(r.status, 400);
+  // 2.5.6: "Mínimo de Fable sobrando no destino" (preferMinFreePct) é uma regra numérica como as outras.
+  r = await call(ctx, "PUT", "/web/api/rules", { s, body: { rules: { preferMinFreePct: 20 } } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(E.last("setRules").args[0].rules, { preferMinFreePct: 20 });
+  assert.equal(r.json.state.rules.preferMinFreePct, 20);
+  assert.equal(r.json.state.ruleDefaults.preferMinFreePct, 10, "o padrão vai junto, para o “Voltar ao padrão” e as dicas");
+  r = await call(ctx, "PUT", "/web/api/rules", { s, body: { rules: { preferMinFreePct: "20" } } });
+  assert.equal(r.status, 400, "texto no lugar de número");
 
   // ----- PATCH /web/api/accounts/:n → updateAccount -----
   r = await call(ctx, "PATCH", "/web/api/accounts/2", { s, body: { disabled: true, alias: "Trabalho", threshold: "85", campoEstranho: 1 } });
@@ -1842,6 +1850,44 @@ test("painel e servidor de verdade, 2.5.3: “serviço” no lugar de “computa
   assert.match(html, /<section class="sec" id="sec-computadores" data-sec="computadores" aria-labelledby="h-computadores">/);
   assert.match(js, /const SECTIONS = \["contas", "computadores", "usuarios"\];/);
   assert.match(ler(srcDir, "server.js"), /const PANEL_SECTIONS = new Set\(\["geral", "computadores", "regras", "acesso", "historico"\]\);/);
+});
+
+test("painel de verdade (server/web), 2.5.6: campo “Mínimo de Fable sobrando no destino” nas regras de troca (mostra, valida e envia preferMinFreePct)", () => {
+  const webDir = path.join(__dirname, "..", "web");
+  const html = fs.readFileSync(path.join(webDir, "index.html"), "utf8").replace(/\r\n/g, "\n");
+  const js = fs.readFileSync(path.join(webDir, "app.js"), "utf8").replace(/\r\n/g, "\n");
+
+  // O campo, logo depois da "Margem da conta de destino", dentro dos "Ajustes finos".
+  const fine = html.slice(html.indexOf('<fieldset class="card r-fine">'), html.indexOf('<div class="savebar">'));
+  const ids = [...fine.matchAll(/<input type="number" id="(r[A-Za-z]+)" name="([A-Za-z]+)" min="(\d+)" max="(\d+)" step="1"/g)].map((m) => m.slice(1, 5));
+  assert.deepEqual(ids, [
+    ["rExpiring", "expiringHours", "1", "168"],
+    ["rCooldown", "cooldownMin", "0", "240"],
+    ["rMargin", "marginPct", "0", "30"],
+    ["rPreferMin", "preferMinFreePct", "0", "50"],
+  ]);
+  assert.match(fine, /<label for="rPreferMin">Mínimo de Fable sobrando no destino<\/label>/);
+  assert.match(fine, /id="rPreferMin"[^>]*aria-describedby="rPreferMinHint"><span class="unit" aria-hidden="true">%<\/span>/);
+  const hint = /<small class="hint" id="rPreferMinHint">([^]*?)<\/small>/.exec(fine)[1];
+  assert.equal(
+    hint,
+    'Numa troca que o servidor faz por conta própria (para aproveitar uma cota que vai zerar ou para renovar um login), a conta de destino precisa ter pelo menos isso do Fable sobrando. Troca obrigatória (conta na linha ou limite batido) não olha este número. De 0 a 50. Padrão: <span data-def="preferMinFreePct">10</span>.'
+  );
+
+  // app.js: a regra entra em tudo o que o formulário faz com as outras numéricas.
+  const { RULE_DEFAULTS: REAL } = require("../../plus/rules");
+  assert.equal(REAL.preferMinFreePct, 10);
+  assert.match(js, /\n {4}preferMinFreePct: 10,/, "padrão no painel (igual ao do plus/rules.js)");
+  const keys = JSON.parse(/const RULE_KEYS = (\[[^\]]+\]);/.exec(js)[1]);
+  assert.ok(keys.includes("preferMinFreePct"), "RULE_KEYS: comparar, detectar mudança e enviar");
+  assert.deepEqual(keys.filter((k) => !(k in REAL)), [], "toda regra do painel existe no plus/rules.js (senão o servidor a ignora)");
+  assert.match(js, /\{ key: "preferMinFreePct", id: "rPreferMin", label: "Mínimo de Fable sobrando no destino", min: 0, max: 50 \}/, "NUM_FIELDS: preencher e validar a faixa");
+  assert.match(js, /preferMinFreePct: numVal\(\$\("rPreferMin"\)\),/, "readRulesForm lê o campo");
+  // Todo campo numérico do formulário tem a sua linha em NUM_FIELDS e é lido no readRulesForm.
+  for (const [id, key] of ids) {
+    assert.ok(js.includes(`{ key: "${key}", id: "${id}",`), `NUM_FIELDS sem ${key}`);
+    assert.ok(js.includes(`${key}: numVal($("${id}")),`), `readRulesForm sem ${key}`);
+  }
 });
 
 test("versão: server.js e engine.js dizem a mesma (é a do rodapé do painel)", () => {

@@ -137,6 +137,10 @@ function watchedModels(modelIds, names) {
  *   - Modelo preferido (Fable): troca voluntária (antecipar, "melhor conta") nunca
  *     sai de uma conta que ainda tem o modelo para uma que não tem. Só a troca
  *     obrigatória (conta na linha ou limite estourado) pode, se não houver outra.
+ *   - Mínimo do modelo preferido no destino (r.preferMinFreePct): troca voluntária
+ *     só vai para conta em que ainda sobra pelo menos isso do modelo (100 - uso).
+ *     Conta sem a linha do modelo não entra nessa conta; troca obrigatória não olha.
+ *     Sem a regra (modo local da extensão), não há esse corte.
  */
 function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, limitHit = null }) {
   const active = list.accounts.find((a) => a.number === list.activeAccountNumber);
@@ -147,6 +151,8 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
   const watch = r.onModelLimit === "switchAccount" ? names : [];
   const isModelRow = (x) => watch.some((n) => String(x.label).includes(n));
   const pref = r.preferModel && names.includes(r.preferModel) ? r.preferModel : null;
+  // Troca voluntária: quanto do modelo preferido precisa sobrar na conta de destino (0 = sem esse corte).
+  const minFree = Math.max(0, Number(r.preferMinFreePct) || 0);
 
   const aw = windows(active);
   // limitHit: o Claude Code acabou de registrar "You've hit your limit" — vale mais que o dado de uso.
@@ -184,12 +190,15 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
     const rows = rowsOf(w, l);
     const base = rows.filter((x) => !isModelRow(x)); // só sessão e semanal
     let prefOk = true;
+    let prefFree = null; // quanto do modelo preferido sobra nesta conta; null = ela não tem a linha dele
     if (pref) {
       const s = w.models.find((m) => m.name === pref);
       prefOk = !!s && s.pct <= l.model - r.marginPct;
+      if (s) prefFree = 100 - (Number(s.pct) || 0);
     }
     cands.push({
       acc,
+      volOk: prefFree === null || prefFree >= minFree, // serve de destino de troca voluntária (preferMinFreePct)
       strictOk: rows.every((x) => x.pct <= x.line - r.marginPct),
       looseOk: rows.every((x) => x.pct < x.line),
       strictBase: base.every((x) => x.pct <= x.line - r.marginPct),
@@ -212,11 +221,13 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
     [...arr].sort((x, y) => Number(y.prefOk) - Number(x.prefOk) || byStrategy[r.strategy](x, y) || x.acc.number - y.acc.number);
   // baseOnly: ignora os limites por modelo (só sessão e semanal) — para a troca obrigatória quando
   // nenhuma conta tem o modelo: sair da sessão/semanal estourada vem antes de continuar no modelo.
-  const pick = (baseOnly = false) => {
+  // voluntary: só entre as contas que servem de destino de troca voluntária (volOk).
+  const pick = (baseOnly = false, voluntary = false) => {
     const strictKey = baseOnly ? "strictBase" : "strictOk";
     const looseKey = baseOnly ? "looseBase" : "looseOk";
+    const from = voluntary ? cands.filter((c) => c.volOk) : cands;
     // Dados recentes primeiro; com o limite estourado, vale também conta com dado antigo.
-    for (const pool of [cands.filter((c) => !c.stale), cands.filter((c) => c.stale)]) {
+    for (const pool of [from.filter((c) => !c.stale), from.filter((c) => c.stale)]) {
       const strict = rank(pool.filter((c) => c[strictKey]));
       if (strict.length) return strict[0];
       const loose = rank(pool.filter((c) => c[looseKey]))[0];
@@ -236,7 +247,7 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
   }
 
   if (force) {
-    const t = pick();
+    const t = pick(false, true);
     if (t && activePrefOk && !t.prefOk) return { action: "none", kind: "idle", text: `a conta atual é a melhor: ainda tem ${pref} (as outras com folga não têm)` };
     if (!t || t.headroom <= activeHeadroom) return { action: "none", kind: "idle", text: "a conta atual já é a que tem mais folga" };
     return go(t, "troca pedida pela melhor conta");
@@ -251,6 +262,7 @@ function decide({ list, records, r, modelIds, now, lastSwitchAt, force = false, 
           c.resetTs - now <= r.expiringHours * 3600000 &&
           c.resetTs < activeReset - 3600000 &&
           c.unused >= 20 &&
+          c.volOk && // o modelo preferido ainda sobra o mínimo no destino (preferMinFreePct)
           (!activePrefOk || c.prefOk) // não troca uma conta com o modelo preferido por uma sem ele
       )
     );
@@ -280,6 +292,9 @@ const RULE_DEFAULTS = {
   expiringHours: 24,
   cooldownMin: 5,
   marginPct: 5,
+  // Troca voluntária (antecipar, "melhor conta", e no servidor a troca para renovar um login): a conta de destino
+  // precisa ter pelo menos isso do modelo preferido sobrando. 0 = sem corte.
+  preferMinFreePct: 10,
   intervalSec: 60,
   onModelLimit: "sameAccount",
   // Só no modo servidor (engine.js): "separate" = cada computador numa conta; "together" = todos na mesma conta

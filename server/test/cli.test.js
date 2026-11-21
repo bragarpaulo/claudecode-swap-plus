@@ -188,6 +188,10 @@ test("cli: allow, deny, allowed, rule e auto escrevem “serviço”", async (t)
   fake.replies["PUT /admin/rules"] = { ok: true, rules: { devicePlacement: "together" }, autoSwitch: false };
   assert.equal(await go("rule", "devicePlacement", "together"), 'Regra devicePlacement = "together". Vale agora, para todos os serviços.\n');
   assert.deepEqual(fake.calls.at(-1), { key: "PUT /admin/rules", body: { rules: { devicePlacement: "together" } } });
+  // 2.5.6: o mínimo de Fable no destino vai como número.
+  fake.replies["PUT /admin/rules"] = { ok: true, rules: { preferMinFreePct: 20 }, autoSwitch: false };
+  assert.equal(await go("rule", "preferMinFreePct", "20"), "Regra preferMinFreePct = 20. Vale agora, para todos os serviços.\n");
+  assert.deepEqual(fake.calls.at(-1), { key: "PUT /admin/rules", body: { rules: { preferMinFreePct: 20 } } });
   assert.equal(await go("auto", "off"), "Troca automática desligada (vale para todos os serviços).\n");
   assert.deepEqual(fake.calls.at(-1), { key: "PUT /admin/rules", body: { autoSwitch: false } });
 

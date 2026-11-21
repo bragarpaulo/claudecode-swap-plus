@@ -33,16 +33,18 @@
     expiringHours: 24,
     cooldownMin: 5,
     marginPct: 5,
+    preferMinFreePct: 10, // 2.5.6: troca voluntária só para conta com pelo menos isso do modelo preferido sobrando
     intervalSec: 60,
     onModelLimit: "sameAccount",
     devicePlacement: "separate", // "separate" | "together" (serviços juntos na mesma conta)
   };
   // Regras que o painel edita (intervalSec é só do modo local da extensão).
-  const RULE_KEYS = ["sessionPct", "weeklyPct", "modelPct", "preferModel", "strategy", "expiringHours", "cooldownMin", "marginPct", "onModelLimit", "devicePlacement"];
+  const RULE_KEYS = ["sessionPct", "weeklyPct", "modelPct", "preferModel", "strategy", "expiringHours", "cooldownMin", "marginPct", "preferMinFreePct", "onModelLimit", "devicePlacement"];
   const NUM_FIELDS = [
     { key: "expiringHours", id: "rExpiring", label: "Horas para “cota prestes a zerar”", min: 1, max: 168 },
     { key: "cooldownMin", id: "rCooldown", label: "Intervalo mínimo entre trocas", min: 0, max: 240 },
     { key: "marginPct", id: "rMargin", label: "Margem da conta de destino", min: 0, max: 30 },
+    { key: "preferMinFreePct", id: "rPreferMin", label: "Mínimo de Fable sobrando no destino", min: 0, max: 50 },
   ];
   const RANGE_FIELDS = [
     { key: "sessionPct", id: "rSession" },
@@ -2312,6 +2314,7 @@
       expiringHours: numVal($("rExpiring")),
       cooldownMin: numVal($("rCooldown")),
       marginPct: numVal($("rMargin")),
+      preferMinFreePct: numVal($("rPreferMin")),
       onModelLimit: checkedValue("onModelLimit") || "sameAccount",
       devicePlacement: checkedValue("devicePlacement") === "together" ? "together" : "separate",
     };

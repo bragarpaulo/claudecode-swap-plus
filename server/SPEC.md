@@ -228,7 +228,9 @@ Claude Code encerra a conversa depois de duas tentativas (21/11/2026 09:53: bura
     buraco de sempre, e o log avisa ("faltam N min para o acesso vencer e X ainda está com ele; renovo assim mesmo").
 - Destino da troca para renovar (`renewTarget`): `bestAccountFor` com `requireOk` (abaixo das linhas, com margem; no modo
   `"separate"`, só conta livre), entre as contas com leitura de uso de até 1 h (`CAND_STALE_SEC`) e com o acesso longe de
-  vencer — primeiro as que têm `2 × ahead` (4 h) pela frente, depois as que só não estão na vez de renovar.
+  vencer — primeiro as que têm `2 × ahead` (4 h) pela frente, depois as que só não estão na vez de renovar. Desde a 2.5.6,
+  como toda troca voluntária, só para conta em que o modelo preferido ainda sobra o mínimo (`rules.preferMinFreePct`,
+  abaixo: "Mínimo do modelo preferido no destino").
 - **Ou saem todos, ou ninguém.** Se um só dos serviços por perto ficaria na conta (o grupo sem destino, ou um serviço que só
   pode usar esta conta — "Serviços permitidos"), ninguém é trocado e a conta não é marcada em `leaving`: ela continuaria
   segurada de qualquer jeito e ficaria fora dos destinos à toa. Renova no piso.
@@ -249,7 +251,10 @@ de outra conta, se alguma estiver na vez (as marcadas para ler logo não entram 
 
 Quando a conta entra na vez, contado da última leitura dela:
 - conta em uso perto de uma linha de troca, ou ainda sem leitura: 2,5 min. "Perto" é a até 15 pontos abaixo da linha da
-  sessão, ou a até 5 abaixo da linha semanal ou da do modelo (a do modelo só com `onModelLimit: "switchAccount"`);
+  sessão ou da do modelo (`NEAR_SESSION_PTS`, `NEAR_MODEL_PTS`; a do modelo só com `onModelLimit: "switchAccount"`), ou a
+  até 5 abaixo da linha semanal (`NEAR_SLOW_PTS`). Até a 2.5.5 o modelo usava a faixa do semanal (5): em 21/11/2026 a
+  conta 22 recebeu o grupo com o Fable em 89%, ficou "longe" (lida a cada 10 min) e bateu 100% em 12 min, sem o
+  servidor ver a linha de 95% passar — o limite por modelo anda rápido com várias conversas;
 - conta em uso longe das linhas, ou com uma linha já passada: 10 min;
 - as outras: 20 min; mortas nunca.
 
@@ -269,6 +274,23 @@ Melhor conta (atribuição inicial / `switchDevice(null)`): vivas, não desativa
 estratégia `max` → menor `sevenDay.resetsAt` com ≥ 20% sobrando e abaixo das linhas (com margem); senão mais folga
 (`min(linha - pct)` entre sessão e semanal). Sem uso conhecido → a viva de menor número. Ninguém livre → permitir as de outros dispositivos.
 `autoSwitch === false` → só a atribuição inicial; `limitHit` só registra.
+
+Mínimo do modelo preferido no destino (`rules.preferMinFreePct`, desde a 2.5.6; padrão `10`, de 0 a 50, fora da faixa é
+ajustado; `0` = sem corte). Numa troca **voluntária**, a conta de destino precisa ter pelo menos esse percentual do
+modelo preferido (`rules.preferModel`, hoje "Fable") sobrando: `100 - pct >= preferMinFreePct`, na linha desse modelo
+(`usage.scoped`). Conta **sem** a linha do modelo não entra nessa conta (vale só a lógica de antes: uma conta que ainda
+tem o modelo não é trocada por uma sem ele).
+- Troca voluntária = a antecipação da estratégia `max` ("a cota semanal dela zera ...") e a troca pedida "melhor conta"
+  (`force`), as duas no `decide()` do `plus/rules.js`; e a troca para renovar um login (`renewTarget`, acima), no motor.
+- Troca **obrigatória** (conta na linha da sessão, do semanal ou do modelo; limite batido — `limitHit`) não olha este
+  número: aceita o que houver, como antes.
+- `decide()` chamado sem a regra (regras de quem não a conhece, como o modo local da extensão) não faz o corte.
+- Por que existe: em 21/11/2026 14:03 a estratégia `max` levou todos os serviços para a conta 22 (a cota semanal dela
+  zerava às 22:00) com o Fable em 89%; 12 min depois o Fable acabou e duas conversas pararam. Com o padrão (10) essa
+  troca ainda passaria (11% sobrando): o padrão foi escolha do dono, e quem segura o caso de 14:03 com ele é a leitura
+  mais frequente perto da linha do modelo ("Uso (passo 2)", acima). Com `20`, a troca não teria acontecido.
+- Onde muda: painel, **Regras de troca → Ajustes finos → "Mínimo de Fable sobrando no destino"** (WEB-SPEC, "2.5.6");
+  linha de comando, `rule preferMinFreePct 20`. `setRules`: número (ou número em texto) de 0 a 50; `null` volta ao padrão.
 
 Regra **Serviços** (`rules.devicePlacement`, só do servidor; `decide()` não usa; até a 2.5.2 a tela e o histórico diziam
 "Computadores"): `"separate"` (padrão) = o que está acima (cada serviço ativo numa conta; contas dos outros ocupadas;

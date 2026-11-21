@@ -46,7 +46,7 @@ const crypto = require("crypto");
 const { RULE_DEFAULTS, STRATEGY_LABELS, CAND_STALE_SEC, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.5.5";
+const VERSION = "2.5.6";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
 // Presença (para mostrar e, desde a 2.5.5, para saber quem segura cada conta: holders): contato = qualquer pedido autenticado do serviço. Quem falou com
@@ -68,7 +68,11 @@ const POLL_BACKOFF_MIN = [2, 5, 10];
 const POLL_ACTIVE_NEAR_MS = 150 * 1000; // perto de uma linha, ou sem leitura: a cada 2,5 min (o que o orçamento de 24/h dá)
 const POLL_ACTIVE_FAR_MS = 10 * 60 * 1000; // longe das linhas, ou com uma linha já passada: a cada 10 min
 const NEAR_SESSION_PTS = 15; // "perto" = a até 15 pontos abaixo da linha da sessão de 5 h (que anda rápido)...
-const NEAR_SLOW_PTS = 5; // ...ou a até 5 abaixo da linha semanal ou da do modelo (andam devagar: faixa larga duraria dias)
+const NEAR_SLOW_PTS = 5; // ...ou a até 5 abaixo da linha semanal (anda devagar: faixa larga duraria dias)
+// ...ou a até 15 abaixo da linha do modelo. Até a 2.5.5 o modelo usava a faixa do semanal (5), mas o limite do Fable
+// anda rápido com várias conversas: em 21/11/2026 (14:03–14:15) a conta 22 recebeu o grupo com o Fable em 89%, ficou
+// "longe" (lida a cada 10 min) e bateu 100% em 12 min, sem o servidor ver a linha de 95% passar.
+const NEAR_MODEL_PTS = 15;
 const POLL_ACTIVE_STREAK = 2; // depois de 2 leituras seguidas de contas em uso, a seguinte é de outra conta que esteja na vez
 const USAGE_BURST = 6; // leituras que o orçamento guarda para gastar de uma vez (antes guardava a hora inteira)
 const REFRESH_BACKOFF_MIN = [1, 2, 5, 10];
@@ -117,6 +121,7 @@ const RULE_LIMITS = {
   expiringHours: [1, 168],
   cooldownMin: [0, 240],
   marginPct: [0, 30],
+  preferMinFreePct: [0, 50], // só do servidor (não é configuração da extensão): mínimo do modelo preferido no destino
   intervalSec: [15, 3600],
 };
 // Linhas próprias por conta (updateAccount / records): sessão 5h, semanal, modelo. null = a regra geral.
@@ -1406,8 +1411,8 @@ class Engine {
   }
 
   /**
-   * A última leitura da conta em uso está perto de uma linha de troca dela — a até 15 pontos abaixo da linha da sessão,
-   * ou a até 5 abaixo da semanal ou da do modelo (esta só conta na regra "trocar de conta para continuar no modelo")?
+   * A última leitura da conta em uso está perto de uma linha de troca dela — a até 15 pontos abaixo da linha da sessão
+   * ou da do modelo (esta só conta na regra "trocar de conta para continuar no modelo"), ou a até 5 abaixo da semanal?
    * É aí que vale gastar o orçamento com ela: a troca tem de sair logo depois de a linha passar. Sem leitura = perto
    * (não se sabe onde ela está).
    * Linha já passada = longe de novo: a troca é decidida no mesmo ciclo da leitura (decisionStep). Se ela não saiu
@@ -1421,7 +1426,7 @@ class Engine {
     const l = linesFor(acc, r, this.records());
     const rows = [[u.fiveHour ? u.fiveHour.pct : 0, l.session, NEAR_SESSION_PTS]]; // [uso em %, linha, faixa do "perto"]
     if (u.sevenDay) rows.push([u.sevenDay.pct, l.weekly, NEAR_SLOW_PTS]);
-    if (r.onModelLimit === "switchAccount") for (const s of u.scoped || []) rows.push([s.pct, l.model, NEAR_SLOW_PTS]);
+    if (r.onModelLimit === "switchAccount") for (const s of u.scoped || []) rows.push([s.pct, l.model, NEAR_MODEL_PTS]);
     const pct = (v) => Number(v) || 0;
     if (rows.some(([p, line]) => pct(p) >= line)) return false; // linha já passada
     return rows.some(([p, line, band]) => pct(p) >= line - band);
@@ -1651,13 +1656,23 @@ class Engine {
    * Destino de uma troca feita só para liberar a renovação: a melhor conta (bestAccountFor) abaixo das linhas, com
    * leitura de uso recente (até 1 h, como os destinos do decide()) e com o acesso longe de vencer. Primeiro entre as
    * que têm pelo menos o dobro da antecedência pela frente (4 h: ninguém precisa sair de novo logo); depois entre as
-   * que só não estão na vez de renovar. É troca voluntária: sem conta assim, null (melhor ficar onde está).
+   * que só não estão na vez de renovar. É troca voluntária: sem conta assim, null (melhor ficar onde está) — e, como
+   * toda troca voluntária, só para conta em que o modelo preferido ainda sobra o mínimo (rules.preferMinFreePct).
    */
   renewTarget(dev, records, t = this.now()) {
-    const stale = new Set();
+    const r = this.rulesEffective();
+    const pref = str(r.preferModel) || null;
+    const minFree = Math.max(0, Number(r.preferMinFreePct) || 0); // mínimo do modelo preferido sobrando no destino
+    const stale = new Set(); // sem leitura recente, ou com o modelo preferido quase no fim
     for (const p of this.publicList(null).accounts) {
       const w = windows(p);
-      if (!w || typeof w.ageSeconds !== "number" || w.ageSeconds > CAND_STALE_SEC) stale.add(p.number);
+      if (!w || typeof w.ageSeconds !== "number" || w.ageSeconds > CAND_STALE_SEC) {
+        stale.add(p.number);
+        continue;
+      }
+      // Como nas trocas voluntárias do decide(): conta sem a linha do modelo não entra nesta conta.
+      const s = pref ? w.models.find((m) => m.name === pref) : null;
+      if (s && 100 - (Number(s.pct) || 0) < minFree) stale.add(p.number);
     }
     for (const times of [2, 1]) {
       const skip = new Set(stale);

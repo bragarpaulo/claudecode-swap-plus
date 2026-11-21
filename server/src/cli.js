@@ -35,7 +35,8 @@ const USO = `Uso: node server/src/cli.js <comando>
   allowed        mostra o administrador, as contas liberadas e se o login com Google está ligado
 
   rule <chave> <valor>       muda uma regra de troca (ex.: rule devicePlacement together;
-                 rule weeklyPct 96; rule strategy max)
+                 rule weeklyPct 96; rule strategy max; rule preferMinFreePct 20 — o mínimo
+                 de Fable que a conta de destino precisa ter sobrando numa troca voluntária)
   auto on|off    liga ou desliga a troca automática (vale para todos os serviços)
 
   login-expires <n> <data>   diz até quando vale o login da conta n (o painel avisa 3 dias antes);

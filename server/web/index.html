@@ -286,6 +286,11 @@
               <span class="numwrap"><input type="number" id="rMargin" name="marginPct" min="0" max="30" step="1" inputmode="numeric" aria-describedby="rMarginHint"><span class="unit" aria-hidden="true">pontos</span></span>
               <small class="hint" id="rMarginHint">A conta para onde vai precisa estar pelo menos isso abaixo de cada linha. Evita trocar para uma conta que logo precisaria trocar de novo. De 0 a 30. Padrão: <span data-def="marginPct">5</span>.</small>
             </div>
+            <div class="field num">
+              <label for="rPreferMin">Mínimo de Fable sobrando no destino</label>
+              <span class="numwrap"><input type="number" id="rPreferMin" name="preferMinFreePct" min="0" max="50" step="1" inputmode="numeric" aria-describedby="rPreferMinHint"><span class="unit" aria-hidden="true">%</span></span>
+              <small class="hint" id="rPreferMinHint">Numa troca que o servidor faz por conta própria (para aproveitar uma cota que vai zerar ou para renovar um login), a conta de destino precisa ter pelo menos isso do Fable sobrando. Troca obrigatória (conta na linha ou limite batido) não olha este número. De 0 a 50. Padrão: <span data-def="preferMinFreePct">10</span>.</small>
+            </div>
             </div>
           </fieldset>
 

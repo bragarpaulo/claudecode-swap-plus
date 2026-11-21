@@ -196,7 +196,8 @@ Sem perfis de regras: as regras são UMA só (gerais), ficam dentro de **Contas*
 - Cartão da conta como hoje + **Serviços permitidos** ("Computadores permitidos" até a 2.5.2): "Todos" ou caixas por serviço
   (um ou mais). `state.accountDevices["<n>"] = null | [deviceId...]` (null = todos). Remover serviço/conta limpa as listas.
 - Abaixo da lista, seção **Regras de troca** (o formulário de regras de hoje: sessão/semanal/modelo %, modelo
-  preferido, estratégia, horas, intervalo, margem, limite do modelo) + **troca automática** ligada/desligada.
+  preferido, estratégia, horas, intervalo, margem, limite do modelo; desde a 2.5.6, também o mínimo do modelo preferido
+  no destino: ver "2.5.6") + **troca automática** ligada/desligada.
 - Nas Regras de troca, escolha **Serviços** ("Computadores" até a 2.5.2; `rules.devicePlacement`, logo abaixo da troca
   automática; faz parte do rascunho: só vale em "Salvar regras"; "Voltar ao padrão" volta para Separados):
   - **Separados** (`"separate"`, padrão): "Cada serviço numa conta (cada um com a sua sessão de 5 h)."
@@ -441,3 +442,31 @@ Na tela (`server/web/app.js`, trecho "presença dos serviços"; a página usa o 
 - A palavra **"parado" saiu do painel**.
 - A etiqueta "Em N serviços" da linha da conta continua contando os serviços que estão **na conta** (`assignedDevices`), ativos
   ou não: não é presença.
+
+## 2.5.6 — Regra "Mínimo de Fable sobrando no destino" (pedido do dono, 21/11/2026)
+
+Em 21/11/2026 às 14:03 o servidor trocou todos os serviços, por conta própria (estratégia "Aproveitar ao máximo"), para
+uma conta com a cota semanal sobrando mas com o Fable em 89%. Doze minutos depois o Fable dela acabou e duas conversas
+pararam. O dono pediu um ajuste na tela para isso, começando em 10%. A regra no motor: `server/SPEC.md`, "Mínimo do
+modelo preferido no destino".
+
+- **Onde:** Contas → **Regras de troca** → **Ajustes finos**, logo depois de "Margem da conta de destino".
+- **Campo:** número inteiro (`<input type="number" id="rPreferMin" name="preferMinFreePct" min="0" max="50" step="1">`),
+  unidade **%**, rótulo **Mínimo de Fable sobrando no destino**.
+- **Dica:** "Numa troca que o servidor faz por conta própria (para aproveitar uma cota que vai zerar ou para renovar um
+  login), a conta de destino precisa ter pelo menos isso do Fable sobrando. Troca obrigatória (conta na linha ou limite
+  batido) não olha este número. De 0 a 50. Padrão: 10." O "10" vem de `ruleDefaults.preferMinFreePct` (`data-def`), como
+  nos outros campos.
+- **Comportamento do formulário:** igual ao dos outros três números de "Ajustes finos" (`NUM_FIELDS` no `app.js`): faz
+  parte do rascunho ("Alterações não salvas", "Desfazer"), só vale em **Salvar regras**, "Voltar ao padrão" põe 10, e
+  valor vazio ou fora de 0–50 marca o campo e mostra "Mínimo de Fable sobrando no destino: use um número de 0 a 50."
+- **Envio:** `PUT /web/api/rules { rules: { preferMinFreePct: <número> } }` (a rota de sempre; só as regras que mudaram).
+  Texto no lugar de número → 400. O motor ajusta para a faixa. `PanelState.rules` e `PanelState.ruleDefaults` passam a
+  trazer a chave (`ruleDefaults` é o `RULE_DEFAULTS` do `plus/rules.js`).
+- O rótulo e a dica dizem "Fable" (texto fixo, como o resto do formulário); a regra vale para o modelo escolhido em
+  "Modelo preferido". Com "Nenhum (sem preferência)", ela não tem efeito.
+- **Linha de comando:** `rule preferMinFreePct 20`.
+- **Com 10 (o padrão), a troca das 14:03 ainda aconteceria** (a conta tinha 11% sobrando). Para ela não acontecer, o
+  número precisa ser maior (20, por exemplo). O que mudou junto, e vale com qualquer número: a conta em uso passa a
+  ser lida a cada 2,5 min desde 15 pontos antes da linha do modelo (era 5), para a troca sair na linha de 95% antes de
+  o Fable acabar (`server/SPEC.md`, "Uso (passo 2)").

@@ -334,7 +334,7 @@ test("uso: conta em uso longe das linhas é lida a cada 10 min; perto de uma lin
   assert.equal(d1.assigned, 1, "nenhuma troca no caminho");
 });
 
-test("uso: perto da linha = até 15 pontos abaixo da linha da sessão, ou 5 abaixo da semanal ou da do modelo; linha já passada e conta longe ficam nos 10 min", async (t) => {
+test("uso: perto da linha = até 15 pontos abaixo da linha da sessão ou da do modelo, ou 5 abaixo da semanal; linha já passada e conta longe ficam nos 10 min", async (t) => {
   const ctx = setup(t);
   await addAccounts(ctx, 2);
   settled(ctx);
@@ -356,12 +356,19 @@ test("uso: perto da linha = até 15 pontos abaixo da linha da sessão, ou 5 abai
   assert.equal(near(1, { session: 80, weekly: 85 }), false, "perto de uma linha mas com outra já passada: não adianta reler esta conta");
   assert.equal(near(1, { session: null, weekly: 50 }), false, "sem janela de 5 h aberta = sessão em 0%");
 
-  // O limite por modelo só conta na regra "trocar de conta para continuar no modelo".
+  // O limite por modelo só conta na regra "trocar de conta para continuar no modelo". Desde a 2.5.6 a faixa dele é a
+  // da sessão (15 pontos), não a do semanal (5): o limite do Fable anda rápido com várias conversas.
   assert.equal(near(1, { models: { Fable: 92 } }), false);
   await ctx.engine.setRules({ rules: { onModelLimit: "switchAccount" } });
-  assert.equal(near(1, { models: { Fable: 89 } }), false);
+  assert.equal(near(1, { models: { Fable: 79 } }), false);
+  assert.equal(near(1, { models: { Fable: 80 } }), true);
+  assert.equal(near(1, { models: { Fable: 89 } }), true, "o caso de 21/11 14:03: a conta chegou com o Fable em 89%");
   assert.equal(near(1, { models: { Fable: 92 } }), true);
-  assert.equal(near(1, { models: { Fable: 95 } }), false);
+  assert.equal(near(1, { models: { Fable: 95 } }), false, "na linha = já passou");
+  assert.equal(near(1, { weekly: 74, models: { Fable: 50 } }), false, "o semanal continua com a faixa de 5");
+  await ctx.engine.setRules({ rules: { onModelLimit: "switchAccount", modelPct: 70 } });
+  assert.equal(near(1, { models: { Fable: 54 } }), false, "a faixa acompanha a linha do modelo");
+  assert.equal(near(1, { models: { Fable: 55 } }), true);
   await ctx.engine.setRules({ rules: null });
 
   // Linha geral mudada e linhas próprias da conta: "perto" acompanha a linha de cada conta.
@@ -617,6 +624,48 @@ test("uso: 23 contas e um serviço que não avisa o limite — a troca sai pouco
   // A conta nova (com leitura de até 1 h atrás) é lida logo: no máximo duas leituras do orçamento (5 min) depois da troca.
   const firstRead = reads(ctx).find((r) => r.n === d1.assigned && r.t > switchedAt);
   assert.ok(firstRead && firstRead.t - switchedAt <= 2 * SLOT + TICK_MS, `primeira leitura da conta nova: ${firstRead ? (firstRead.t - switchedAt) / MIN : "nunca"} min depois da troca`);
+  assert.deepEqual(blockedTexts(ctx), [], "em nenhum momento faltou conta de destino");
+});
+
+test("uso: 23 contas e o Fable da conta em uso subindo rápido a partir de 89% (o caso de 21/11 14:03) — a troca sai na linha de 95%, antes dos 100%", async (t) => {
+  const ctx = setup(t);
+  await addAccounts(ctx, 23);
+  settled(ctx);
+  fastSave(ctx);
+  await ctx.engine.setRules({ rules: { onModelLimit: "switchAccount" } }); // trocar de conta para continuar no modelo
+  for (let n = 1; n <= 23; n++) setUsage(ctx, n, { models: { Fable: n === 12 ? 40 : 20 } });
+  const d1 = addDevice(ctx.engine, "vscode", { assigned: 12, lastSeen: ctx.clock.t, lastSwitchBy: "auto" });
+  let beats = 0;
+  const beat = async () => {
+    if (beats++ % 2 === 0) await ctx.engine.heartbeat("vscode", { models: [] });
+  };
+  await run(ctx, 2 * HOUR, [], { before: beat }); // regime, com a conta longe das linhas
+  assert.equal(d1.assigned, 12);
+
+  // A conta aparece com o Fable em 89% (lido agora) e ele sobe 1,2 ponto por minuto: passa da linha de 95% em 5 min
+  // e bateria 100% em pouco mais de 9. Com a faixa de 5 pontos (até a 2.5.5), 89% era "longe": a leitura seguinte
+  // só viria em 10 min, depois dos 100%.
+  setUsage(ctx, 12, { models: { Fable: 89 } });
+  const T0 = ctx.clock.t;
+  const truth = (now) => Math.min(100, 89 + (1.2 * (now - T0)) / MIN);
+  let switchedAt = null;
+  await run(ctx, 30 * MIN, [], {
+    before: async (now) => {
+      if (switchedAt === null) setRemote(ctx, 12, { models: { Fable: truth(now) } });
+      await beat();
+    },
+    after: (now) => {
+      if (switchedAt === null && d1.assigned !== 12) switchedAt = now;
+    },
+  });
+
+  assert.notEqual(switchedAt, null, "trocou de conta");
+  assert.ok(truth(switchedAt) < 100, `Fable de verdade na hora da troca: ${truth(switchedAt)}%`);
+  assert.ok(switchedAt - T0 <= 3 * SLOT + TICK_MS, `a troca saiu ${(switchedAt - T0) / MIN} min depois de a conta aparecer com 89%`);
+  assert.match(ctx.store.state.history.find((h) => h.kind === "switch").text, /^Trocou da conta 12 para a conta \d+: Fable em 9\d% \(linha 95%\)$/);
+  // Nesse tempo a conta foi lida a cada 2,5 min (perto da linha), não a cada 10.
+  const mine = reads(ctx).filter((r) => r.n === 12 && r.t > T0 && r.t <= switchedAt);
+  assert.ok(mine.length >= 2, `leituras da conta em uso até a troca: ${mine.length}`);
   assert.deepEqual(blockedTexts(ctx), [], "em nenhum momento faltou conta de destino");
 });
 

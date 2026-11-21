@@ -3,13 +3,18 @@
 O Swap Plus cuida das suas contas do Claude Code dentro do VS Code. Ele mostra quanto cada conta já usou e troca de
 conta sozinho quando uma chega perto do limite.
 
-Desde a versão 3.0 o Swap Plus tem só duas partes:
+Desde a versão 3.0 o Swap Plus tem duas partes (e, desde a 3.2, uma terceira só para quem usa o Claude Code fora do
+VS Code: veja [Hermes e outros serviços](#hermes-e-outros-serviços-sem-vs-code)):
 
 - a **extensão do VS Code**, instalada em cada computador;
 - o **servidor Swap Plus**, no endereço **https://swap.assistentes.si**. Ele guarda e renova os logins de todas as
-  contas, decide as trocas e atende todos os computadores. Tem um painel no navegador.
+  contas, decide as trocas e atende todos os serviços conectados. Tem um painel no navegador.
+
+**Serviço** é o nome de tudo o que está conectado ao Swap: o VS Code de um computador, um agente como o Hermes, um
+robô. No painel, todos ficam na aba **Serviços**.
 
 Não existe mais o motor (`swap-plus`) nem o modo local. O que mudou na 3.0: [NOVIDADES-3.0.md](NOVIDADES-3.0.md).
+O que mudou por último (o painel com "serviços" e a tela enxuta no VS Code): [NOVIDADES-3.2.md](NOVIDADES-3.2.md).
 
 Neste manual:
 
@@ -99,13 +104,13 @@ Pronto. O servidor escolhe uma conta para este computador e o Claude Code passa 
 nenhuma conta, adicione uma (veja [Contas novas](#contas-novas)).
 
 O botão **Entrar com Google** também fica na tela do Swap Plus: clique em **Configurações** no aviso e procure o
-cartão **Servidor** (ou **Sua conta**, no primeiro cartão).
+cartão **Conexão**.
 
 ### Como saber se deu certo
 
 - A barra do Swap Plus mostra o uso da conta: `│ ✉ … Sessão (5h): …% usado — renova … │`.
-- Clique na barra e escolha **Configurações...**: o cartão **Servidor** mostra **Conectado**.
-- No painel, em **Computadores**, aparece um quadradinho com o nome deste computador.
+- Clique na barra e escolha **Configurações...**: o cartão **Conexão** mostra **Conectado**.
+- No painel, em **Serviços**, aparece uma linha com o nome deste computador, como **ativo agora**.
 
 ### Veio da versão 2.x?
 
@@ -157,23 +162,40 @@ acabou de entrar.
 Nos outros computadores, o login feito no Claude Code não vai para o servidor: o Swap Plus avisa e volta para a conta
 do servidor. Use o painel.
 
-No VS Code, a opção **Adicionar conta...** (no fim da lista da barra) e o botão **+ Adicionar conta** (na tela de
-Configurações, cartão **Contas**) não adicionam a conta: só mostram um aviso explicando estes dois jeitos.
+No VS Code, a opção **Adicionar conta...** (no fim da lista da barra) não adiciona a conta: só mostra um aviso
+dizendo como adicionar.
 
 ### Quando o login de uma conta vence
 
-O login de cada conta vence de vez em cerca de um mês. O painel avisa 3 dias antes, no topo e no cartão da conta. Entre
-de novo com aquela conta, de um dos dois jeitos:
+O login de cada conta vence de vez em cerca de um mês. O servidor avisa antes, de dois jeitos.
 
-- **Pelo painel:** no cartão da conta, clique em **Entrar de novo** (também fica em **Ajustes desta conta**). O login
+**No painel**, quando faltam menos de 3 dias:
+
+- no topo aparece um aviso, com o botão **Ver conta N**, que leva até a conta e abre o cartão dela;
+- em **Contas**, a linha da conta ganha um sinal de alerta e pisca **Fazer login até …**, com o dia e a hora;
+- se o login já venceu, a linha mostra, em vermelho, **Login venceu em …**.
+
+**Por e-mail**, para o dono do servidor:
+
+- toda segunda-feira, às 8h (horário de Brasília), chega um resumo com as contas cujo login vence nos 7 dias
+  seguintes e as que já pararam de valer. O resumo chega mesmo quando nenhuma conta vence: assim você sabe que os
+  avisos estão funcionando;
+- um dia antes de o login de uma conta vencer, chega um e-mail só dessa conta.
+
+Cada e-mail diz qual é a conta e como renovar.
+
+Para renovar, entre de novo com aquela conta, de um dos dois jeitos:
+
+- **Pelo painel:** em **Contas**, clique na linha da conta para abrir o cartão dela e clique em **Entrar de novo**. O
+  botão fica no aviso do cartão e também dentro de **Ajustes desta conta** (faltando mais de 3 dias, só ali). O login
   da Claude abre já pedindo o e-mail daquela conta. Entre, copie o código, cole no painel e clique em **Concluir**. A
   conta continua com o mesmo número.
 - **Pelo Claude Code:** num computador do administrador, digite `/login` e entre com aquela conta.
 
 Pronto. O servidor fica com o login novo, e o aviso some.
 
-O mesmo vale para uma conta que aparece como **Login morto**. Enquanto isso, a troca automática nunca vai para essa
-conta.
+O mesmo vale para uma conta que aparece como **Login morto**: o servidor também avisa por e-mail, na hora em que o
+login para de valer. Enquanto isso, a troca automática nunca vai para essa conta.
 
 ---
 
@@ -181,13 +203,14 @@ conta.
 
 ### Como funciona, em poucas palavras
 
-- **O servidor é o único que guarda e renova os logins.** Os computadores recebem só o **acesso** da conta que o
-  servidor escolheu para cada um.
+- **O servidor é o único que guarda e renova os logins.** Os serviços conectados recebem só o **acesso** da conta que
+  o servidor escolheu para cada um.
 - **O acesso dura cerca de 8 horas.** O servidor renova sozinho, 2 horas antes de vencer. Você não faz nada.
-- **O login vence de vez em cerca de um mês.** O painel avisa 3 dias antes. Veja
-  [Quando o login de uma conta vence](#quando-o-login-de-uma-conta-vence).
-- **As regras de troca ficam no servidor** e valem para todos os computadores. Os avisos ("avisar em X%") e a
-  exibição continuam sendo de cada computador.
+- **O login vence de vez em cerca de um mês.** O painel avisa quando faltam menos de 3 dias, e o servidor manda
+  e-mail ao dono. Veja [Quando o login de uma conta vence](#quando-o-login-de-uma-conta-vence).
+- **As regras de troca ficam no servidor** e valem para todos os serviços. Para mudar as regras, use o painel do
+  servidor. Os avisos ("avisar em X%") e a exibição continuam sendo de cada computador: ficam na tela de
+  Configurações do VS Code.
 - **A tela de login do Claude Code fica desligada** enquanto o computador está conectado (opção
   `claudeCode.disableLoginPrompt`). É de propósito: quem cuida do login é o Swap Plus. Ao desconectar, volta ao normal.
 - **Windows (raro):** se o Claude Code do Windows usar o **Gerenciador de Credenciais do Windows**, o Swap Plus avisa
@@ -197,30 +220,43 @@ conta.
 
 Para abrir: clique na barra do Swap Plus e escolha **Configurações...** (a primeira opção da lista). Se o computador
 ainda não está conectado, clique na barra e, no aviso, em **Configurações**. Outro jeito, que sempre funciona:
-`Cmd/Ctrl + Shift + P` → **Swap Plus: Configurar trocas automáticas**.
+`Cmd/Ctrl + Shift + P` → **Swap Plus: Configurações**.
 
-A tela abre numa aba do VS Code, com estes cartões, de cima para baixo:
+A tela abre numa aba do VS Code. Ela mostra só o que é **deste VS Code**, que no painel aparece como um serviço. De
+cima para baixo:
 
-- **Swap Plus**: a chave que liga e desliga o Swap Plus e, em **Sua conta**, a conta Google com que este computador
-  entrou (com o botão **Sair**) ou os botões **Entrar com Google** e **Colar código**;
-- **Servidor**: a situação da conexão (**Conectado**, **Não conectado**, **Servidor fora do ar**, **Acesso
-  recusado**), o endereço, o botão **Desconectar** e os **Computadores conectados**;
-- **Troca automática**: a chave da troca automática (vale para todos os computadores) e o botão **Consultar o servidor
-  agora**;
-- **Regras**: para cada limite, a linha de aviso (só deste computador) e a linha de troca (do servidor, para todos).
-  Só valem depois de **Salvar regras**;
-- **Contas**: as contas do servidor, com o uso de cada uma, **Participa da troca automática**, **Usar regra padrão**,
-  a prioridade, o apelido e o botão **Usar esta conta**. Mudanças aqui valem na hora;
-- **Exibição**: o modo privado e o que aparece na barra;
-- **Atualizações da extensão**: a versão instalada e o botão **Verificar agora**;
-- **Histórico**: os últimos acontecimentos.
+- **Swap Plus neste VS Code**: a chave que liga e desliga o Swap Plus aqui. Desligado, este VS Code para de falar com
+  o servidor e de trocar de conta. Os outros serviços não mudam;
+- **Conexão**: a situação (**Conectado**, **Não conectado**, **Servidor fora do ar** ou **Acesso recusado**) e o
+  endereço do servidor. Conectado, mostra o nome deste serviço, a conta Google com que ele entrou, o último contato e
+  o botão **Sair**. Sem conexão, mostra os botões **Entrar com Google**, **Colar código** e **Outro endereço…** (este
+  último serve para entrar em outro servidor Swap Plus). Os avisos sobre o login do Claude Code deste computador
+  também aparecem aqui;
+- **Conta em uso aqui**: a conta que este VS Code está usando, com o plano, as barras de uso (sessão de 5 horas,
+  semanal e por modelo) e quando cada limite renova. Uma linha diz se a troca automática está **ligada** ou
+  **desligada** (para mudar, use o painel). Embaixo, em **Trocar de conta**, ficam as outras contas, cada uma com um
+  resumo do uso e o botão **Usar esta conta**. Uma conta que não dá para usar continua na lista, com o botão travado e
+  o motivo escrito (por exemplo, **Login morto**). Se os serviços andam juntos (regra **Serviços: Juntos**), a tela
+  avisa que trocar aqui troca também nos outros que estão em uso;
+- **Mais opções deste VS Code** (vem fechado: clique para abrir). O que você muda aqui vale na hora, só para este VS
+  Code:
+  - **Avisar quando chegar em**: os avisos de uso da sessão de 5 horas, do limite semanal e do limite por modelo, cada
+    um com a sua porcentagem. O aviso só avisa: quem troca de conta é o servidor, pelas regras do painel;
+  - **Exibição**: o modo privado e o que aparece na barra;
+  - **Atualizações da extensão**: a versão instalada e o botão **Verificar agora**;
+- no pé da tela, o botão **Abrir o painel**, que abre o painel do servidor no navegador. Ele só funciona com este VS
+  Code conectado.
 
-As regras de troca e os ajustes das contas são os mesmos do painel do servidor: mudar num lugar muda no outro.
+Contas, regras de troca, usuários e os outros serviços não ficam nesta tela: ficam no painel (veja
+[O painel do servidor](#o-painel-do-servidor)). Só o administrador entra no painel.
 
 ### Trocar de conta à mão
 
-Clique na barra do Swap Plus e escolha a conta. O ✓ marca a que está em uso. A troca vale em até 30 segundos. Pelo
-painel também dá: **Computadores** → **Trocar para** → **Trocar**.
+Clique na barra do Swap Plus e escolha a conta. O ✓ marca a que está em uso. A troca vale em até 30 segundos. Há mais
+dois jeitos:
+
+- na tela de Configurações: em **Trocar de conta**, clique em **Usar esta conta**;
+- pelo painel: **Serviços** → clique na linha do serviço → **Trocar para** → **Trocar**.
 
 Se a conta bater o limite antes da troca, o Claude Code pode ficar parado esperando: mande uma mensagem (por exemplo,
 "continue") e ele segue na conta nova.
@@ -235,26 +271,26 @@ normalmente.
 3. Para ligar de novo, clique na barra (ela mostra *Swap Plus desligado*) e, no aviso que aparece, em **Ligar Swap
    Plus**.
 
-Também dá para desligar e ligar pela chave do cartão **Swap Plus**, o primeiro da tela de Configurações.
+Também dá para desligar e ligar pela chave que fica no alto da tela de Configurações, em **Swap Plus neste VS Code**.
+Desligar aqui não muda nada nos outros serviços.
 
 ### Desconectar um computador
 
 1. Clique na barra do Swap Plus → **Configurações...**.
-2. No cartão **Servidor**, clique em **Desconectar**. (O botão **Sair**, em **Sua conta**, no primeiro cartão, faz o
-   mesmo.)
+2. No cartão **Conexão**, clique em **Sair**.
 3. Na pergunta que aparece, escolha:
    - **Desconectar**: o Swap Plus continua ligado, mostrando *não conectado*; ou
    - **Desconectar e desligar o Swap Plus**: o Claude Code fica normal, sem o Swap Plus.
 4. O Claude Code fica com o acesso atual até ele vencer (algumas horas). Para voltar, faça de novo o
    [Entrar com Google](#3-entrar-com-google).
 
-Para tirar **outro** computador (por exemplo, um que você não usa mais): painel → **Computadores** → **Desconectar**,
-no quadradinho dele.
+Para tirar **outro** serviço (por exemplo, um computador que você não usa mais): painel → **Serviços** → clique na
+linha dele → **Desconectar**.
 
 ### Atualizar o Swap Plus
 
 A extensão se atualiza sozinha, dentro do VS Code: ao abrir, ao fechar e a cada 2 dias. Para conferir na hora: tela de
-Configurações → cartão **Atualizações da extensão** → **Verificar agora**.
+Configurações → **Mais opções deste VS Code** → **Atualizações da extensão** → **Verificar agora**.
 
 Para forçar a versão mais nova:
 
@@ -267,28 +303,28 @@ A conexão com o servidor continua como está.
 
 Use só se o **Entrar com Google** não funcionar.
 
-1. No painel, abra **Computadores** e desça até **Conectar um computador**.
+1. No painel, abra **Serviços** e desça até **Conectar um serviço**.
 2. Clique em **Gerar código de conexão**.
-3. Clique em **Copiar código**. O código vale 10 minutos e serve para um computador só.
+3. Clique em **Copiar código**. O código vale 10 minutos e serve uma vez só.
 4. No VS Code, clique na barra do Swap Plus e, no aviso que aparece, em **Colar código**. (O mesmo botão fica na tela
-   de Configurações, no cartão **Servidor**.)
+   de Configurações, no cartão **Conexão**.)
 5. Cole o código e aperte Enter.
 6. Confirme o nome do computador e aperte Enter. Daí em diante é igual à conexão com Google.
 
 ### Esconder os e-mails (modo privado)
 
-Clique na barra → **Configurações...** e, no cartão **Exibição**, marque **Modo privado**. Ele mostra só "Conta 1",
-"Conta 2"… sem e-mail. Ele muda só o que o Swap Plus mostra neste computador. Não é uma trava: o painel de conta do
-próprio Claude Code e o comando `/status` continuam mostrando o e-mail da conta em uso.
+Clique na barra → **Configurações...**, abra **Mais opções deste VS Code** e, em **Exibição**, marque **Modo privado**.
+Ele mostra só "Conta 1", "Conta 2"… sem e-mail. Ele muda só o que o Swap Plus mostra neste computador. Não é uma
+trava: o painel de conta do próprio Claude Code e o comando `/status` continuam mostrando o e-mail da conta em uso.
 
 ---
 
 ## O painel do servidor
 
-O painel é a tela do servidor no navegador. Nele você vê todas as contas e configura tudo: contas, computadores,
-usuários e regras de troca. As regras e os ajustes das contas também aparecem na tela de Configurações do VS Code
-(veja [A tela de Configurações, no VS Code](#a-tela-de-configurações-no-vs-code)); adicionar contas, liberar usuários
-e o kit de recuperação ficam só no painel.
+O painel é a tela do servidor no navegador. Nele você vê todas as contas e configura tudo: contas, serviços,
+usuários e regras de troca. A tela de Configurações do VS Code mostra só o que é daquele VS Code
+(veja [A tela de Configurações, no VS Code](#a-tela-de-configurações-no-vs-code)). As regras de troca, os ajustes das
+contas, os outros serviços, os usuários, o histórico e o kit de recuperação ficam no painel.
 
 ### Entrar no painel
 
@@ -296,57 +332,80 @@ e o kit de recuperação ficam só no painel.
 2. Clique em **Entrar com Google**.
 3. Entre com a conta do administrador (a conta Google definida no servidor).
 
+Do VS Code também dá para chegar ao painel: na tela de Configurações, clique em **Abrir o painel**.
+
 **Só o administrador entra no painel.** Os usuários liberados (veja [Usuários](#usuários)) servem só para conectar
-computadores.
+serviços.
 
 ### O que tem no painel
 
 O menu tem três itens:
 
 - **[Contas](#contas)**: as contas Claude, o uso de cada uma e as regras de troca;
-- **[Computadores](#computadores)**: os computadores conectados e a conta Claude de cada um;
-- **[Usuários](#usuários)**: as contas Google que podem conectar computadores.
+- **[Serviços](#serviços)**: tudo o que está conectado ao Swap e a conta Claude de cada um;
+- **[Usuários](#usuários)**: as contas Google que podem conectar serviços.
 
 No topo ficam:
 
-- **Histórico**: os últimos acontecimentos, com data e computador (trocas de conta, logins recebidos, avisos e
+- **Histórico**: os últimos acontecimentos, com data e serviço (trocas de conta, logins recebidos, avisos e
   mudanças de regra);
 - **Atualizar**: busca os dados na hora;
 - **Minha conta**: seu e-mail, **Sair**, o kit de recuperação e as sessões abertas (veja [Minha conta](#minha-conta));
 - os **avisos**: por exemplo, um login que vence em menos de 3 dias ou uma conta com login morto.
 
+Cada uma das três abas tem um **campo de busca**, acima da lista. Digite, e a lista mostra só o que combina. A busca
+olha tudo o que cada item mostra, inclusive o que só aparece com o cartão aberto: por exemplo, `login morto`,
+`fora da troca`, `sem contato` ou o nome de um serviço. Ela não liga para maiúsculas nem acentos. Com mais de uma
+palavra, todas precisam aparecer. Ao lado do campo aparece quantos ficaram (por exemplo, **3 de 23**). Para limpar,
+clique no **×** do campo ou aperte `Esc`.
+
 O painel se atualiza sozinho a cada 30 segundos. Funciona também no celular.
 
 ### Contas
 
-Um cartão para cada conta Claude. No alto fica o botão **+ Adicionar conta** (veja
-[Pelo painel](#pelo-painel-não-precisa-de-computador)).
+Uma linha para cada conta Claude. No alto ficam o botão **+ Adicionar conta** (veja
+[Pelo painel](#pelo-painel-não-precisa-de-computador)) e o campo de busca.
 
-**A ordem é a fila da troca.** Primeiro vêm as contas que participam da troca, na ordem em que o servidor vai usá-las:
-**1º na fila**, **2º na fila**… Vem antes a conta cujo limite semanal renova antes (em empate, a menos usada). As
-contas que não participam ficam embaixo, no grupo **Fora da troca (N)**. Clique nele para abrir.
+**Clique numa linha para abrir o cartão da conta**, com todos os limites, os dados e os ajustes. Clique de novo para
+fechar. O painel abre com todas as contas fechadas.
 
-Em cada cartão:
+A linha é o resumo da conta:
 
-- número, apelido, e-mail e plano;
+- número, apelido e e-mail;
+- as etiquetas **Em 1 serviço** ou **Em N serviços** (a conta está em uso agora), **1º na fila**, **2º na fila**… e
+  **Login morto**;
+- uma barra de uso só: a do limite mais perto de parar a conta (sessão de 5 horas, semanal ou modelo), com a
+  porcentagem e quando esse limite renova;
+- **Participa da troca** ou **Fora da troca**;
+- o alerta de login, quando há: **Fazer login até …** ou **Login venceu em …** (veja
+  [Quando o login de uma conta vence](#quando-o-login-de-uma-conta-vence)).
+
+**A ordem da lista.** Primeiro vêm as contas em uso (com serviço nelas agora). Depois, as outras que participam da
+troca, na ordem em que o servidor vai usá-las: vem antes a conta cujo limite semanal renova antes (em empate, a menos
+usada). As etiquetas **1º na fila**, **2º na fila**… mostram essa ordem. No fim ficam as contas que não participam,
+com o indicador **Fora da troca**. O painel traz um resumo disto em **Como ler a lista**, acima da busca.
+
+No cartão aberto:
+
+- plano e organização;
 - **Situação**: ok, **Login morto** ou fora da troca;
 - barras de uso: sessão de 5 horas, semanal e por modelo (por exemplo, Fable). Verde: longe da linha de troca;
-  amarelo: chegando perto; vermelho: na linha (o servidor passa o computador para outra conta);
-- **Computadores nela** (os que estão na conta agora) e **Computadores permitidos**;
+  amarelo: chegando perto; vermelho: na linha (o servidor passa o serviço para outra conta);
+- **Serviços nela** (os que estão na conta agora) e **Serviços permitidos**;
 - **Acesso atual**: até quando vale. O servidor renova sozinho;
-- **Login vale até**: quando o login vence. Faltando menos de 3 dias (ou com login morto), aparece um aviso com o botão
-  **Entrar de novo**.
+- **Login vale até**: quando o login vence. Faltando menos de 3 dias (ou com o login vencido ou morto), aparece um
+  aviso com o botão **Entrar de novo**.
 
-O que dá para fazer em cada conta:
+O que dá para fazer em cada conta, com o cartão aberto:
 
-- **Participa da troca**: ligado, a troca automática usa a conta. Desligado, a conta desce para **Fora da troca**.
-  Vale na hora.
+- **Participa da troca**: ligado, a troca automática usa a conta. Desligado, a conta fica **Fora da troca** e vai para
+  o fim da lista (se houver serviço nela, continua no alto enquanto isso). Vale na hora.
 - **Ajustes desta conta**:
   - **Quando trocar desta conta**: **Usar regra padrão** (as regras de troca gerais) ou linhas próprias para a sessão
     de 5 horas, o semanal e o modelo. Cada mudança aqui vale na hora;
   - **Apelido**, **Prioridade** (só vale na estratégia **Por prioridade**; número maior é usado primeiro) e
-    **Computadores permitidos**: **Todos** (inclusive os que conectarem depois) ou **Só estes** (marque um ou mais).
-    Um computador só recebe as contas que o permitem, na troca automática e na troca manual. Depois de mudar, clique
+    **Serviços permitidos**: **Todos** (inclusive os que conectarem depois) ou **Só estes** (marque um ou mais).
+    Um serviço só recebe as contas que o permitem, na troca automática e na troca manual. Depois de mudar, clique
     em **Salvar ajustes**;
   - **Entrar de novo**: renova o login da conta (veja
     [Quando o login de uma conta vence](#quando-o-login-de-uma-conta-vence)).
@@ -354,19 +413,19 @@ O que dá para fazer em cada conta:
 
 #### Regras de troca
 
-Ficam em **Contas**, abaixo da lista. Valem para **todos** os computadores conectados. A troca automática liga e
+Ficam em **Contas**, abaixo da lista. Valem para **todos** os serviços conectados. A troca automática liga e
 desliga na hora; as outras regras só mudam quando você clicar em **Salvar regras**.
 
-- **Troca automática:** ligada ou desligada. Vale na hora. Desligada, nenhum computador troca de conta sozinho. A
+- **Troca automática:** ligada ou desligada. Vale na hora. Desligada, nenhum serviço troca de conta sozinho. A
   troca manual continua funcionando.
-- **Computadores:** **Separados** (o padrão: cada computador numa conta, cada um com a sua sessão de 5 horas) ou
-  **Juntos** (todos na mesma conta, a do topo da fila, e trocam juntos). Um computador só usa as contas permitidas
-  para ele.
+- **Serviços:** **Separados** (o padrão: cada serviço numa conta, cada um com a sua sessão de 5 horas) ou
+  **Juntos** (todos na mesma conta, a do topo da fila, e trocam juntos). Vale para os serviços ativos agora. Um
+  serviço só usa as contas permitidas para ele.
 - **Quando trocar de conta:** porcentagem da sessão de 5 horas, do limite semanal e do limite de um modelo
   (por exemplo, Fable).
 - **Quando o limite de um modelo acaba:** **Seguir na mesma conta** (com outro modelo, como o Opus) ou **Trocar de
   conta**. Nos dois casos, quando o Fable acaba o Swap Plus muda sozinho o modelo padrão do Claude Code de cada
-  computador para o **Opus 5.5** (as conversas novas já abrem nele) e volta para o Fable quando ele renova. Uma
+  serviço para o **Opus 5.5** (as conversas novas já abrem nele) e volta para o Fable quando ele renova. Uma
   conversa que já estava aberta não muda sozinha: nela, escolha **Opus 5.5** no seletor de modelo e mande
   "continue". Com **Trocar de conta**, enquanto alguma conta tiver Fable a conversa aberta nem para.
 - **Para qual conta ir (estratégia):** **Aproveitar ao máximo** (o padrão), **Mais folga** ou **Por prioridade**, e o
@@ -375,30 +434,64 @@ desliga na hora; as outras regras só mudam quando você clicar em **Salvar regr
   destino**.
 - Botões: **Voltar ao padrão** (só preenche o formulário; ainda precisa salvar), **Desfazer** e **Salvar regras**.
 
-### Computadores
+### Serviços
 
-Um quadradinho para cada computador conectado. Em cada um:
+**Serviço** é tudo o que está conectado ao Swap: o VS Code de um computador, um agente como o Hermes, um robô. Aqui
+há uma linha para cada serviço. No alto fica o campo de busca.
 
-- nome, sistema, usuário (a conta Google com que ele entrou) e último contato (**ativo agora** ou parado);
-- **Conta Claude agora**: a conta logada nele, com número, e-mail e barras pequenas de uso.
+A linha mostra:
 
-O que dá para fazer em cada computador:
+- uma bolinha com a cor da situação e o nome do serviço;
+- o sistema e quem conectou (a conta Google, ou **conectado por código**);
+- a conta Claude em que ele está agora (**Conta N**, com uma barra de uso), ou **Sem conta Claude agora**;
+- a situação do serviço, por escrito.
+
+As situações de um serviço:
+
+- **ativo agora** (bolinha verde): em uso nos últimos 5 minutos. Por exemplo, um VS Code aberto ou um agente
+  trabalhando. A troca automática cuida só dos serviços ativos;
+- **conectado · sem uso agora** (bolinha azul): ligado e falando com o servidor, mas sem uso no momento. É assim que
+  um agente como o Hermes fica entre uma tarefa e outra. Está tudo certo com ele;
+- **aguardando contato · o servidor reiniciou há pouco** (bolinha cinza, só o contorno): o servidor reiniciou há
+  pouco e o serviço ainda não falou com ele. Em até 5 minutos passa para uma das outras situações;
+- **sem contato · visto …** (bolinha cinza): não fala com o servidor há mais de 5 minutos (fechado, desligado ou sem
+  internet). Ao lado aparece a última vez em que foi visto. Se ele nunca falou com o servidor, aparece
+  **sem contato · ainda não apareceu**.
+
+O painel traz esta mesma explicação em **O que quer dizer cada situação**, acima da busca.
+
+A lista vem nesta ordem: os ativos, os conectados, os que estão aguardando contato e os sem contato. Dentro de cada
+grupo, por nome. No alto da aba **Contas**, o resumo conta os serviços por situação. Por exemplo:
+`5 serviços (3 ativos agora, 1 conectado, 1 sem contato)`.
+
+**Clique numa linha para abrir o cartão do serviço.** Clique de novo para fechar. O painel abre com todos fechados.
+No cartão aparecem o sistema, o usuário (a conta Google com que ele entrou), o contato e a **Conta Claude agora**,
+com número, e-mail e barras pequenas de uso. O que dá para fazer ali:
 
 - **Renomear**: clique em **Renomear**, digite o nome novo e clique em **Salvar**.
 - **Trocar de conta**: em **Trocar para**, escolha uma conta (ou **Melhor conta**, e o servidor escolhe) e clique em
-  **Trocar**. Vale em até 30 segundos. Só aparecem as contas permitidas para esse computador.
-- **Desconectar**: o painel pede confirmação. O computador para de receber o login na hora.
+  **Trocar**. Vale em até 30 segundos. Só aparecem as contas permitidas para esse serviço.
+- **Desconectar**: o painel pede confirmação. O serviço para de receber o acesso das contas na hora.
 
-Embaixo fica o bloco **Conectar um computador**: o passo a passo do VS Code e o botão **Gerar código de conexão**
-(veja [Sem Google: código de conexão](#sem-google-código-de-conexão)).
+Embaixo da lista fica o bloco **Conectar um serviço**: o passo a passo do VS Code e o botão **Gerar código de
+conexão** (veja [Sem Google: código de conexão](#sem-google-código-de-conexão)).
 
 ### Usuários
 
-Os usuários são as contas Google que podem conectar computadores pelo VS Code (**Entrar com Google**). São as suas
+Os usuários são as contas Google que podem conectar serviços pelo VS Code (**Entrar com Google**). São as suas
 contas Google: por exemplo, uma para cada computador. **Eles não entram no painel**: o painel é só do administrador.
 
-A tabela mostra, para cada um: **E-mail**; **Papel** (**Administrador**, a conta definida no servidor, que não sai da
-lista; ou **Usuário**); **Computadores** (quantos ele conectou e quais); **Desde** (quando foi liberado).
+A tabela tem uma linha por usuário, com estas colunas:
+
+- **Usuário**: o e-mail. O seu aparece com a marca **você**;
+- **Situação**: **Administrador** (a conta definida no servidor, que não sai da lista), **Liberado** ou **Não
+  liberado** (foi tirado da lista, mas ainda tem serviço conectado);
+- **Serviços**: quantos ele conectou e quais;
+- **Desde**: o dia em que ele conectou o primeiro serviço (o painel ainda não mostra o dia em que ele foi liberado).
+  No administrador aparece **definido no servidor**.
+
+Clique nos títulos **Usuário**, **Situação** ou **Serviços** para ordenar a tabela. Clique de novo para inverter. No
+celular, cada linha vira um cartão e não dá para ordenar. Acima da tabela fica o campo de busca.
 
 **Liberar um usuário:**
 
@@ -406,15 +499,15 @@ lista; ou **Usuário**); **Computadores** (quantos ele conectou e quais); **Desd
 2. Clique em **Liberar**.
 3. No computador que vai usar essa conta, siga [Começando](#começando).
 
-A mesma conta Google conecta quantos computadores quiser. Quais contas Claude cada computador pode usar se escolhe
-em **Contas** → **Ajustes desta conta** → **Computadores permitidos**.
+A mesma conta Google conecta quantos serviços quiser. Quais contas Claude cada serviço pode usar se escolhe em
+**Contas**: abra a conta e, em **Ajustes desta conta**, mude **Serviços permitidos**.
 
-Os computadores conectados com um usuário (e não com o administrador) usam as contas do servidor, mas não mandam
+Os serviços conectados com um usuário (e não com o administrador) usam as contas do servidor, mas não mandam
 logins para ele.
 
 **Tirar um usuário:** clique em **Tirar** na linha dele e confirme em **Tirar usuário**. Ele não conecta mais
-computadores novos. Os computadores que ele já conectou continuam funcionando: para cortar, desconecte-os em
-**Computadores**.
+serviços novos. Os serviços que ele já conectou continuam funcionando: para cortar, desconecte-os em **Serviços**.
+Enquanto ele tiver serviço conectado, continua na tabela como **Não liberado**, com o botão **Liberar de novo**.
 
 ### Minha conta
 
@@ -452,11 +545,15 @@ morto**: entre de novo com cada uma (veja [Quando o login de uma conta vence](#q
 O **Swap Plus Cliente** faz o trabalho da extensão sem o VS Code. Ele serve para o Hermes (o assistente de IA que
 fica sempre ligado) e para outros serviços e rotinas em segundo plano usarem o Claude Code com as contas do servidor.
 
-- No painel, o cliente aparece em **Computadores**, como mais um computador, com o nome que você deu a ele. Dá para
+- No painel, o cliente aparece em **Serviços**, como mais um serviço, com o nome que você deu a ele. Dá para
   renomear, trocar de conta e desconectar, como os outros.
+- Enquanto o Hermes usa o Claude Code, e por alguns minutos depois, o cliente aparece como **ativo agora**. Entre uma
+  tarefa e outra, aparece como **conectado · sem uso agora**: é o normal, está tudo certo com ele. Só **sem contato**
+  quer dizer que ele não fala com o servidor há mais de 5 minutos.
 - Ele tem a própria pasta de login do Claude Code. Não mexe no Claude Code do VS Code.
-- Para o Hermes usar só algumas contas, escolha em **Contas** → **Ajustes desta conta** → **Computadores permitidos**.
-- O uso pelo Hermes ainda não foi testado de ponta a ponta.
+- Para o Hermes usar só algumas contas, escolha em **Contas** → **Ajustes desta conta** → **Serviços permitidos**.
+- O Hermes do servidor usa o Claude Code por este cliente desde 20/11/2026
+  ([como ficou instalado](cliente/deploy/LEIA-ME.md)).
 
 Como instalar, conectar e usar: [manual do cliente](cliente/README.md).
 
@@ -469,7 +566,7 @@ Como instalar, conectar e usar: [manual do cliente](cliente/README.md).
 | Windows: o comando de instalação dá erro de "execução de scripts" | No PowerShell, rode `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. Depois rode o comando de instalação de novo. |
 | O comando de instalação diz **VS Code não encontrado** | Instale o VS Code ([code.visualstudio.com](https://code.visualstudio.com)) e rode o comando de novo. No Mac, o VS Code precisa estar na pasta **Aplicativos** (se ele ficou em Downloads, arraste para Aplicativos). |
 | O comando de instalação diz **o comando swap-plus existe (…), mas … não mexi nele** | É o motor antigo, instalado de outro jeito (sem o `uv`), ou o `uv` não foi encontrado. O Swap Plus 3.0 não usa esse comando: pode ignorar ou apagar o arquivo indicado. |
-| O **Histórico** da tela de Configurações mostra **Não consegui remover o motor antigo (swap-plus)** | A extensão tenta de novo no dia seguinte. Para resolver já, rode o comando de instalação de novo, ou remova à mão (veja [Remover](#remover)). O Swap Plus 3.0 funciona mesmo com o motor antigo instalado. |
+| O motor antigo (o comando `swap-plus`) continua no computador, mesmo depois de conectar | A extensão tenta remover sozinha depois que o computador conecta ao servidor. Se a remoção falha, ela tenta de novo no dia seguinte, sem mostrar aviso. Se o motor foi instalado de outro jeito (sem o `uv`), ela não mexe nele. Para resolver já, rode o comando de instalação de novo, ou remova à mão (veja [Remover](#remover)). O Swap Plus 3.0 funciona mesmo com o motor antigo instalado. |
 | A barra do Swap Plus não aparece depois de instalar | Feche e abra o VS Code. Ou: `Cmd/Ctrl + Shift + P` → **Developer: Reload Window**. |
 | O Swap Plus não aparece numa pasta | O VS Code abriu a pasta no **Modo Restrito** (pasta não confiável). Clique no aviso do topo para confiar na pasta, ou abra outra. |
 | A barra mostra **não conectado — clique para entrar com Google** | Este computador ainda não entrou no servidor. Faça o [Entrar com Google](#3-entrar-com-google). |
@@ -478,16 +575,19 @@ Como instalar, conectar e usar: [manual do cliente](cliente/README.md).
 | Aparece **o tempo para entrar com o Google acabou** | O link vale 10 minutos. Clique em **Entrar com Google** de novo. |
 | Aparece **o servidor … não está com o login do Google ligado** | Gere um código de conexão no painel, clique em **Colar código de conexão** no aviso e cole o código (veja [Sem Google: código de conexão](#sem-google-código-de-conexão)). |
 | Aparece **o código não foi aceito** | O código vale 10 minutos e uma vez só. Gere outro no painel e cole de novo. |
-| O painel diz que **o painel é só do administrador** | É normal: só o administrador entra no painel. Os usuários liberados servem só para conectar computadores. Clique em **Entrar com outra conta** e use a do administrador. |
+| O painel diz que **o painel é só do administrador** | É normal: só o administrador entra no painel. Os usuários liberados servem só para conectar serviços. Clique em **Entrar com outra conta** e use a do administrador. |
 | O painel pede para **entrar de novo com Google** ao mostrar o kit de recuperação | Por segurança, o kit só aparece até 15 minutos depois de entrar. Clique em **Entrar de novo com Google**. |
-| O painel avisa que **o login de uma conta vence**, ou uma conta aparece como **Login morto** | Clique em **Entrar de novo** no cartão da conta, ou faça `/login` com ela no Claude Code de um computador do administrador. Veja [Quando o login de uma conta vence](#quando-o-login-de-uma-conta-vence). A troca automática nunca vai para uma conta com login morto. |
+| O painel (ou um e-mail do servidor) avisa que **o login de uma conta vence**, ou uma conta aparece como **Login morto** | No painel, em **Contas**, clique na linha da conta para abrir o cartão dela e clique em **Entrar de novo**. Ou faça `/login` com ela no Claude Code de um computador do administrador. Veja [Quando o login de uma conta vence](#quando-o-login-de-uma-conta-vence). A troca automática nunca vai para uma conta com login morto. |
 | Ao adicionar uma conta pelo painel, aparece **código incompleto**, **esse código não é deste login** ou **este login venceu** | Clique em **+ Adicionar conta** (ou **Entrar de novo**) outra vez, entre com a conta e copie o código **inteiro** (ele tem um `#` no meio). O link vale 10 minutos e serve uma vez só. |
 | Ao **Entrar de novo**, o painel diz que você entrou com **outro e-mail** | A página da Claude estava em outra conta. A conta pedida não mudou. Saia da outra conta na página da Claude (ou use uma janela anônima) e clique em **Entrar de novo** outra vez. |
 | Fiz `/login` no Claude Code e o computador voltou para outra conta | Este computador não é do administrador: só os computadores do administrador mandam logins ao servidor. Adicione a conta pelo painel (**Contas** → **+ Adicionar conta**). |
 | O Claude Code não abre mais a tela de login | É de propósito: conectado ao servidor, quem cuida do login é o Swap Plus. Para adicionar uma conta, use o painel (ou `/login` num computador do administrador). Ao desconectar, volta ao normal. |
 | A barra mostra **nenhuma conta no servidor ainda** | Adicione uma conta: no painel (**Contas** → **+ Adicionar conta**) ou com `/login` num computador do administrador. |
 | A barra mostra **sem conta atribuída — clique para escolher** | O servidor ainda não escolheu uma conta para este computador. Clique na barra e escolha uma. Se a conta que você quer não vale para este computador, veja a linha de baixo. |
-| Em **Computadores** → **Trocar para**, uma conta não aparece para um computador (ou nenhuma aparece) | Essa conta não permite esse computador. Em **Contas**, abra **Ajustes desta conta** da conta. Em **Computadores permitidos**, escolha **Todos** ou marque o computador. Clique em **Salvar ajustes**. |
+| Em **Serviços** → **Trocar para**, uma conta não aparece para um serviço (ou nenhuma aparece) | Essa conta não permite esse serviço. Em **Contas**, clique na linha da conta e abra **Ajustes desta conta**. Em **Serviços permitidos**, escolha **Todos** ou marque o serviço. Clique em **Salvar ajustes**. |
+| No painel, um serviço aparece como **conectado · sem uso agora** ou **aguardando contato** | É normal. **conectado · sem uso agora**: o serviço está ligado e falando com o servidor, só não está sendo usado no momento (é assim que o Hermes fica entre uma tarefa e outra). **aguardando contato**: o servidor reiniciou há pouco; em até 5 minutos a situação se acerta sozinha. |
+| No painel, um serviço aparece como **sem contato** | Ele não fala com o servidor há mais de 5 minutos. Num computador, é o normal com o VS Code fechado ou o computador desligado. Se o serviço deveria estar ligado, confira se ele está aberto, com internet e com o Swap Plus ligado. Para o Hermes, veja o [manual do cliente](cliente/README.md). |
+| Não acho as regras de troca (ou os ajustes das contas) na tela de Configurações do VS Code | Elas ficam no painel do servidor: em **Contas**, as **Regras de troca** ficam abaixo da lista e os **Ajustes desta conta** ficam no cartão de cada conta. Para chegar lá, clique em **Abrir o painel**, no pé da tela de Configurações. Só o administrador entra no painel. |
 | A barra mostra **servidor fora do ar** | Espere. Enquanto isso o Swap Plus não mexe no login, e o Claude Code segue com o acesso que tem (algumas horas). O Swap Plus tenta de novo a cada 30 segundos. Se demorar, avise quem cuida do servidor. |
 | A barra mostra **servidor recusou este computador** | Este computador foi desconectado (pelo painel). Conecte de novo: clique na barra e, no aviso, em **Entrar com Google**. |
 | A barra mostra **login do Claude Code recusado pelo servidor** | O servidor não aceitou o login que está no Claude Code (o aviso diz o motivo). Para seguir com a conta do servidor: clique na barra, depois em **Usar a conta do servidor**, e confirme. |
@@ -513,5 +613,6 @@ pode apagar à mão (veja [Veio da versão 2.x?](#veio-da-versão-2x)).
 
 ---
 
-Mais detalhes: [novidades da 3.0](NOVIDADES-3.0.md) · [novidades da 2.0](NOVIDADES-2.0.md) (histórico) ·
+Mais detalhes: [novidades da 3.2](NOVIDADES-3.2.md) · [novidades da 3.0](NOVIDADES-3.0.md) ·
+[novidades da 2.0](NOVIDADES-2.0.md) (histórico) ·
 [extensão](plus/README.md) · [servidor](server/deploy/LEIA-ME.md).

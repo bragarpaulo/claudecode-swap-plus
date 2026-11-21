@@ -84,7 +84,7 @@ Para lembrar:
 - registrar no `central-comando-server`: a stack no `catalogo.json`, a linha na tabela de stacks e a nota datada
   (seção final deste arquivo).
 
-O Swap Plus Cliente é o trabalho da extensão do VS Code sem o VS Code: um "computador" a mais no Swap Plus, que
+O Swap Plus Cliente é o trabalho da extensão do VS Code sem o VS Code: um serviço a mais no Swap Plus, que
 recebe do servidor o acesso da conta escolhida para ele e o grava numa pasta de login do Claude Code. O Hermes usa
 essa pasta pelo plugin oficial `claude-subscription-directsdk`, que roda o executável oficial do Claude Code como
 modelo. Funcionamento em [`../README.md`](../README.md).
@@ -110,7 +110,7 @@ A instalação do cliente **não** gasta uso de conta (não chama a Anthropic) e
 | --- | --- |
 | código (cópia deste repositório) | `/opt/swap-plus/app` (a mesma cópia do Swap Plus Servidor) |
 | compose da stack | `/opt/swap-plus/app/cliente/deploy/compose.yaml` (o Portainer guarda a cópia que está valendo) |
-| dados do cliente | `/opt/swap-plus-cliente/hermes/dados` — 10000:10000, 700. `conexao.json` é o acesso deste cliente ao Swap: **segredo** (pela API dá para trocar de conta, mudar regras e revogar computadores). Não entra no Hermes |
+| dados do cliente | `/opt/swap-plus-cliente/hermes/dados` — 10000:10000, 700. `conexao.json` é o acesso deste cliente ao Swap: **segredo** (pela API dá para trocar de conta, mudar regras e revogar serviços). Não entra no Hermes |
 | pasta compartilhada com o Hermes | `/opt/swap-plus-cliente/hermes/login` — 10000:10000, 700. Dentro, `claude/` é a pasta de login do Claude Code |
 | imagem | `swap-plus-cliente:<versão>`, construída no host; a versão está na variável `SWAP_PLUS_CLIENTE_VERSAO` da stack |
 | rede | `swap-plus-cliente`, 10.88.3.0/24 — só este contêiner; sem porta no host |
@@ -157,7 +157,7 @@ Tudo como root, no servidor.
 
    O script mostra um endereço. Abra no navegador (do computador ou do celular) e entre com a sua conta Google: a do
    administrador, ou uma liberada no painel em **Usuários**. O endereço vale 10 minutos. Pronto o login, o cliente
-   passa a existir no Swap — no painel, em **Computadores**, ele aparece como "Hermes (servidor)" com o e-mail que
+   passa a existir no Swap — no painel, em **Serviços**, ele aparece como "Hermes (servidor)" com o e-mail que
    conectou — e já grava o primeiro login do Claude Code na pasta compartilhada.
 
    O outro jeito, sem navegador (o código de conexão nasce dentro do contêiner do Swap e não aparece na tela; no
@@ -168,8 +168,10 @@ Tudo como root, no servidor.
    ```
 
    Os dois scripts recusam se já houver um `conexao.json`, e no fim mostram a situação. Se aparecer **sem conta**: no
-   painel do Swap, **Contas → Ajustes desta conta → Computadores permitidos**, libere as contas para "Hermes
-   (servidor)" (um computador novo não entra sozinho nas contas que têm lista própria).
+   painel do Swap, em **Contas**, clique na linha da conta para abrir e vá em **Ajustes desta conta → Serviços
+   permitidos**; libere as contas para "Hermes (servidor)" (um serviço novo não entra sozinho nas contas que têm
+   lista própria). O aviso que os scripts e o cliente 1.0.0 mostram ainda diz "Computadores permitidos": é o nome
+   antigo do mesmo ajuste.
 
 4. **Stack.** Pela API do Portainer (primeiro a simulação), que confere imagem, rede, pastas e a conexão antes de
    criar:
@@ -197,8 +199,10 @@ Tudo como root, no servidor.
    ```
 
    `status` deve dizer **em dia**, a conta e até quando o acesso vale. No painel do Swap o cliente aparece em
-   **Computadores**. Parado (sem o Hermes usando), ele aparece como visto há alguns minutos: é o esperado no modo
-   `auto` (ver [Presença](#presença-auto-ou-sempre)).
+   **Serviços**. Sem o Hermes usando, ele aparece como **conectado · sem uso agora**: é o esperado no modo
+   `auto` (ver [Presença](#presença-auto-ou-sempre)). Já a linha de comando do Swap (`cli.js devices` e
+   `cli.js status`) mostra "visto há …" contando do último batimento, não do último contato: com o Hermes sem uso
+   esse tempo cresce, e isso não quer dizer que o cliente caiu.
 
 ## Ligar o Hermes (roteiro)
 
@@ -301,7 +305,7 @@ O que conferir no primeiro teste:
   chamada sair pela assinatura e não pela chave. As variáveis do servidor têm outros nomes (`FA_CLAUDE_API`,
   `FSC_CLAUDE_API`), mas confira com `/usage` no Hermes que a conta em uso é a do Swap.
 - **O cliente percebe o uso.** Logo depois de uma resposta, `swap-plus-cliente status` deve mostrar **ativo**, e o
-  painel do Swap, o cliente visto "agora".
+  painel do Swap, o cliente como **ativo agora**.
 - **Consumo de memória.** Cada chamada do plugin sobe um processo do Claude Code de uns 250 MB (até 4 ao mesmo tempo,
   ajustável no plugin). O teto do Hermes hoje é folgado, mas vale olhar o `docker stats` na primeira rotina.
 
@@ -318,16 +322,32 @@ Dois limites conhecidos, para decidir com calma:
 
 Variável `SWAP_PLUS_CLIENTE_PRESENCA` da stack (padrão `auto`).
 
-- **auto**: o cliente só conta como computador ativo no Swap enquanto o Hermes usa o Claude Code e por 10 minutos
+- **auto**: o cliente só conta como serviço ativo no Swap enquanto o Hermes usa o Claude Code e por 10 minutos
   depois do último uso (o Swap ainda o considera ativo por mais 5). Parado, ele só consulta o servidor a cada 2 minutos para manter o login válido: não segura conta nem gasta
   o orçamento de leitura de uso. Se a conta dele precisar de decisão enquanto está parado (morreu, foi desativada,
   passou da linha de troca), ele manda um batimento avulso para o Swap decidir.
-- **sempre**: ativo o tempo todo. Com a regra "computadores separados", uma conta fica sempre ocupada pelo Hermes, e a
+- **sempre**: ativo o tempo todo. Com a regra "Serviços: Separados", uma conta fica sempre ocupada pelo Hermes, e a
   leitura de uso dela (a cada 3 min) pesa no orçamento de 24 leituras por hora do Swap, que os outros computadores
   ativos dividem.
 
-Com a regra "computadores juntos", um limite batido por um computador troca a conta de todos os ativos, o Hermes
+Com a regra "Serviços: Juntos", um limite batido por um serviço troca a conta de todos os ativos, o Hermes
 entre eles.
+
+No painel do Swap (servidor 2.5.3 ou mais novo), em **Serviços**, o cliente aparece assim:
+
+- **ativo agora**: enquanto o Hermes usa o Claude Code e por uns 15 minutos depois do último uso (os 10 do cliente
+  mais os 5 do Swap). No modo `sempre`, o tempo todo;
+- **conectado · sem uso agora**: o cliente está ligado e consultando o Swap, sem o Hermes usando (é o que o
+  `status` do cliente chama de **parado**). É assim que ele fica entre uma tarefa e outra do Hermes, e está tudo
+  certo: cada consulta conta como contato;
+- **sem contato · visto …**: o cliente não fala com o Swap há mais de 5 minutos (contêiner parado, sem rede, ou em
+  espera depois de um 403 ou de um 429). Veja [Operação](#operação);
+- **aguardando contato · o servidor reiniciou há pouco**: só nos 5 minutos depois de o Swap reiniciar, até o cliente
+  falar com ele de novo.
+
+Ver o cliente ora como **ativo agora**, ora como **conectado · sem uso agora**, é o esperado: ele não desliga, só
+passa de um para o outro conforme o Hermes usa ou não o Claude Code. Um batimento avulso também o deixa como
+**ativo agora** por até 5 minutos.
 
 ## Operação
 
@@ -346,8 +366,8 @@ acessos das contas nunca vão para o log.
 | situação | o que é | o que fazer |
 | --- | --- | --- |
 | em dia | o login gravado é o da conta atribuída e tem validade | nada |
-| sem conta | o Swap não tem conta para este cliente | painel: Contas → Computadores permitidos; ver se há conta viva |
-| sem contato com o servidor | rede, Swap fora do ar, 403 ou 429 | o login gravado segue valendo até vencer; o cliente tenta de novo sozinho (depois de 403 espera 5 min; de 429, 10 min) |
+| sem conta | o Swap não tem conta para este cliente | painel: Contas → Serviços permitidos; ver se há conta viva |
+| sem contato com o servidor | rede, Swap fora do ar, 403 ou 429 | o login gravado segue valendo até vencer; o cliente tenta de novo sozinho (depois de 403 espera 5 min; de 429, 10 min). Passados 5 min sem falar com o Swap, o painel mostra o cliente como **sem contato** |
 | acesso revogado | o Swap respondeu 401: o cliente foi revogado | parear de novo (abaixo). Revogado, ele **não chama mais** o servidor: 20 respostas 401 em 10 min bloqueiam o IP do servidor, que o `comando-ia` e o `casa-cameras` dividem |
 | não pode gravar o login | há um login feito à mão na pasta (com refresh token) | apague esse login da pasta; o cliente não envia nem sobrescreve login manual |
 | credencial ainda não gravada | a gravação falhou ou o login mudou durante ela | tenta de novo sozinho em até 1 min; se persistir, veja a mensagem no log (permissão da pasta?) |

@@ -1,8 +1,8 @@
 # Swap Plus Servidor no Contabo — instalação e operação
 
 Escrito em 14/11/2026. O Swap Plus Servidor guarda o login (refresh token) de cada conta Claude e é o **único** que
-renova. Os computadores (extensão Swap Plus no VS Code, modo servidor) recebem só o acesso da conta que o servidor
-escolheu para cada um. Funcionamento em [`../SPEC.md`](../SPEC.md).
+renova. Os serviços conectados (a extensão Swap Plus no VS Code e o Swap Plus Cliente, sem VS Code) recebem só o
+acesso da conta que o servidor escolheu para cada um. Funcionamento em [`../SPEC.md`](../SPEC.md).
 
 Segue o padrão dos outros grupos do servidor: stack própria criada pela API do Portainer (nunca pela linha de comando),
 container `swap-plus` com teto de CPU, memória e processos, rede própria, Caddy na frente atrás da Cloudflare e backup
@@ -14,7 +14,7 @@ próprio no `contabo-backup`.
 |---|---|
 | código (cópia deste repositório) | `/opt/swap-plus/app` |
 | compose da stack | `/opt/swap-plus/app/server/deploy/compose.yaml` (o Portainer guarda a cópia que está valendo) |
-| cofre (logins, computadores, regras) | `/opt/swap-plus/data/store.enc` e a cópia anterior `store.enc.1` — pasta 1000:1000, 700 |
+| cofre (logins, serviços, regras) | `/opt/swap-plus/data/store.enc` e a cópia anterior `store.enc.1` — pasta 1000:1000, 700 |
 | avisos ao dono (caixa de saída dos e-mails) | `/opt/swap-plus/data/avisos/` — um `aviso-*.json` por aviso (pasta 700, arquivos 600, 1000:1000); o host lê e entrega ao Painel do Servidor ([Avisos por e-mail](#avisos-por-e-mail-ao-dono)) |
 | segredos | `/etc/swap-plus/secrets/` — `swap_plus_master_key`, `google_client_id`, `google_client_secret` (1000:1000, 400); `/etc/swap-plus` é só do root (700) |
 | imagem | `swap-plus:<versão>`, construída no host; a versão está na variável `SWAP_PLUS_VERSAO` da stack |
@@ -49,7 +49,7 @@ passo à mão como `[feito]` ou `[falta]`.
 
 - Na Cloudflare: o registro `swap.assistentes.si` apontando para o IP do servidor, **proxied** (nuvem laranja). O
   cliente é o Node do VS Code, não um navegador: esse nome não pode ter desafio de robô (Bot Fight Mode, "Under
-  Attack", desafio gerenciado), senão os computadores recebem uma página em vez de JSON.
+  Attack", desafio gerenciado), senão os serviços recebem uma página em vez de JSON.
 - No Google Cloud: o cliente OAuth do login com Google (ver [Cliente Google](#cliente-google)).
 
 **1. Código no servidor** (só `.dockerignore`, `plus/rules.js` e `server/` entram na imagem):
@@ -150,7 +150,7 @@ docker exec swap-plus node /app/server/src/cli.js status
 sh /opt/swap-plus/app/server/deploy/instalar.sh           # tudo [feito]
 ```
 
-Depois: libere as contas Google, gere o código de conexão e ligue os computadores (seções abaixo).
+Depois: libere as contas Google, gere o código de conexão e ligue os serviços (seções abaixo).
 
 ## Atualizar a versão
 
@@ -170,8 +170,11 @@ docker logs --tail 20 swap-plus                            # "[início] Swap Plu
   simulação mostra o diff).
 - Código novo sem versão nova no `server.js`: use outra etiqueta, `instalar.sh --apply --versao 2.0.0-2`, e ponha essa
   etiqueta no `SWAP_PLUS_VERSAO`.
-- O container fica fora do ar por alguns segundos. Os computadores tentam de novo no próximo contato (30 s). Ao parar,
-  o servidor termina de gravar o cofre (a stack dá 30 s para isso).
+- O container fica fora do ar por alguns segundos. Os serviços tentam de novo no próximo contato (30 s). Ao parar,
+  o servidor termina de gravar o cofre (a stack dá 75 s para isso).
+- Desde a 2.5.3, nos 5 minutos depois da subida o painel mostra como **aguardando contato · o servidor reiniciou há
+  pouco** o serviço sem uso que ainda não falou com o servidor novo (o cliente do Hermes, sem uso, só consulta de 2
+  em 2 minutos). Passa sozinho. Quem continuar calado depois disso aparece como **sem contato**.
 - **Voltar:** o mesmo comando com a versão anterior. O cofre é o mesmo, então só dá para voltar enquanto o formato
   dele não mudar.
 - **Limpar:** `docker image ls swap-plus`. Guarde as duas últimas e apague o resto com `docker image rm swap-plus:<velha>`.
@@ -194,45 +197,50 @@ docker restart swap-plus
 
 ## Liberar contas Google
 
-Só o administrador entra no painel (variável `SWAP_PLUS_ADMIN_EMAILS` da stack, definida no Portainer). As contas Google liberadas só conectam computadores:
+Só o administrador entra no painel (variável `SWAP_PLUS_ADMIN_EMAILS` da stack, definida no Portainer). As contas Google liberadas só conectam serviços:
 
 ```sh
 docker exec swap-plus node /app/server/src/cli.js allow fulano@gmail.com
 docker exec swap-plus node /app/server/src/cli.js help        # os outros comandos (listar, tirar…)
 ```
 
-## Ligar um computador (código de conexão)
+## Ligar um serviço (código de conexão)
 
 ```sh
 docker exec swap-plus node /app/server/src/cli.js pair
 ```
 
 O comando mostra um código `swapplus1:…`. No VS Code do computador: Ctrl/Cmd+Shift+P → **Swap Plus: Conectar ao
-servidor** → cole o código. O código vale 10 minutos, serve para **um** computador só, e gerar outro invalida o
-anterior. Sem certificado próprio (`TLS_MODE=off`), o computador confere o certificado normal do endereço (o da
-Cloudflare).
+servidor** → cole o código. O código vale 10 minutos, serve para **um** serviço só, e gerar outro invalida o
+anterior. Sem certificado próprio (`TLS_MODE=off`), o serviço confere o certificado normal do endereço (o da
+Cloudflare). Num serviço sem VS Code (o Swap Plus Cliente), o código entra pelo `swap-plus-cliente conectar`
+([`cliente/README.md`](../../cliente/README.md#instalar-e-conectar)).
 
 Ao conectar pela primeira vez, a extensão oferece enviar os logins daquele computador para o servidor.
 
-## Revogar um computador
+## Revogar um serviço
 
 ```sh
 docker exec swap-plus node /app/server/src/cli.js devices          # lista com os ids
 docker exec swap-plus node /app/server/src/cli.js revoke <id>      # basta o começo do id, se não houver outro igual
 ```
 
-O token do computador para de valer na hora. Para ligar de novo, gere outro `pair`.
+O token do serviço para de valer na hora. Para ligar de novo, gere outro `pair`.
 
 ## Estado e logs
 
 ```sh
-docker exec swap-plus node /app/server/src/cli.js status   # contas, uso, computadores, últimos eventos
+docker exec swap-plus node /app/server/src/cli.js status   # contas, uso, serviços, últimos eventos
 docker logs --tail 200 swap-plus                            # ou -f para acompanhar, --since 1h
 docker inspect -f '{{.State.Health.Status}}' swap-plus      # healthy
 curl -s http://127.0.0.1:14950/v1/health
 ```
 
 O servidor nunca põe token em log. Os logs giram em 3 arquivos de 5 MB.
+
+No `status` e no `devices`, "visto há …" conta do último batimento do serviço, não do último contato. Um serviço sem
+uso (o cliente do Hermes entre uma tarefa e outra) pode aparecer ali como "visto há 3 h" e estar conectado. Quem
+mostra o contato é o painel, em **Serviços**: **ativo agora**, **conectado · sem uso agora** ou **sem contato**.
 
 ## Avisos por e-mail ao dono
 
@@ -251,9 +259,12 @@ e-mail da conta na página da Claude, copiar o código e colar no painel (ou `/l
 
 Como chega ao e-mail: o Swap Plus **só grava um arquivo** por aviso em `/opt/swap-plus/data/avisos/` (no container,
 `/data/avisos/`), no mesmo formato do `servidor-aviso` do servidor (`aviso-AAAAMMDD-HHMMSS-<8 hex>.json` com
-`{"id","assunto","texto","criado_em"}`, gravado de forma atômica). Um processo do host, fora do container, lê essa pasta a cada
-minuto e entrega ao Painel do Servidor, que manda o e-mail. O container não usa rede nem senha para isso. Avisos com mais de 48 h
-saem da pasta sozinhos (e nunca passam de 500 arquivos).
+`{"id","assunto","texto","criado_em"}`, gravado de forma atômica). No host, fora do container, o
+`/usr/local/sbin/swap-plus-avisos` (fonte: `server/deploy/swap-plus-avisos`; cópia em
+`/opt/server-contabo/scripts/swap-plus/`) roda a cada minuto pelo `/etc/cron.d/swap-plus-avisos`, confere cada arquivo e entrega
+ao `servidor-aviso`; o Painel do Servidor manda o e-mail ao dono. O container não usa rede nem senha para isso, e nenhuma chave de
+e-mail fica com o Swap Plus. Avisos com mais de 48 h saem da pasta sozinhos (e nunca passam de 500 arquivos). Funciona assim desde
+15/11/2026. Teste feito nesse dia: o aviso "Swap Plus: avisos por e-mail ligados" saiu na 1ª tentativa.
 
 ```sh
 ls -la /opt/swap-plus/data/avisos/                                   # avisos ainda não levados pelo host
@@ -273,7 +284,9 @@ servidor só começa a contar: o primeiro resumo automático sai na segunda segu
 
 Para **desligar** tudo: `NOTICES_ENABLED: "0"` no `environment` do compose e atualizar a stack (nada mais é gravado na pasta). O padrão
 (sem a variável) é ligado. O log da subida diz `[avisos] avisos por e-mail ao dono ligados` ou `desligados`; uma falha ao gravar
-um aviso aparece como `[avisos] não consegui gravar o aviso ao dono…` (o servidor segue normal).
+um aviso aparece como `[avisos] não consegui gravar o aviso ao dono…` (o servidor segue normal). Outro jeito, sem mexer na stack:
+apagar o arquivo do cron no host (`/etc/cron.d/swap-plus-avisos`). Aí o servidor continua gravando os avisos na pasta, mas ninguém os
+entrega.
 
 ## Backup e restauração
 
@@ -322,13 +335,13 @@ tar -C /etc/swap-plus --numeric-owner -xf $R/secrets.tar   # SÓ se a chave sumi
 install -o 1000 -g 1000 -m 600 $R/store.enc /opt/swap-plus/data/store.enc
 [ ! -f $R/store.enc.1 ] || install -o 1000 -g 1000 -m 600 $R/store.enc.1 /opt/swap-plus/data/store.enc.1
 docker start swap-plus
-docker logs --tail 20 swap-plus                             # "[cofre] N conta(s), M computador(es)"
+docker logs --tail 20 swap-plus                             # "[cofre] N conta(s), M serviço(s)"
 docker exec swap-plus node /app/server/src/cli.js status
 rm -rf /root/swap-plus-restauro
 ```
 
 **Atenção:** o refresh token é de uso único. Um cofre de horas atrás traz como **"precisa de login novo"** as contas
-que o servidor renovou depois do backup. Computadores, contas, regras e histórico voltam inteiros. Para cada conta
+que o servidor renovou depois do backup. Serviços, contas, regras e histórico voltam inteiros. Para cada conta
 marcada, use **Entrar de novo** no painel (Contas → conta N) ou faça login com ela de novo num computador do administrador
 (a extensão envia o login novo ao servidor). O servidor também manda um e-mail por conta que parou de valer.
 
@@ -358,17 +371,7 @@ abre com esta chave (chave errada?) — nada foi alterado`. O servidor não mexe
    docker start swap-plus                                               # sobe com o cofre vazio
    ```
    Guarde a chave nova fora do servidor. Depois **entre de novo em cada conta Claude** (login num computador
-   conectado; a extensão envia ao servidor), gere um código de conexão (`pair`) para cada computador e reconecte,
+   conectado; a extensão envia ao servidor), gere um código de conexão (`pair`) para cada serviço e reconecte,
    libere de novo as contas Google (`allow`) e refaça as regras e os ajustes por conta.
 
 Não existe troca de chave: uma chave nova sempre significa um cofre novo.
-
-
-## Avisos por e-mail (desde 15/11/2026)
-
-O servidor grava avisos para o dono em `/opt/swap-plus/data/avisos/` (login que vence em menos de 3 dias, login
-que parou de valer, cofre sem gravar). No host, `/usr/local/sbin/swap-plus-avisos` (fonte:
-`server/deploy/swap-plus-avisos`; cópia em `/opt/server-contabo/scripts/swap-plus/`) roda a cada minuto pelo
-`/etc/cron.d/swap-plus-avisos`, confere cada arquivo e entrega ao `servidor-aviso`; o Painel do Servidor manda o
-e-mail ao dono. Nenhuma chave de e-mail fica com o Swap Plus. Desligar: `NOTICES_ENABLED=0` na stack, ou apagar o
-arquivo do cron. Teste feito em 15/11/2026: o aviso "Swap Plus: avisos por e-mail ligados" saiu na 1ª tentativa.

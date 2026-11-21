@@ -6,27 +6,35 @@ Desde a **3.0** funciona só com o **servidor Swap Plus** (pasta [`server/`](../
 [smith89k/claude-swap-status](https://github.com/smith89k/claude-swap-status) (MIT) e foi reescrita aqui em `plus/`.
 
 Passo a passo completo, para quem usa: **[MANUAL](../MANUAL.md)**. O que mudou na 3.0:
-**[NOVIDADES-3.0](../NOVIDADES-3.0.md)**.
+**[NOVIDADES-3.0](../NOVIDADES-3.0.md)**; na 3.2: **[NOVIDADES-3.2](../NOVIDADES-3.2.md)**.
 
 ## Em poucas palavras (versão 3.0)
 
 - **Começar:** rodar o comando de instalação (abaixo) → abrir o VS Code → clicar no Swap Plus na barra de baixo (ela
   mostra *não conectado — clique para entrar com Google*) → **Entrar com Google**, no aviso que aparece. O código de
   conexão (**Colar código**, no mesmo aviso) é a alternativa. Os dois botões também ficam na tela de Configurações
-  (botão **Configurações** do aviso), nos cartões **Swap Plus** (em **Sua conta**) e **Servidor**.
+  (botão **Configurações** do aviso), no cartão **Conexão**.
 - **Servidor Swap Plus:** `https://swap.assistentes.si`. É o único que guarda e renova os logins das contas Claude.
-  Os computadores recebem só o **acesso** da conta que o servidor escolheu para cada um.
+  Os serviços conectados (cada VS Code com a extensão, o cliente do Hermes) recebem só o **acesso** da conta que o
+  servidor escolheu para cada um.
 - **O acesso dura cerca de 8 horas.** O servidor renova sozinho, 2 horas antes de vencer.
-- **O login vence de vez em cerca de um mês.** O painel avisa 3 dias antes. Aí basta entrar de novo com aquela conta:
+- **O login vence de vez em cerca de um mês.** Faltando menos de 3 dias, o painel avisa: no topo, no histórico e na
+  linha da conta, que passa a mostrar **Fazer login até …** com a data e a hora (depois de vencer, **Login venceu em
+  …**). O dono também recebe e-mails: um resumo toda segunda às 8h, com as contas que vencem nos 7 dias seguintes, e
+  um aviso de cada conta quando falta menos de 1 dia
+  ([como ajustar](../server/deploy/LEIA-ME.md#avisos-por-e-mail-ao-dono)). Aí basta entrar de novo com aquela conta:
   no painel (**Entrar de novo** no cartão da conta) ou com `/login` no Claude Code de um computador do administrador
   (a extensão manda o login novo ao servidor).
 - **Contas novas:** no painel (**Contas → + Adicionar conta**, pela assinatura Claude, sem computador) ou com `/login`
   no Claude Code de um computador do administrador.
 - **Painel web** no mesmo endereço, com login pelo Google. Só o administrador (a conta Google definida no servidor)
   entra no painel. Menu: **Contas** (a fila da troca, **+ Adicionar conta**, **Entrar de novo**, os ajustes e os
-  **Computadores permitidos** de cada conta, as regras de troca), **Computadores** (a conta Claude logada em cada um;
-  renomear, trocar de conta, desconectar) e **Usuários** (as contas Google que podem conectar computadores; não entram
-  no painel). No topo: **Histórico**, **Atualizar** e **Minha conta** (kit de recuperação e sessões abertas).
+  **Serviços permitidos** de cada conta, as regras de troca), **Serviços** (tudo o que está conectado ao Swap: a
+  conta Claude logada em cada um e a situação dele — **ativo agora**, **conectado · sem uso agora**, **aguardando
+  contato** ou **sem contato**; renomear, trocar de conta, desconectar) e **Usuários** (as contas Google que podem
+  conectar serviços; não entram no painel). No topo: **Histórico**, **Atualizar** e **Minha conta** (kit de
+  recuperação e sessões abertas). Um VS Code aberto e conectado aparece em **Serviços** como **ativo agora**: o
+  batimento de 30 s conta como uso.
 - **Tela de login do Claude Code:** enquanto o computador está conectado, a extensão a desliga
   (`claudeCode.disableLoginPrompt`) e volta ao normal ao desconectar.
 - **Windows:** se o Claude Code do Windows usar o Gerenciador de Credenciais do Windows, a extensão avisa e não grava
@@ -68,36 +76,76 @@ Daqui para baixo: detalhes técnicos, para quem mexe no código.
   computador do administrador) e **Desligar o Swap Plus**. Escolher uma conta pede a troca ao servidor. Sem conexão
   (ou com o acesso recusado), o clique mostra um aviso com **Entrar com Google**, **Colar código** e
   **Configurações**; desligado, um aviso com **Ligar Swap Plus** e **Configurações**.
-- **Tela de Configurações** (aba dentro do VS Code), de cima para baixo: cartão **Swap Plus** (a chave liga/desliga e
-  **Sua conta**: a conta Google deste computador com o botão **Sair**, ou **Entrar com Google** / **Colar código**);
-  cartão **Servidor** (situação, endereço, **Entrar com Google** / **Colar código** / **Desconectar**, **Outro
-  endereço…** e os **Computadores conectados**, com a conta de cada um e o botão **Revogar**); **Troca automática**
-  (a chave e **Consultar o servidor agora**); **Regras** (sliders de "avisar em X%" e "trocar em Y%" para cada
-  limite, estratégia, **Computadores: Separados/Juntos**, **Avançado**, **Desfazer** / **Salvar regras**);
-  **Contas** (ajustes por conta, **Usar esta conta**, **+ Adicionar conta**, que só mostra o mesmo aviso da lista);
-  **Exibição**; **Atualizações da extensão** (**Verificar agora**); **Histórico**.
-- **Comandos da paleta** (`Cmd/Ctrl + Shift + P`, todos começam com **Swap Plus:**): **Trocar conta**, **Configurar
-  trocas automáticas** (abre a tela de Configurações), **Ligar/desligar o Swap Plus (tudo)**, **Ligar/desligar troca
-  automática**, **Atualizar uso**, **Trocar para a melhor conta (o servidor escolhe)**, **Verificar atualizações**,
-  **Conectar ao servidor** e **Desconectar do servidor**. Saíram na 3.0: **Adicionar conta**, **Export Me**, **Export
-  Other** e **Importar contas**.
-- **Ligar/desligar o Swap Plus**: opção **Desligar o Swap Plus** na lista da barra, a chave do cartão **Swap Plus** ou
-  o comando da paleta (`swapPlus.enabled`). Desligado, não fala com o servidor nem grava nada: o Claude Code fica
-  normal.
+- **Tela de Configurações** (aba dentro do VS Code, com o título **Swap Plus — Configurações**). Desde a 3.2.0 mostra
+  só o que é **deste VS Code**. Saíram dela a chave da troca automática e **Consultar o servidor agora**, o cartão
+  **Regras**, os ajustes de cada conta, **+ Adicionar conta**, a lista dos outros serviços conectados (com
+  **Revogar**) e o **Histórico**: contas, regras de troca, usuários, os outros serviços e o histórico ficam no painel
+  do servidor. De cima para baixo:
+  - **cabeçalho** *Swap Plus neste VS Code*: a chave liga/desliga e a frase *Desligado, este VS Code para de falar com
+    o servidor e de trocar de conta. Os outros serviços não mudam.*;
+  - cartão **Conexão**: a situação (**Conectado a** *endereço*, **Conectando…**, **Não conectado**, **Servidor fora do
+    ar**, **Acesso recusado** ou **Desligado**). Conectado: o nome deste serviço no servidor (*Este serviço: …*), a
+    conta Google com que entrou (ou *entrou com código de conexão*), o último contato e o botão **Sair**. Sem conexão:
+    **Entrar com Google**, **Colar código** e **Outro endereço…** (com o acesso recusado ou o endereço mudado
+    aparecem os dois grupos: entrar de novo, ou sair de vez). Também ficam aqui os avisos deste computador: onde o
+    Claude Code lê o login (Gerenciador de Credenciais do Windows, variável de ambiente), o login do Claude Code
+    recusado pelo servidor, com o botão **Usar a conta do servidor**, a tela de login do Claude Code desligada e
+    outra janela cuidando do login;
+  - cartão **Conta em uso aqui**: a conta que este VS Code está usando (número, apelido, e-mail e plano; sem apelido
+    nem e-mail no modo privado), as barras **Sessão 5h**, **Semanal** e uma por modelo, com quando cada uma renova, e
+    a linha **Troca automática: ligada** (ou **desligada**), só de leitura (*muda-se no painel do Swap*);
+  - no mesmo cartão, **Trocar de conta**: as outras contas em linhas (nome e um resumo do uso), cada uma com o botão
+    **Usar esta conta**. Com a regra **Serviços: Juntos**, aparece a frase *Neste Swap os serviços andam juntos:
+    trocar aqui troca também nos outros que estão em uso.* Conta que não dá para usar fica desabilitada, com o motivo
+    escrito: login morto, ou fora da troca com a troca automática ligada. As contas não liberadas para este serviço
+    (**Serviços permitidos**, no painel) aparecem como as outras, porque o estado que o servidor manda não diz quais
+    são: a recusa chega como aviso de erro (*falha ao trocar de conta: a conta N não está liberada para este
+    serviço…*). O `panel.js` já trata `allowed: false` numa conta (mostra-a desabilitada, com o motivo *Não liberada
+    para este serviço*), mas hoje nem o servidor nem a extensão mandam esse campo;
+  - **Mais opções deste VS Code** (recolhido; abre fechado, e a tela lembra como ficou): **Avisar quando chegar em**
+    (as seis configurações `swapPlus.alerts.*`: liga/desliga e percentual da sessão de 5 horas, do limite semanal e
+    do semanal por modelo), **Exibição** (modo privado, número da conta na barra, semanal por modelo na barra) e
+    **Atualizações da extensão** (**Verificar agora**);
+  - **rodapé**: *Contas, regras de troca, usuários e os outros serviços ficam no painel do Swap.*, o botão **Abrir o
+    painel** (desabilitado sem conexão) e a nota *Só o administrador entra no painel.*
+- **Mensagens da tela** (`plus/media/panel.js` ↔ `handleMessage()`, em `plus/extension.js`). A extensão manda `state`
+  (o estado inteiro, a cada ciclo), `toast {text, kind}` e `busy {on, text}`. O estado (`buildPayload()`) não mudou:
+  a tela ignora os campos que não mostra mais e confere cada campo antes de desenhar (`normalize()`). Um campo que
+  falte não derruba a tela, e um erro ao desenhar uma parte vira um aviso no alto dela, sem parar as outras. A tela
+  manda `ready`, `setEnabled {enabled}`, `connectServer {method}` (`google`, `code` ou `googleOther`),
+  `disconnectServer`, `useServerAccount`, `switch {number}`, `ui {key, value}`, `checkUpdates` e duas novas na 3.2.0:
+  - `saveAlerts {alerts}`: grava os avisos nas configurações deste VS Code (`swapPlus.alerts.*`), **sem falar com o
+    servidor**, e responde com o aviso *Avisos salvos neste VS Code.* A tela manda só o campo que mudou;
+  - `openPanel`: abre o painel no navegador, sempre no endereço guardado na conexão deste VS Code (a tela não manda
+    endereço). Sem conexão, responde com um aviso de erro;
+  - as mensagens antigas (`refresh`, `checkNow`, `setAuto`, `saveRules`, `account`, `add` e `revokeDevice`) continuam
+    sendo aceitas por `handleMessage()`, mas a tela não as manda. Tirar esses controles da tela não protege nada por
+    si só: o servidor continua aceitando esses pedidos de qualquer serviço conectado.
+- **Comandos da paleta** (`Cmd/Ctrl + Shift + P`, todos começam com **Swap Plus:**): **Trocar conta**,
+  **Configurações** (abre a tela de Configurações; na 3.2.0 só o título mudou, o comando continua sendo
+  `swapPlus.openSettings`), **Ligar/desligar o Swap Plus (tudo)**, **Ligar/desligar troca automática** (muda a chave
+  do servidor, que vale para todos os serviços; a tela só mostra como ela está), **Atualizar uso**, **Trocar para a
+  melhor conta (o servidor escolhe)**, **Verificar atualizações**, **Conectar ao servidor** e **Desconectar do
+  servidor**. Saíram na 3.0: **Adicionar conta**, **Export Me**, **Export Other** e **Importar contas**.
+- **Ligar/desligar o Swap Plus**: opção **Desligar o Swap Plus** na lista da barra, a chave no alto da tela de
+  Configurações ou o comando da paleta (`swapPlus.enabled`). Desligado, não fala com o servidor nem grava nada: o
+  Claude Code fica normal. Vale só para este VS Code: os outros serviços não mudam.
 - **Modo privado** (`swapPlus.privacy.hideEmails`): mostra só "Conta 1", "Conta 2"… sem e-mail, apelido ou
   organização. Só muda o que o Swap Plus mostra: o painel de conta do Claude Code continua mostrando o e-mail.
-- **Troca automática**: quem decide é o servidor, com a regra de `rules.js` (`decide()`), a mesma que a extensão usa
-  para mostrar a fila. Regras padrão (`RULE_DEFAULTS`): sessão de 5h em **90%**, semanal em **80%**, Fable em
-  **95%**, estratégia **aproveitar ao máximo** e, quando o Fable acaba, **seguir na mesma conta com o Opus**
-  (`onModelLimit: "sameAccount"`).
+- **Troca automática**: quem decide é o servidor, com a regra de `rules.js` (`decide()`). A extensão não decide troca
+  de conta: do mesmo arquivo ela usa a leitura do uso e as linhas de troca de cada conta (`windows()`, `linesFor()`),
+  de onde saem as cores da barra e a ordem da lista. As regras mudam-se no painel (**Contas → Regras de troca**);
+  delas, a tela da extensão só mostra se a troca automática está ligada e se os serviços andam juntos. Regras padrão
+  (`RULE_DEFAULTS`): sessão de 5h em **90%**, semanal em **80%**, Fable em **95%**, estratégia **aproveitar ao
+  máximo** e, quando o Fable acaba, **seguir na mesma conta com o Opus** (`onModelLimit: "sameAccount"`).
 - **Troca automática de modelo** (3.1, `swapPlus.autoModel.enabled`, ligada por padrão; regra em `modelSwitch.js`):
   quando o Fable da conta em uso acaba (erro "You've hit your Fable limit" visto na conversa) ou chega na linha do
   modelo, o **modelo padrão** do Claude Code neste computador (`model` em `~/.claude/settings.json`) passa para o
   **Opus 5.5**: toda conversa nova já abre nele, na mesma conta. Quando o Fable volta (renovou, ou o computador foi
   para uma conta que tem), o padrão volta ao que era. Só mexe quando o padrão é o Fable (ou o do plano) e só desfaz o
   que ele mesmo trocou; padrão escolhido à mão depois da troca fica como a pessoa deixou. Na regra **Trocar de
-  conta**, o erro de limite do Fable vai primeiro ao servidor (que procura uma conta com Fable); o modelo só muda se
-  não houver conta com Fable.
+  conta** (no painel, em **Quando o limite de um modelo acaba**), o erro de limite do Fable vai primeiro ao servidor
+  (que procura uma conta com Fable); o modelo só muda se não houver conta com Fable.
   **Limite do Claude Code (conferido no 2.1.325):** outra extensão não consegue trocar o modelo de uma conversa já
   aberta. Ela só lê o modelo padrão ao começar, o "modelo reserva" (`fallbackModel`) não vale para limite de uso, e
   não há comando para isso. A conversa que parou continua assim: escolha **Opus 5.5** no seletor de modelo e mande
@@ -113,15 +161,16 @@ Daqui para baixo: detalhes técnicos, para quem mexe no código.
 **Por que existe o servidor.** O login de cada conta Claude é renovado a cada ~8 h, e cada renovação invalida a
 anterior. Com a mesma cópia do login em dois computadores, o que renova primeiro mata a cópia do outro (*Login
 morto*). Por isso **só o servidor** guarda o login completo (com o refresh token) e renova (sozinho, 2 h antes de o
-acesso vencer). Os computadores recebem apenas o acesso (~8 h) da conta que o servidor escolheu para cada um e nunca
-guardam o refresh token. O login em si vence de vez em cerca de um mês (`refreshTokenExpiresAt`): o painel e o
+acesso vencer). Os serviços conectados recebem apenas o acesso (~8 h) da conta que o servidor escolheu para cada um e
+nunca guardam o refresh token. O login em si vence de vez em cerca de um mês (`refreshTokenExpiresAt`): o painel e o
 histórico avisam 3 dias antes.
 
 **Conectar.** Do jeito principal, **Entrar com Google**: `POST /v1/login/start` → abre o `authUrl` no navegador →
 `POST /v1/login/poll` a cada 2 s até `ok` (acesso do computador), `denied` (conta Google não liberada) ou o prazo
 acabar (até 10 min, com **Cancelar**). O administrador libera as contas Google em **Usuários** no painel (o próprio
-administrador não precisa ser liberado). Alternativa: **código de conexão** (painel → **Computadores → Gerar código de
-conexão**; vale 10 min, uma vez só, e traz o endereço e, com certificado próprio, a impressão digital dele).
+administrador não precisa ser liberado). Alternativa: **código de conexão** (painel → **Serviços → Conectar um
+serviço → Gerar código de conexão**; vale 10 min, uma vez só, e traz o endereço e, com certificado próprio, a
+impressão digital dele).
 
 O token do computador fica no cofre de segredos do VS Code. O endereço (`swapPlus.server.url`, padrão
 `https://swap.assistentes.si`) fica nas configurações **do usuário** (`"scope": "machine"`: o `settings.json` de um
@@ -132,7 +181,8 @@ deixa o computador *desconectado: o endereço mudou* até conectar de novo. A ex
 **O que a extensão faz, conectada:**
 
 - a cada **30 s** manda um batimento ao servidor (modelos em uso no Claude Code e qual conta/validade está logada) e
-  recebe as contas, o uso, as regras, o histórico e os computadores conectados. Barra, lista e tela usam esses dados;
+  recebe as contas, o uso, as regras, o histórico e os serviços conectados. Barra, lista e tela usam esses dados; a
+  tela mostra só a parte que é deste VS Code;
 - quando o servidor troca a conta deste computador, ou renova o acesso dela, grava o acesso novo no Claude Code (e os
   dados da conta no `~/.claude.json`), sob as mesmas travas que o Claude Code usa. **Sem refresh token**. A gravação é
   um compare-and-swap: nunca vai por cima de um login novo que ainda não foi para o servidor. Trocando de conta, tira
@@ -147,12 +197,15 @@ deixa o computador *desconectado: o endereço mudou* até conectar de novo. A ex
 - **tela de login do Claude Code**: liga `claudeCode.disableLoginPrompt` (o acesso sem refresh token faria a extensão
   do Claude Code abrir a tela de login quando vencesse) e, ao desligar ou desconectar, volta o valor de antes;
 - **Windows com o Gerenciador de Credenciais** (o Claude Code lendo o login de lá; raro): não grava nada (seria
-  ignorado) e explica na barra e no cartão Servidor. `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` definidas também
-  geram aviso;
+  ignorado) e explica na barra e no cartão **Conexão**. `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` definidas
+  também geram aviso;
 - **várias janelas**: só uma (a "dona", por trava em arquivo) faz o batimento e grava; as outras só leem o estado.
   Troca, limite e gravação rodam numa fila única;
-- troca pela lista, ajustes por conta, regras e troca automática ligada/desligada vão para o servidor e **valem para
-  todos os computadores**. Os avisos ("avisar em X%") e a exibição continuam sendo de cada computador;
+- a troca de conta pedida daqui (pela lista da barra ou por **Usar esta conta**, na tela) vai para o servidor e muda
+  a conta deste VS Code; com a regra **Serviços: Juntos**, os outros serviços em uso trocam junto. O comando
+  **Ligar/desligar troca automática** muda a chave do servidor, que **vale para todos os serviços**. As regras de
+  troca e os ajustes de cada conta mudam-se no painel. Os avisos ("avisar em X%") e a exibição continuam sendo de
+  cada computador;
 - **servidor fora do ar**: a barra mostra *servidor fora do ar · último contato …* e o login do Claude Code não é
   mexido;
 - acesso revogado (o servidor responde 401): para de chamar o servidor (para não estourar o limite de tentativas do
@@ -165,9 +218,10 @@ deixa o computador *desconectado: o endereço mudou* até conectar de novo. A ex
   apagada**: se ela existir, a notificação diz que pode ser apagada (à mão; veja o
   [MANUAL](../MANUAL.md#veio-da-versão-2x)). A extensão não chama nenhum programa de fora para trocar de conta.
 
-**Desconectar** (botão **Desconectar** no cartão **Servidor**, ou **Sair** em **Sua conta**): pergunta entre
-**Desconectar** e **Desconectar e desligar o Swap Plus**; revoga este computador no servidor, apaga o token guardado e
-devolve a tela de login do Claude Code ao que era. Pelo painel: **Computadores → Desconectar**.
+**Desconectar** (botão **Sair** no cartão **Conexão**, ou o comando **Swap Plus: Desconectar do servidor**): pergunta
+entre **Desconectar** e **Desconectar e desligar o Swap Plus**; revoga este computador no servidor, apaga o token
+guardado e devolve a tela de login do Claude Code ao que era. Pelo painel: **Serviços** → abrir a linha do serviço →
+**Desconectar**.
 
 **Servidor e painel.** Especificação do servidor em [`server/SPEC.md`](../server/SPEC.md), do painel em
 [`server/WEB-SPEC.md`](../server/WEB-SPEC.md); instalação, operação, backup e restauração na VPS em
@@ -198,7 +252,7 @@ devolve a tela de login do Claude Code ao que era. Pelo painel: **Computadores �
 | `plus/claudeAuth.js` | ler e gravar o login do Claude Code (Keychain no Mac, `.credentials.json` nos outros), com as travas dele |
 | `plus/serverClient.js` | falar com o servidor (HTTPS, com a impressão digital do certificado quando ele é próprio; `User-Agent: SwapPlus-VSCode/<versão>` em tudo, por causa da Cloudflare), ler o código de conexão, parear e entrar com Google (`loginStart`/`loginPoll`) |
 | `plus/updater.js` | as atualizações da extensão |
-| `plus/media/` | a tela de Configurações |
+| `plus/media/` | a tela de Configurações (`panel.html`, `panel.css` e `panel.js`) |
 | `plus/test/` | testes da extensão com dados simulados (rodam no `plus-release.yml`, no Linux e no Windows) |
 | `plus/scripts/install.sh` / `install.ps1` | instalação a partir das releases (Mac/Linux / Windows) |
 | `plus/scripts/dev-install.sh` | empacota a partir deste código e instala (desenvolvimento) |

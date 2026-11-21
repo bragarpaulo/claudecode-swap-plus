@@ -2,9 +2,13 @@
 
 Painel em `https://swap.assistentes.si/` (mesma origem da API), em português, para o Paulo configurar tudo pelo
 navegador (o VS Code só obedece). Login com Google, **só do administrador** (`ADMIN_EMAILS`, abaixo). As contas Google
-liberadas (`state.allowedEmails`) só conectam computadores pelo VS Code: não entram no painel.
+liberadas (`state.allowedEmails`) só conectam serviços pelo VS Code: não entram no painel.
 Sem dependências de terceiros; sem CDN (CSP só `'self'`). Node 22. Atrás de Caddy + Cloudflare (`TLS_MODE=off`,
 `TRUST_PROXY=1`, `PUBLIC_URL=https://swap.assistentes.si`).
+
+Vocabulário (desde a 2.5.3; ver "2.5.3", no fim): tudo o que se conecta ao Swap — um VS Code, o cliente do Hermes, um robô — é
+um **serviço**. "Computador" é só a máquina em que a pessoa está sentada. Os ids, os endereços e os nomes de campo não mudaram
+(`#computadores`, `?next=computadores`, `devices`).
 
 ## Arquivos
 
@@ -28,9 +32,9 @@ Imagem: `server/web/` vai para `/app/server/web/` (Dockerfile + .dockerignore).
 - Sem `ADMIN_EMAILS` (ou só com entradas que não são e-mail): **painel desligado** — `GET /` e `GET /web/login` mostram a
   página "Painel desligado" (503) explicando o que definir; `/web/api/*` → 503 `{ error: "panel_off" }`; aviso no log na
   subida. Entrada que não é e-mail é ignorada com aviso no log (não derruba o servidor, que renova os logins).
-- O administrador também conecta computadores (login "device" com Google) **sem precisar estar** na lista de liberadas.
+- O administrador também conecta serviços (login "device" com Google) **sem precisar estar** na lista de liberadas.
 - Comparação de e-mail (`emailKey`, google.js) em todo lugar que compara: administrador, lista (liberar, tirar,
-  repetidos), login do painel, login dos computadores e derrubar sessões no `deny`. Minúsculas; em `gmail.com` /
+  repetidos), login do painel, login dos serviços e derrubar sessões no `deny`. Minúsculas; em `gmail.com` /
   `googlemail.com` a parte local perde os pontos e o `+algo` e o domínio vira `gmail.com`
   (`Dono.Exemplo+x@googlemail.com` = `donoexemplo@gmail.com`). Outros domínios: só minúsculas. O e-mail é guardado e
   mostrado como veio (aparado, em minúsculas).
@@ -39,12 +43,12 @@ Imagem: `server/web/` vai para `/app/server/web/` (Dockerfile + .dockerignore).
 
 - `GET /web/login` → cria uma sessão de login do Google do tipo **web** (mesmo cliente OAuth "Claude Swap", mesmo
   retorno `PUBLIC_URL/auth/google/callback`, PKCE + state) e redireciona ao Google. O callback já existente
-  (`server/src/google.js`) distingue o tipo pela sessão do `state`: tipo `device` = fluxo atual dos computadores;
+  (`server/src/google.js`) distingue o tipo pela sessão do `state`: tipo `device` = fluxo atual dos serviços;
   tipo `web` = cria a sessão do painel.
 - Sessão do painel: token de 32 bytes (base64url) no cookie `sp_sess` (`Path=/; HttpOnly; Secure; SameSite=Lax;
   Max-Age=2592000`); no cofre guarda só o sha256 em `state.webSessions[id] = { tokenHash, email, createdAt, lastSeen,
   expiresAt (30 dias), ua (resumo do User-Agent), ip }`. **Só o administrador** ganha sessão:
-  - conta liberada (na lista) que não é administrador → página 403 "Esta conta pode conectar computadores, mas o painel
+  - conta liberada (na lista) que não é administrador → página 403 "Esta conta pode conectar serviços, mas o painel
     é só do administrador." (com "Entrar com outra conta");
   - conta fora de tudo → página 403 "não liberada".
 - A cada pedido do painel o e-mail da sessão precisa continuar administrador (pela `emailKey`): se `ADMIN_EMAILS` mudar
@@ -72,8 +76,8 @@ Imagem: `server/web/` vai para `/app/server/web/` (Dockerfile + .dockerignore).
 | `PATCH /web/api/accounts/:n` | `{ disabled?, threshold?, weeklyThreshold?, modelThreshold?, priority?, alias? }` → `engine.updateAccount` (linhas: 50–100 ou null) |
 | `DELETE /web/api/accounts/:n` | `engine.removeAccount` (a tela pede confirmação) |
 | `POST /web/api/devices/:id/switch` | `{ number \| null }` → `engine.switchDevice(id, number, "painel")` |
-| `DELETE /web/api/devices/:id` | revoga o computador |
-| `POST /web/api/allowed` / `DELETE /web/api/allowed/:email` | libera / tira conta Google **para conectar computadores** (não dá painel). Repetido pela `emailKey` não entra de novo. Liberar o administrador não faz nada (`{ added: false, admin: true }`); tirar o administrador → **409** `{ error: "admin" }` (ele não depende da lista) |
+| `DELETE /web/api/devices/:id` | revoga o serviço |
+| `POST /web/api/allowed` / `DELETE /web/api/allowed/:email` | libera / tira conta Google **para conectar serviços** (não dá painel). Repetido pela `emailKey` não entra de novo. Liberar o administrador não faz nada (`{ added: false, admin: true }`); tirar o administrador → **409** `{ error: "admin" }` (ele não depende da lista) |
 | `POST /web/api/pair-code` | `{ code, connect, expiresAt }` (código de conexão de reserva) |
 | `GET /web/api/sessions` / `DELETE /web/api/sessions/:id` | sessões do painel abertas (qual navegador, quando) |
 | `GET /web/api/recovery-kit` | kit de recuperação (abaixo); exige também `X-CSRF-Token` |
@@ -95,14 +99,19 @@ PanelState:
   adminEmails: [ ... ],                                  // ADMIN_EMAILS (definidos no servidor)
   accounts: [ PublicAccount + { loginExpiresAt, accessExpiresAt, lastRefreshAt, gen, disabled, threshold, weeklyThreshold, modelThreshold, priority, alias, assignedDevices: [{ id, name }] } ],
   rules, ruleDefaults, autoSwitch,
-  devices: [ { id, name, platform, googleEmail, createdAt, lastSeen, active, assigned } ],
-  allowedEmails: [ ... ],                                // contas que podem conectar computadores (como foram guardadas)
+  devices: [ { id, name, platform, googleEmail, createdAt, lastSeen, lastContact, active, connected, presence, assigned } ],
+                                                         // lastContact, connected, presence: presença do serviço, desde a 2.5.3 (ver "2.5.3")
+  allowedEmails: [ ... ],                                // contas que podem conectar serviços (como foram guardadas)
   history: [ { ts, kind, text, device, deviceName } ],   // últimos 100
   warnings: [ { kind, text, account? } ],                // ex.: login que vence em menos de 3 dias, conta morta, Google desligado
   diag, google: { enabled, callbackUrl } }
 ```
 
 ## Telas (uma página, abas ou seções)
+
+> Desenho da 2.1, guardado como registro, com as palavras da época. Os menus de hoje são os da "2.3" (Contas · Serviços ·
+> Usuários), com o que as "2.5.x" mudaram. O que esta lista e a "2.2" chamam de "computador" a tela chama de **serviço**
+> desde a 2.5.3.
 
 1. **Visão geral**: um cartão por conta (número, apelido, e-mail, plano, organização), barras de sessão 5h / semanal /
    por modelo (verde/amarelo/vermelho pelas linhas das regras), quando renova cada janela, quais computadores estão
@@ -184,34 +193,36 @@ Sem perfis de regras: as regras são UMA só (gerais), ficam dentro de **Contas*
 - Lista: participantes da troca primeiro, na ordem da fila (semanal que renova antes primeiro; empate: menos uso);
   embaixo, grupo recolhido **Fora da troca (N)**. Desde a 2.5.1 a lista é uma coluna de linhas que abrem e fecham, com
   as contas em uso no alto (ver "2.5.1"); na 2.5.2 o grupo saiu e as contas fora da troca ficam no fim da lista.
-- Cartão da conta como hoje + **Computadores permitidos**: "Todos" ou caixas por computador (um ou mais).
-  `state.accountDevices["<n>"] = null | [deviceId...]` (null = todos). Remover computador/conta limpa as listas.
+- Cartão da conta como hoje + **Serviços permitidos** ("Computadores permitidos" até a 2.5.2): "Todos" ou caixas por serviço
+  (um ou mais). `state.accountDevices["<n>"] = null | [deviceId...]` (null = todos). Remover serviço/conta limpa as listas.
 - Abaixo da lista, seção **Regras de troca** (o formulário de regras de hoje: sessão/semanal/modelo %, modelo
   preferido, estratégia, horas, intervalo, margem, limite do modelo) + **troca automática** ligada/desligada.
-- Nas Regras de troca, escolha **Computadores** (`rules.devicePlacement`, logo abaixo da troca automática; faz parte do
-  rascunho: só vale em "Salvar regras"; "Voltar ao padrão" volta para Separados):
-  - **Separados** (`"separate"`, padrão): "Cada computador numa conta (cada um com a sua sessão de 5 h)."
+- Nas Regras de troca, escolha **Serviços** ("Computadores" até a 2.5.2; `rules.devicePlacement`, logo abaixo da troca
+  automática; faz parte do rascunho: só vale em "Salvar regras"; "Voltar ao padrão" volta para Separados):
+  - **Separados** (`"separate"`, padrão): "Cada serviço numa conta (cada um com a sua sessão de 5 h)."
   - **Juntos** (`"together"`): "Todos na mesma conta, a do topo da fila, e trocam juntos (gastam a mesma sessão de 5 h)."
-  - Aviso: um computador só usa contas liberadas para ele (Computadores permitidos); se não puder usar a conta dos outros,
-    fica na melhor conta liberada para ele. O resumo do topo mostra "computadores juntos na mesma conta" quando Juntos.
+  - Aviso: "Vale para os serviços ativos agora. Um serviço só usa contas liberadas para ele (“Serviços permitidos”, no cartão
+    da conta): se não puder usar a conta dos outros, fica na melhor conta liberada para ele." O resumo do topo mostra
+    "serviços juntos na mesma conta" quando Juntos.
   - Vai em `PUT /web/api/rules { rules: { devicePlacement } }` (rota de hoje; o motor recusa outro valor com 400 `invalid_rules`).
-    Motor: SPEC.md, "Regra Computadores".
+    Motor: SPEC.md, "Regra Serviços".
 
-**Serviços** (o menu "Computadores" até a 2.5.0): grade de quadradinhos (linhas que abrem e fecham desde a 2.5.2), um por computador: nome (renomear), sistema, usuário (conta Google), último
-contato (ativo/parado), **conta Claude logada nele agora** (número + e-mail) com o uso dela em barras pequenas; ações:
-trocar de conta (só entre as permitidas para esse computador; "melhor conta"), desconectar. Bloco "Conectar um
-computador" (passo a passo + código de reserva).
+**Serviços** (o menu "Computadores" até a 2.5.0): grade de quadradinhos (linhas que abrem e fecham desde a 2.5.2), um por serviço: nome (renomear), sistema, usuário (conta Google), último
+contato (ativo/parado até a 2.5.2; desde a 2.5.3, uma das quatro situações de presença: ver "2.5.3"), **conta Claude logada
+nele agora** (número + e-mail) com o uso dela em barras pequenas; ações: trocar de conta (só entre as permitidas para esse
+serviço; "melhor conta"), desconectar. Bloco "Conectar um serviço" ("Conectar um computador" até a 2.5.2; passo a passo +
+código de reserva).
 
-**Usuários** (colunas, ordenação e confirmação na linha: ver "2.5.2"): tabela (e-mail, papel: Administrador/Usuário, computadores conectados, desde quando, ações): liberar
-(e-mail), tirar (admin não sai). É quem pode conectar computadores; o painel continua só do administrador.
+**Usuários** (colunas, ordenação e confirmação na linha: ver "2.5.2"): tabela (e-mail, papel: Administrador/Usuário, serviços conectados, desde quando, ações): liberar
+(e-mail), tirar (admin não sai). É quem pode conectar serviços; o painel continua só do administrador.
 
-**Regra de uso no motor**: um computador só recebe/troca para contas cujo `accountDevices` é null ou contém o id
-dele. Regras de troca: as gerais (`{...RULE_DEFAULTS, ...state.rules}`), iguais para todos. Com **Computadores: Juntos**
-a permissão continua valendo mais: a conta do grupo nunca é posta num computador que não pode usá-la.
+**Regra de uso no motor**: um serviço só recebe/troca para contas cujo `accountDevices` é null ou contém o id
+dele. Regras de troca: as gerais (`{...RULE_DEFAULTS, ...state.rules}`), iguais para todos. Com **Serviços: Juntos**
+a permissão continua valendo mais: a conta do grupo nunca é posta num serviço que não pode usá-la.
 
 **Rotas** (além das de hoje): `PUT /web/api/accounts/:n/devices { devices: null | [id] }`,
 `PATCH /web/api/devices/:id { name }`, `PUT /web/api/rules` (já existe), e as de "Adicionar conta pela assinatura".
-PanelState: cada conta ganha `devices: null | [id]`; cada computador ganha `allowedAccounts: [n]` (calculado).
+PanelState: cada conta ganha `devices: null | [id]`; cada serviço ganha `allowedAccounts: [n]` (calculado).
 
 **Adicionar conta pela assinatura** (como o `/login` do Claude Code com código colado):
 `POST /web/api/claude-login/start` → `{ loginId, authUrl }` (PKCE + state guardados em memória, 10 min);
@@ -230,7 +241,7 @@ mas para uma conta que já existe, com o e-mail dela já pedido na página da Cl
 - A caixa de adicionar vira "Entrar de novo na Conta N", o passo 2 diz "Entre com <e-mail> e autorize. Se a página abrir com
   outra conta Claude, saia dela primeiro (ou use uma janela anônima)." e o botão de concluir vira "Concluir".
 - Situação "login morto" e os avisos do topo (`warnings`) apontam para o botão: "clique em “Entrar de novo” no cartão da conta N
-  (ou entre com ela no Claude Code de um computador do administrador)".
+  (ou entre com ela no Claude Code de um serviço do administrador)".
 
 **Rotas** (as mesmas do "Adicionar conta pela assinatura"):
 - `POST /web/api/claude-login/start { loginHint? }` → `{ loginId, authUrl, expiresAt }` (+ `loginHint`, quando usado).
@@ -247,8 +258,11 @@ mas para uma conta que já existe, com o e-mail dela já pedido na página da Cl
     mensagem em destaque. Histórico: "Conta N adicionada/atualizada pelo painel (login da assinatura) — o pedido era entrar de novo
     com Y, mas entrou com X".
 
-**Avisos por e-mail ao dono** (SPEC.md, "Avisos por e-mail ao dono"): login vencendo em menos de 3 dias (1 por conta por dia),
-conta que morreu (na hora) e cofre sem gravar (1 por incidente). Cada aviso explica como renovar pelo **Entrar de novo** deste painel.
+**Avisos por e-mail ao dono** (SPEC.md, "Avisos por e-mail ao dono"): conta que morreu (na hora), cofre sem gravar (1 por
+incidente) e o vencimento dos logins. Na 2.4 o do vencimento saía 1 vez por conta por dia, desde 3 dias antes. Desde a 2.5.0 são
+dois: um **resumo semanal** (padrão: segunda às 8h) com as contas cujo login vence nos 7 dias seguintes, e **um e-mail por
+login** quando falta menos de 1 dia para ele vencer (`NOTICE_LOGIN_DAYS`). O alerta de 3 dias continua no painel e no histórico,
+sem e-mail. Os avisos de login explicam como renovar pelo **Entrar de novo** deste painel.
 
 ## 2.5.1 — Menu "Serviços" e contas em linhas que abrem e fecham (pedido do dono, 20/11/2026)
 
@@ -257,23 +271,24 @@ Só a tela mudou (`server/web/`): nenhuma rota nem campo novo. O PanelState já 
 
 **Menu: Contas · Serviços · Usuários.** O menu "Computadores" passou a se chamar **Serviços** (o rótulo da aba e o título
 da página dela). Só o nome na tela: o id da seção, o endereço `#computadores` e o `?next=computadores` do login continuam.
-Os outros textos com "computadores" não mudaram (regra "Computadores: Separados/Juntos", "Computadores permitidos",
-"Computadores nela", "Em N computadores", "Conectar um computador"…).
+Os outros textos com "computadores" não mudaram na 2.5.1 (regra "Computadores: Separados/Juntos", "Computadores permitidos",
+"Computadores nela", "Em N computadores", "Conectar um computador"…): passaram a "serviços" na 2.5.3 (ver "2.5.3"), e é com os
+nomes de hoje que esta seção e a "2.5.2" os citam.
 
 **Contas: uma coluna de linhas** (no lugar da grade de cartões). Cada conta é uma linha que abre e fecha:
 - A página abre com **todas recolhidas**. O que está aberto fica só na memória da página (por número da conta): continua
   igual nas atualizações de 30 s e some ao recarregar.
 - **Linha recolhida** (cerca de duas linhas de texto na tela larga; empilhada abaixo de 960 px):
-  - "Conta N", o apelido (se houver) e o e-mail; etiquetas "Em N computadores" (conta em uso), "Nº na fila" e "Login morto";
+  - "Conta N", o apelido (se houver) e o e-mail; etiquetas "Em 1 serviço" / "Em N serviços" (conta em uso), "Nº na fila" e "Login morto";
   - **uma barra de uso**: a do limite mais perto de parar a conta = a maior porcentagem entre sessão 5h, semanal e os de
     modelo (empate: sessão, depois semanal), com o rótulo ("Sessão 5h", "Semanal", "Fable"…), a porcentagem, as cores de
     sempre (pela linha de troca daquele limite) e "renova <quando>" ("sem uso nas últimas 5 horas" na sessão parada). Sem
     leitura de uso: "Ainda sem leitura de uso." ("Sem dados de uso." no login morto);
   - **Participa da troca** / **Fora da troca**: só um indicador (bolinha + texto). O liga/desliga fica no cartão aberto.
 - **Clicar na linha abre o cartão ali mesmo** (sem janela), embaixo dela, com tudo o que o cartão já tinha: plano e
-  organização, situação, as barras todas, computadores nela, computadores permitidos, acesso, login, aviso com "Entrar de
+  organização, situação, as barras todas, serviços nela, serviços permitidos, acesso, login, aviso com "Entrar de
   novo", "Participa da troca", "Ajustes desta conta" e "Remover conta". Clicar de novo fecha.
-- **Ordem**: primeiro as contas **em uso** (com computador nelas agora — `assignedDevices`), inclusive uma conta fora da
+- **Ordem**: primeiro as contas **em uso** (com serviço nelas agora — `assignedDevices`), inclusive uma conta fora da
   troca que esteja em uso; depois as outras que participam, na ordem da fila. A etiqueta "Nº na fila" é a posição na
   fila, não na lista (a conta em uso sobe sem mudar de posição). As que não participam e não estão em uso continuam no
   grupo recolhido **Fora da troca (N)** (até a 2.5.2, que acabou com o grupo: ver "2.5.2").
@@ -302,18 +317,20 @@ ordem da fila → as fora da troca sem uso. A frase útil do grupo foi para a "S
 novo, abaixo)".
 
 **Serviços: linhas que abrem e fecham**, como as contas (no lugar da grade de quadradinhos):
-- A página abre com **todos recolhidos**; o que está aberto fica só na memória da página (por id do computador) e
-  continua igual nas atualizações de 30 s. Ordem: os ativos primeiro; depois, por nome (como antes).
-- **Linha recolhida** (cerca de duas linhas na tela larga; empilhada abaixo de 960 px): bolinha de ativo/parado e o
-  nome; sistema e quem conectou (e-mail do Google ou "conectado por código"); a conta Claude de agora — "Conta N" com
-  **uma barra**, a mesma da linha da conta (o limite de maior porcentagem; o nome do limite e "renova <quando>" vão na
-  linha de baixo), ou "Sem conta Claude agora" / "Conta N (não existe mais no servidor)"; e o contato ("ativo agora",
-  ou "parado" e "visto <quando>", ou "ainda não apareceu"). Conta de login morto: etiqueta "Login morto" na linha.
+- A página abre com **todos recolhidos**; o que está aberto fica só na memória da página (por id do serviço) e
+  continua igual nas atualizações de 30 s. Ordem: os ativos primeiro; depois, por nome (como antes; desde a 2.5.3, pela
+  situação de presença e depois por nome: ver "2.5.3").
+- **Linha recolhida** (cerca de duas linhas na tela larga; empilhada abaixo de 960 px): bolinha de ativo/parado (desde a
+  2.5.3, uma cor para cada situação de presença) e o nome; sistema e quem conectou (e-mail do Google ou "conectado por
+  código"); a conta Claude de agora — "Conta N" com **uma barra**, a mesma da linha da conta (o limite de maior porcentagem;
+  o nome do limite e "renova <quando>" vão na linha de baixo), ou "Sem conta Claude agora" / "Conta N (não existe mais no
+  servidor)"; e o contato (até a 2.5.2: "ativo agora", ou "parado" e "visto <quando>", ou "ainda não apareceu"; desde a
+  2.5.3, a situação em cima e o detalhe embaixo: ver "2.5.3"). Conta de login morto: etiqueta "Login morto" na linha.
 - **Cartão aberto** = o que o quadradinho tinha: sistema, usuário e contato; "Conta Claude agora" com as barras todas;
   "Trocar para" (só as contas permitidas); **Renomear** (o campo aparece no alto do cartão) e **Desconectar**.
 - Mesma acessibilidade das contas: a linha é um `<button>` com `aria-expanded`/`aria-controls`; o corpo é irmão dele.
   Nome digitado e ainda não salvo: a linha mostra "Nome não salvo", mesmo com o cartão fechado.
-- O bloco "Conectar um computador" continua embaixo da lista.
+- O bloco "Conectar um serviço" continua embaixo da lista.
 
 **Usuários: tabela** com as colunas **Usuário** (e-mail, com "você"), **Situação** (Administrador / Liberado / Não
 liberado — este saiu da lista mas ainda tem serviço conectado), **Serviços** (quantos e quais), **Desde** e as ações.
@@ -332,11 +349,12 @@ liberado — este saiu da lista mas ainda tem serviço conectado), **Serviços**
 
 **Busca em cada aba** (Contas, Serviços, Usuários): um campo acima da lista, que filtra enquanto a pessoa digita.
 - Procura em **todos os dados do item**, inclusive os que só aparecem com o cartão aberto. Conta: "Conta N", apelido,
-  e-mail, plano, organização, "participa da troca" / "fora da troca", "em uso" e os nomes dos computadores nela,
-  "Nº na fila", "login morto", "Fazer login até…" / "Login venceu…", "sem leitura de uso", computadores permitidos.
-  Serviço: nome, sistema, e-mail de quem conectou ou "conectado por código", "ativo agora" / "parado" / "ainda não
-  apareceu", "Conta N" (ou "sem conta"), apelido e e-mail dessa conta, "login morto". Usuário: e-mail, situação,
-  "você" e os nomes dos serviços. As porcentagens não entram.
+  e-mail, plano, organização, "participa da troca" / "fora da troca", "em uso" e os nomes dos serviços nela,
+  "Nº na fila", "login morto", "Fazer login até…" / "Login venceu…", "sem leitura de uso", serviços permitidos.
+  Serviço: nome, sistema, e-mail de quem conectou ou "conectado por código", o contato (até a 2.5.2: "ativo agora" /
+  "parado" / "ainda não apareceu"; desde a 2.5.3, o texto inteiro da situação de presença: ver "2.5.3"), "Conta N" (ou
+  "sem conta"), apelido e e-mail dessa conta, "login morto". Usuário: e-mail, situação, "você" e os nomes dos serviços.
+  As porcentagens não entram.
 - Sem diferença de maiúsculas e de acentos ("servico" acha "Serviço"). Com mais de uma palavra, **todas** precisam
   aparecer, em qualquer ordem e campo; e, se algum item tem a **frase inteira**, ficam só esses ("em uso" não traz a
   conta "sem leitura de uso"; "conta 7" não traz a que está em 7º na fila).
@@ -345,3 +363,81 @@ liberado — este saiu da lista mas ainda tem serviço conectado), **Serviços**
 - O texto de cada aba fica só na memória: continua na atualização de 30 s e ao trocar de aba; some ao recarregar. A
   busca só esconde linhas — não muda a ordem nem o que está aberto — e o campo não pega o foco na atualização.
   "Ver conta N" (avisos do topo) limpa a busca das contas se ela esconde a conta.
+
+## 2.5.3 — "Serviço" no lugar de "computador" e a presença dos serviços (pedido do dono, 21/11/2026)
+
+Duas mudanças. A primeira é só de palavra, na tela e nos textos que o servidor gera. A segunda traz três campos novos em cada
+serviço do PanelState, calculados pelo motor (SPEC.md, "Presença dos serviços"). Nenhuma rota nova.
+
+**"Serviço" no lugar de "computador".** Tudo o que se conecta ao Swap — um VS Code, o cliente do Hermes, um robô — é um
+**serviço**, na tela e nos textos que o servidor gera (histórico, avisos do topo, e-mails ao dono, páginas montadas pelo
+servidor, mensagens de erro, linha de comando). A aba já se chamava Serviços desde a 2.5.1; faltava o resto.
+- Rótulos fixos (entre parênteses, como eram até a 2.5.2):
+  - aba e título da página: **Serviços** (desde a 2.5.1);
+  - no cartão da conta e em "Ajustes desta conta": **Serviços permitidos** ("Computadores permitidos"); no cartão, também
+    **Serviços nela** ("Computadores nela");
+  - nas Regras de troca: **Serviços**, com **Separados** / **Juntos** ("Computadores");
+  - o bloco embaixo da lista de serviços: **Conectar um serviço** ("Conectar um computador");
+  - a etiqueta da linha da conta: **Em 1 serviço** / **Em N serviços** ("Em 1 computador" / "Em N computadores");
+  - no resumo do topo, com a regra em Juntos: "serviços juntos na mesma conta";
+  - no Histórico: o tipo de evento "Serviço" ("Computador") e, na entrada de um serviço que já saiu e não deixou o nome,
+    "serviço removido" ("computador removido").
+- Na aba Serviços, embaixo do título: "Serviço é tudo o que está conectado ao Swap: um VS Code, um agente como o Hermes, um robô."
+- "Computador" ficou só onde é a máquina em que a pessoa está sentada: "No computador, abra o VS Code com a extensão Swap Plus
+  instalada." (passo 1 de "Conectar um serviço") e "um arquivo no seu computador" (kit de recuperação).
+- Não mudaram: ids, classes e endereços (`sec-computadores`, `tab-computadores`, `q-computadores`, `#computadores`,
+  `?next=computadores`), nomes de campo (`devices`, `assignedDevices`, `allowedAccounts`, `rules.devicePlacement`) e rotas
+  (`/web/api/devices/:id`, `/web/api/accounts/:n/devices`). As entradas já gravadas no histórico ficam com o texto antigo.
+- Os textos que mandam a pessoa para a extensão usam os nomes da extensão 3.2.0: comando **"Swap Plus: Configurações"** (era
+  "Swap Plus: Configurar trocas automáticas") e cartão **"Conexão"** (era "Servidor"). Estão no bloco "Conectar um serviço", na
+  lista de serviços vazia e na página 403 "Painel só do administrador".
+
+**Presença dos serviços: quatro situações.** Até a 2.5.2 um serviço aparecia como "ativo agora" ou "parado", pelo `active`
+(batimento nos últimos 5 min). Um cliente sem uso — o do Hermes entre duas tarefas — não manda batimento: só lê o estado a cada
+~2 min, e aparecia "parado" estando ligado. Agora o servidor marca o **contato** (qualquer pedido autenticado do serviço, de
+qualquer rota; só na memória do motor) e a tela mostra quatro situações.
+
+PanelState — cada item de `devices` tem estes campos, e só estes: `id, name, platform, googleEmail, createdAt, lastSeen,
+lastContact, active, connected, presence, assigned, allowedAccounts`. Os três novos:
+- `lastContact`: número (ms) ou `null` — o último contato do serviço. Nunca é mais antigo que o `lastSeen`, que continua sendo o
+  último batimento (o uso). `null` = o serviço nunca apareceu.
+- `connected`: boolean — o último contato foi há no máximo 5 min (`CONTACT_MS`, no motor).
+- `presence`: uma destas, a primeira que valer:
+  - `"active"`: o `active` de sempre (batimento nos últimos 5 min);
+  - `"connected"`: não está ativo, mas falou com o servidor nos últimos 5 min;
+  - `"waiting"`: nem ativo nem conectado, ainda não falou com o servidor desde que ele subiu, e ele subiu há menos de 5 min.
+    É passageira: num reinício ou numa atualização os contatos da memória se perdem, e sem ela os serviços ociosos pareceriam
+    sumidos até o próximo pedido deles;
+  - `"none"`: o resto.
+- Motor que não manda esses campos (`web.js`, `devicesNow`): `lastContact` = `lastSeen`; `connected` = `active`; `presence` sai
+  de `active` e `connected` (`"active"`, `"connected"` ou `"none"`). Com um `presence` que o painel não conhece, a mesma conta.
+- É só para mostrar. A troca automática, as contas ocupadas e a regra Serviços continuam olhando só os ativos.
+- Os mesmos três campos saem em `StateResponse.devices` (a API dos serviços); a extensão e o cliente sem VS Code não os leem.
+
+Na tela (`server/web/app.js`, trecho "presença dos serviços"; a página usa o `presence` e, se ele não vier, cai no `active` e no
+`connected`):
+
+| `presence` | texto | bolinha | no resumo (um / vários) |
+|---|---|---|---|
+| `active` | `ativo agora` | verde (`.dot.on`, a de antes) | ativo agora / ativos agora |
+| `connected` | `conectado · sem uso agora` | azul (`.dot.conn`, cor `--conn`) | conectado / conectados |
+| `waiting` | `aguardando contato · o servidor reiniciou há pouco` | só o contorno, cinza (`.dot.wait`) | aguardando contato |
+| `none` | `sem contato · visto <quando>`; sem data nenhuma, `sem contato · ainda não apareceu` | cinza cheia (`.dot`, a do "parado" de antes) | sem contato |
+
+- `<quando>` é a data do `lastContact` (num servidor antigo, sem o campo, a do `lastSeen`), no formato de data de sempre do
+  painel (`fmtWhen`).
+- **Linha recolhida**: a bolinha antes do nome; na última coluna, a situação em cima ("ativo agora", "conectado", "aguardando
+  contato", "sem contato") e o detalhe embaixo ("sem uso agora", "o servidor reiniciou há pouco", "visto …", "ainda não
+  apareceu"). Para leitor de tela os dois saem juntos, com " · " no meio.
+- **Cartão aberto**, em "Contato": o texto inteiro.
+- As bolinhas valem nos temas escuro e claro: `--conn` tem uma cor em cada tema, e as outras usam as cores que já existiam.
+- **Legenda** "O que quer dizer cada situação" (recolhida), no alto da aba: a bolinha e uma frase para cada uma das quatro.
+- **Resumo do topo**: `5 serviços (3 ativos agora, 1 conectado, 1 sem contato)`. Os grupos saem na ordem da tabela; grupo sem
+  ninguém não aparece; singular e plural combinam (`2 conectados`, `2 aguardando contato`). Com um serviço só, sem o número
+  dentro: `1 serviço (ativo agora)`. Sem nenhum: `nenhum serviço`. Até a 2.5.2 era "1 computador (ativo agora)" ou "(parado)"
+  e "N computadores (M ativos agora)".
+- **Ordem** da aba: ativos, conectados, aguardando contato, sem contato; dentro de cada grupo, por nome.
+- **Busca** dos serviços: entra o texto inteiro da situação (acha por "conectado", "sem uso", "sem contato", "aguardando"…).
+- A palavra **"parado" saiu do painel**.
+- A etiqueta "Em N serviços" da linha da conta continua contando os serviços que estão **na conta** (`assignedDevices`), ativos
+  ou não: não é presença.

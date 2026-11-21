@@ -12,7 +12,8 @@ O Swap Plus tem três partes, as três neste repositório:
 - a **extensão do VS Code** (código em [`plus/`](plus/)), instalada em cada computador, no Mac e no Windows. Ela se
   atualiza sozinha, dentro do VS Code;
 - o **servidor Swap Plus** (código em [`server/`](server/)), que guarda e renova os logins de todas as contas, decide
-  as trocas para todos os computadores e tem um painel no navegador (contas, computadores, usuários e regras de troca);
+  as trocas para todos os **serviços** conectados (cada VS Code, o Hermes) e tem um painel no navegador (contas,
+  serviços, usuários e regras de troca);
 - o **Swap Plus Cliente** (código em [`cliente/`](cliente/)), novo na 3.2 ([NOVIDADES-3.2.md](NOVIDADES-3.2.md)): faz
   o trabalho da extensão sem o VS Code, para o Hermes e outros serviços em segundo plano usarem o Claude Code com as
   mesmas contas. Manual em [`cliente/README.md`](cliente/README.md).
@@ -51,8 +52,8 @@ Depois, abra o VS Code, clique no Swap Plus na barra de baixo e, no aviso que ap
 nem o modo local: o instalador e a própria extensão removem o motor antigo dos computadores.
 
 A extensão começou do [claude-swap-status](https://github.com/smith89k/claude-swap-status) e foi reescrita em
-[`plus/`](plus/). Os arquivos na raiz fora de `plus/` e `server/` (`src/`, `dist/`, `package.json`…) são o código
-desse original, mantidos só como referência. O Swap Plus não usa esses arquivos.
+[`plus/`](plus/). Os arquivos na raiz fora de `plus/`, `server/` e `cliente/` (`src/`, `dist/`, `package.json`…) são
+o código desse original, mantidos só como referência. O Swap Plus não usa esses arquivos.
 
 ## Licença
 

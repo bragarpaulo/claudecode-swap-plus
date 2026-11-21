@@ -4,11 +4,21 @@ Fonte única para quem implementa o servidor (`server/`) e o modo servidor da ex
 Tudo em português (código, comentários, mensagens). Node 22, **sem dependências de terceiros**.
 **Nunca registrar em log nem devolver ao cliente o `refreshToken`.** Access tokens também nunca vão para log.
 
+> **2.5.3 (21/11/2026): "serviço" no lugar de "computador", e a presença dos serviços.** Tudo o que se conecta ao servidor
+> (um VS Code, o cliente do Hermes, um robô) é um **serviço** nos textos que o servidor gera: histórico, avisos, e-mails ao
+> dono, páginas, mensagens de erro da API, ajuda e saídas da linha de comando, e o painel. "Computador" ficou só para a
+> máquina em que a pessoa está sentada. Nenhum nome mudou no código nem no contrato: campos (`devices`, `deviceId`,
+> `assignedDevices`, `accountDevices`, `devicePlacement`), rotas (`/v1/devices`, `/web/api/devices/:id`), ids, variáveis e
+> comandos da CLI são os mesmos, e as entradas já gravadas no histórico ficam com o texto antigo (não há migração). Quem
+> conecta sem mandar `name` passa a se chamar "serviço" (era "computador"); os nomes já guardados não mudam. Neste documento
+> "dispositivo" é o registro `Device` do cofre, ou seja, um serviço. A presença de cada serviço (ativo, conectado, aguardando
+> contato, sem contato) está em "Presença dos serviços" (engine.js, abaixo); os rótulos da tela, em WEB-SPEC.md, "2.5.3".
+
 ## Por que existe
 
 O refresh token de cada conta Claude é de uso único (renovar invalida o anterior; o acesso dura ~8 h).
 Com a mesma cópia do login em dois computadores, o que renova primeiro mata a cópia do outro.
-O servidor (VPS, Docker) é o **único** que guarda o refresh token e renova. Os computadores (clientes)
+O servidor (VPS, Docker) é o **único** que guarda o refresh token e renova. Os serviços conectados (clientes)
 recebem só o access token da conta que o servidor escolheu para eles, e o servidor é quem decide as trocas
 (mesma regra da extensão, `plus/rules.js`).
 
@@ -51,7 +61,7 @@ Na imagem: `/app/plus/rules.js` e `/app/server/src/*.js` → `require("../../plu
 | `GOOGLE_AUTH_URL` | `https://accounts.google.com/o/oauth2/v2/auth` | trocável nos testes |
 | `GOOGLE_TOKEN_URL` | `https://oauth2.googleapis.com/token` | trocável nos testes |
 | `TZ` | `America/Sao_Paulo` | textos "hoje 18:00" do `rules.js` |
-| `ADMIN_EMAILS` | — | administrador(es) do painel web, separados por vírgula (produção: o e-mail do administrador, variável `SWAP_PLUS_ADMIN_EMAILS` da stack). Lido só na subida, sem rota para mudar. Vazio → painel desligado (aviso no log). Também decide quais computadores conectados com Google enviam logins (abaixo, "Quem envia logins"). Detalhes em WEB-SPEC.md |
+| `ADMIN_EMAILS` | — | administrador(es) do painel web, separados por vírgula (produção: o e-mail do administrador, variável `SWAP_PLUS_ADMIN_EMAILS` da stack). Lido só na subida, sem rota para mudar. Vazio → painel desligado (aviso no log). Também decide quais serviços conectados com Google enviam logins (abaixo, "Quem envia logins"). Detalhes em WEB-SPEC.md |
 | `RESTIC_PASS_FILE` | `/run/secrets/restic_swap_plus_pass` | senha do backup, só para o kit de recuperação do painel (opcional: sem o arquivo, "não disponível") |
 | `NOTICE_LOGIN_DAYS` | `1` | quantos dias antes do fim do login de uma conta sai o e-mail dela ao dono (1 a 30); um e-mail por login |
 | `NOTICE_WEEKLY` | `1` | resumo semanal por e-mail ao dono (as contas que vencem nos 7 dias seguintes); `0` desliga |
@@ -76,7 +86,7 @@ com `TLS_MODE=off` e `TRUST_PROXY=1`). Os arquivos precisam ser legíveis pelo u
   autoSwitch: true,
   history: [ { ts, kind, text, device } ],          // mais novo primeiro, máx. 100
   diag: { oldTokenValidAfterRefresh: true|false|undefined, checkedAt } ,
-  allowedEmails: [ "pessoa@empresa.com" ],          // contas Google que podem conectar computadores (minúsculas); não dão painel
+  allowedEmails: [ "pessoa@empresa.com" ],          // contas Google que podem conectar serviços (minúsculas); não dão painel
 }
 Account = {
   number, email, orgUuid, orgName, plan: { label } | null, alias: null,
@@ -95,6 +105,9 @@ Account = {
 Usage = { fiveHour?: { pct, resetsAt }, sevenDay?: { pct, resetsAt }, scoped?: [ { name, pct, resetsAt } ] }
 Device = { id, name, platform, googleEmail: "e-mail"|null /*null = pareado por código*/, tokenHash, createdAt, lastSeen, assigned: n|null, lastSwitchAt: 0, models: [],
            lastSwitchBy /* "assign" | "auto" | "limit" | "manual" | "painel" | "group" | "follow" (só o motor lê) */ }
+// lastSeen = criação, último batimento (heartbeat) ou último limite batido: é o uso, e só ele diz quem está ativo.
+// O contato de cada serviço (presença, 2.5.3) fica só na memória do motor: nada de `contacts`, `lastContact`,
+// `connected` ou `presence` entra no cofre.
 ```
 
 ## anthropic.js
@@ -135,6 +148,9 @@ class Engine {
   publicList(deviceId)                  // { schemaVersion: 1, activeAccountNumber, accounts: PublicAccount[] }
   records()                             // { "<n>": { disabled, threshold, weeklyThreshold, modelThreshold, priority, alias } } (linhas próprias: null = regra geral; linesFor)
   stateFor(deviceId)                    // StateResponse (abaixo)
+  devicesList(currentId = null)         // os serviços, para mostrar (StateResponse.devices e PanelState): + current, active e a presença
+  touch(deviceId)                       // presença: o serviço fez um pedido autenticado (qualquer rota); só na memória, não suja o cofre
+  forgetContact(deviceId)               // serviço revogado ou desfeito: o contato dele sai da memória
   async heartbeat(deviceId, { models, live })   // lastSeen/models; sem conta → atribui; roda a decisão desse dispositivo
   async credentialFor(deviceId)         // { number, gen, claudeAiOauth: {accessToken, expiresAt, scopes, subscriptionType, rateLimitTier, refreshTokenExpiresAt?}, oauthAccount } | null
   async switchDevice(deviceId, number|null, by = "manual")  // null = melhor conta; "together": troca o grupo inteiro
@@ -163,7 +179,7 @@ Fim do login (`refreshTokenExpiresAt`, epoch ms, gravado pelo Claude Code dentro
   Desconhecido → a chave não vai (nem `null`).
 - Aviso: a cada ciclo, conta viva com a data conhecida e menos de 3 dias para ela → no máximo 1x por dia (fuso do servidor) por conta,
   histórico `kind:"alert"` "O login da conta N (apelido ou começo do e-mail) vence DD/MM HH:MM — entre de novo com ela no Claude Code
-  de qualquer computador conectado." (`venceu` se a data já passou). O dia avisado fica em `loginWarnedOn` (zera com login novo ou data nova).
+  de qualquer serviço conectado." (`venceu` se a data já passou). O dia avisado fica em `loginWarnedOn` (zera com login novo ou data nova).
 - `stateFor().warnings` (calculado na hora): `{ kind: "dead", account: N, text }` para contas mortas e
   `{ kind: "login_expiring", account: N, text }` (mesmo texto do histórico) enquanto faltar menos de 3 dias.
 - E-mail ao dono (abaixo): não acompanha mais o alerta diário. Sai UM por login, quando falta menos de 1 dia
@@ -196,35 +212,68 @@ estratégia `max` → menor `sevenDay.resetsAt` com ≥ 20% sobrando e abaixo da
 (`min(linha - pct)` entre sessão e semanal). Sem uso conhecido → a viva de menor número. Ninguém livre → permitir as de outros dispositivos.
 `autoSwitch === false` → só a atribuição inicial; `limitHit` só registra.
 
-Regra **Computadores** (`rules.devicePlacement`, só do servidor; `decide()` não usa): `"separate"` (padrão) = o que está acima
-(cada computador ativo numa conta; contas dos outros ocupadas; `spreadOut` separa quem caiu na mesma conta). `"together"` = todos os
-ativos na MESMA conta e trocando juntos (gastam a mesma sessão de 5 h). `setRules` aceita só esses dois valores (senão `invalid_rules`);
-quando a regra muda, vale na hora (decide todos os ativos) e o histórico registra "Computadores juntos: ..." / "Computadores separados: ...".
+Regra **Serviços** (`rules.devicePlacement`, só do servidor; `decide()` não usa; até a 2.5.2 a tela e o histórico diziam
+"Computadores"): `"separate"` (padrão) = o que está acima (cada serviço ativo numa conta; contas dos outros ocupadas;
+`spreadOut` separa quem caiu na mesma conta). `"together"` = todos os ativos na MESMA conta e trocando juntos (gastam a
+mesma sessão de 5 h). `setRules` aceita só esses dois valores (senão `invalid_rules`);
+quando a regra muda, vale na hora (decide todos os ativos) e o histórico registra "Serviços juntos: ..." / "Serviços separados: ...".
 No modo `"together"` nenhuma conta fica ocupada e não há `spreadOut`; uma decisão para o grupo inteiro (`togetherStep`, a cada ciclo e
 em todo `decideDevice`):
 - **Conta do grupo**, entre os ativos: a do que trocou por último (`lastSwitchBy` ∈ auto, limit, manual, painel, group — a atribuição
   `"assign"` não conta), se ela ainda serve para ele (existe, viva, liberada para ele e, com a troca automática ligada, na rotação);
   empate: a conta com mais ativos nela. Senão a melhor conta (`bestAccountFor`, mesma estratégia), primeiro entre as que todos podem usar.
-- **Troca**: `decide()` para a conta do grupo com os modelos em uso de TODOS os computadores do grupo (união), intervalo mínimo contado da
-  última troca de qualquer um deles e destino entre as contas que todos podem usar (sem nenhuma: as liberadas para o computador da conta
+- **Troca**: `decide()` para a conta do grupo com os modelos em uso de TODOS os serviços do grupo (união), intervalo mínimo contado da
+  última troca de qualquer um deles e destino entre as contas que todos podem usar (sem nenhuma: as liberadas para o serviço da conta
   do grupo). Se trocar, todos os ativos que podem usar a conta nova vão para ela: histórico `kind:"switch"`, `device: null`,
-  "Computadores trocados juntos para a conta N: <motivo> — A e B" (um só trocando: o texto de sempre, "Trocou da conta X para a conta N: ...").
-- Sem troca: quem pode usar a conta do grupo e está em outra entra nela ("Trocou da conta X para a conta N: computadores juntos na mesma
+  "Serviços trocados juntos para a conta N: <motivo> — A e B" (um só trocando: o texto de sempre, "Trocou da conta X para a conta N: ...").
+- Sem troca: quem pode usar a conta do grupo e está em outra entra nela ("Trocou da conta X para a conta N: serviços juntos na mesma
   conta"; sem conta: "Conta N atribuída a ..."); com a troca automática desligada, só quem precisa de conta (sem conta, morta, removida,
   não liberada).
 - Quem **não pode** usar a conta do grupo (`accountDevices`) nunca vai para ela: segue sozinho — a melhor conta liberada para ele, com o
   seu próprio `decide()`.
-- `limitHit`: `decide()` com o limite para a conta do computador (com os ativos nela) e todos os ativos que podem usar a conta nova
-  trocam na hora: "Computadores trocados juntos na hora para a conta N: a conta X bateu o ... — A e B" (`device` = quem bateu).
+- `limitHit`: `decide()` com o limite para a conta do serviço (com os ativos nela) e todos os ativos que podem usar a conta nova
+  trocam na hora: "Serviços trocados juntos na hora para a conta N: a conta X bateu o ... — A e B" (`device` = quem bateu).
 - `switchDevice`: troca o grupo inteiro (os ativos + este) para a conta escolhida; quem não pode usá-la fica. Histórico
-  "Computadores trocados juntos para a conta N: troca manual pelo painel" / "pelo computador X" (+ " (melhor conta)"); quem pediu fica com
+  "Serviços trocados juntos para a conta N: troca manual pelo painel" / "pelo serviço X" (+ " (melhor conta)"); quem pediu fica com
   `lastSwitchBy` = by, os outros `"group"`. Só este trocando: o texto de sempre ("Troca manual da conta X para a conta N").
-- Computador que conecta ou volta a ficar ativo (heartbeat depois de mais de 5 min parado) entra na conta do grupo dos outros ativos:
+- Serviço que conecta ou volta a ficar ativo (heartbeat depois de mais de 5 min sem batimento) entra na conta do grupo dos outros ativos:
   a troca antiga dele deixa de valer para escolher a conta do grupo (`lastSwitchBy = "follow"`).
 - `assignBest` (sem conta, morta, removida, não liberada, desativada): a conta do grupo dos outros ativos, se puder usá-la; senão a melhor
   liberada para ele.
 
-addLogin: com `deviceId` de um computador que não pode enviar logins (`canUploadLogins` false) → `not_admin` (403) antes de tudo:
+Presença dos serviços (desde a 2.5.3; **só para mostrar** — painel e `StateResponse.devices` —, nenhuma decisão usa):
+- Por quê: `lastSeen` só sobe no batimento (`heartbeat`) e no limite batido (`limitHit`), e é ele que diz quem está **ativo**
+  (`isActive`: `lastSeen` há no máximo `ACTIVE_MS` = 5 min). O cliente sem VS Code (`cliente/`, o do Hermes), quando está sem uso,
+  não manda batimento: só lê `GET /v1/state` a cada ~2 min, o que não mexe no `lastSeen`. Até a 2.5.2 a tela o mostrava como
+  "parado", embora ligado.
+- **Contato** = um pedido autenticado, de qualquer rota. O server.js chama `engine.touch(deviceId)` no único ponto em que o token do
+  dispositivo é aceito (abaixo, "API"). `touch` guarda `agora` em `engine.contacts` (Map `deviceId → ms`), **só na memória**: não
+  escreve no registro do serviço (o `lastSeen` fica como estava), não marca `dirty` e nunca vai para o cofre nem para o disco. Id que
+  não é de um serviço do cofre é ignorado (o mapa não cresce). `forgetContact(deviceId)` apaga a entrada: o server.js chama quando o
+  serviço é revogado ou desfeito.
+- Constantes: `CONTACT_MS = ACTIVE_MS` (5 min; exportada). `engine.startedAt` = a hora em que este processo subiu.
+- Cada item de `devicesList()` ganha três campos (`presenceOf(dev)` → `{ lastContact, connected, presence }`):
+  - `lastContact`: ms ou `null` — o mais novo entre o contato da memória e o `lastSeen` (`lastContactOf`); `null` = nunca apareceu.
+  - `connected`: `true` se `lastContact` não é `null` e `agora - lastContact <= CONTACT_MS`.
+  - `presence`, o primeiro que valer:
+    - `"active"`: `isActive` (a definição de sempre);
+    - `"connected"`: não está ativo e `connected` é `true`;
+    - `"waiting"`: nem ativo nem conectado, sem contato desde que este processo subiu (`lastContact` é `null` ou anterior a
+      `startedAt`) e o processo subiu há menos de `CONTACT_MS`. É passageiro: um reinício ou uma atualização apaga os contatos da
+      memória, e um serviço ocioso só volta a aparecer no próximo pedido dele (o cliente sem uso lê o estado a cada ~2 min);
+      enquanto isso ele não é dado como sumido;
+    - `"none"`: o resto.
+- Depois de um reinício o `lastContact` recomeça do `lastSeen` do cofre. Passados `CONTACT_MS` da subida ninguém mais fica em
+  `"waiting"`: quem ainda não chamou passa a `"none"`.
+- O que **não** muda: `isActive`, `heartbeat`, `limitHit` e todas as decisões (contas ocupadas, "Serviços: Juntos",
+  `setAccountDevices`) continuam olhando só o `lastSeen`. Um serviço só conectado não ocupa conta, não entra no grupo, não recebe
+  conta pelo contato (isso é do batimento e do `credentialFor`) e não conta em `status().activeDevices`.
+- `GET /v1/devices`, `GET /admin/devices` e `GET /admin/status` não levam esses campos (lista fechada do server.js, abaixo): o
+  "visto …" da CLI (`status`, `devices`) continua sendo o `lastSeen`, ou seja, o último batimento, não o último contato.
+- Compatibilidade: são campos a mais em `StateResponse.devices`. A extensão (`plus/`, que copia só os campos que conhece) e o
+  cliente sem VS Code (`cliente/`, que não lê `devices`) não mudaram por causa disso. O painel mostra a presença (WEB-SPEC.md, "2.5.3").
+
+addLogin: com `deviceId` de um serviço que não pode enviar logins (`canUploadLogins` false) → `not_admin` (403) antes de tudo:
 não confere, não renova, não fala com a Anthropic (o server.js já recusa antes; esta é a segunda trava).
 Exige `claudeAiOauth.refreshToken` e `oauthAccount.emailAddress`. Só aceita login **comprovadamente vivo**:
 - refresh token já gasto pelo servidor (`spentRefresh`) → `stale_login`; o mesmo refresh token que a conta já guarda → nada a fazer.
@@ -275,7 +324,7 @@ Gatilhos no motor (sem `notify`, nenhum; o texto diz a conta — número, apelid
   cofre ficar indo e voltando. "NÃO reinicie o servidor: há login renovado só na memória" + veja o disco. Se o próprio aviso não
   grava (o disco cheio pega a caixa de saída também), tenta de novo a cada minuto enquanto o incidente durar.
 - "Como renovar": `Para renovar: abra <PUBLIC_URL> → Contas → conta N → Entrar de novo, e entre com <e-mail da conta> na página da
-  Claude; copie o código e cole no painel. (Ou faça /login no Claude Code de um computador do administrador.)`
+  Claude; copie o código e cole no painel. (Ou faça /login no Claude Code de um serviço do administrador.)`
 - `engine.status().notices = { enabled, dir }` (o `GET /admin/status` do admin local mostra o mesmo em `notices`).
 
 ## API (server.js)
@@ -283,6 +332,13 @@ Gatilhos no motor (sem `notify`, nenhum; o texto diz a conta — número, apelid
 HTTPS (`TLS_MODE=self`, cert em `DATA_DIR/tls/cert.pem` + `key.pem`) ou HTTP (`off`). JSON, corpo máx. 256 KB.
 Autenticação: `Authorization: Bearer <token do dispositivo>`; guardado como sha256 hex; comparação com `timingSafeEqual`.
 `ALLOW_IPS` checado antes de tudo (403). Limite de tentativas: 20 respostas 401 por IP em 10 min → 429 por 10 min.
+Contato (presença, desde a 2.5.3): em toda rota com token, assim que o token é aceito — antes de ler o corpo e de chamar a rota — o
+servidor chama `engine.touch(device.id)`, uma vez por pedido, seja qual for a rota e dê ela certo ou não depois (400, 409, 422…).
+Pedido de IP fora de `ALLOW_IPS` (403), de IP bloqueado (429), para rota ou método que não existe (404/405) ou sem token válido
+(401) é barrado antes e não conta. As rotas sem token (`/v1/health`, `/v1/pair`, `/v1/login/*`, `/auth/google/*`), o admin local e
+o painel (`/web/*`, que usa cookie) também não contam. Onde um serviço é apagado — revogação, o serviço órfão do login com Google e o desfazer do retorno do
+Google quando o cofre não grava, todos por `forgetDevice` — o servidor chama `engine.forgetContact(id)`. As duas chamadas só
+acontecem se o motor tiver o método (`typeof … === "function"`). O que o motor faz com isso: "Presença dos serviços", acima.
 
 | método e caminho | corpo | resposta |
 |---|---|---|
@@ -291,7 +347,7 @@ Autenticação: `Authorization: Bearer <token do dispositivo>`; guardado como sh
 | `POST /v1/heartbeat` | `{ models: [id], live: { email, orgUuid, expiresAt } \| null }` | StateResponse |
 | `GET /v1/state` | — | StateResponse |
 | `GET /v1/credential` | — | `{ number, gen, claudeAiOauth: { accessToken, expiresAt, scopes, subscriptionType, rateLimitTier, refreshTokenExpiresAt? }, oauthAccount }` (nunca `refreshToken`) ou 409 `{error:"no_account"}` |
-| `POST /v1/logins` | `{ claudeAiOauth, oauthAccount, plan? }` | `{ number, created }` ou 422 `{error: code, message}`; computador que não é do administrador → 403 `not_admin` (abaixo) |
+| `POST /v1/logins` | `{ claudeAiOauth, oauthAccount, plan? }` | `{ number, created }` ou 422 `{error: code, message}`; serviço que não é do administrador → 403 `not_admin` (abaixo) |
 | `POST /v1/switch` | `{ number \| null }` | StateResponse |
 | `POST /v1/events` | `{ kind: "limit_hit", label }` | `{ switched, text, state }` |
 | `PATCH /v1/accounts/:n` | `{ disabled?, threshold?, weeklyThreshold?, modelThreshold?, priority?, alias? }` (linhas: 50–100 ou null = regra geral) | StateResponse |
@@ -317,12 +373,12 @@ O VS Code não recebe o retorno do navegador; por isso ele inicia, abre `authUrl
   `iss` ∈ {accounts.google.com, https://accounts.google.com}, `aud` contém o client id (e `azp`, se vier, é o client id), `exp` no futuro,
   `email_verified` true. E-mail do administrador (`ADMIN_EMAILS`) ou em `allowedEmails` (comparação pela `emailKey`: minúsculas e,
   no Gmail, sem pontos e sem `+algo`) → cria o dispositivo (como no pareamento, com `googleEmail`), grava o cofre, histórico
-  "Computador X conectado com a conta Google Y", página "Pronto! Conectado." (o texto não cita programa: a extensão e o cliente sem VS Code entram por aqui). Não liberado → página de recusa e `poll` → `denied`.
+  `Serviço "X" conectado com a conta Google Y`, página "Pronto! Conectado." (o texto não cita programa: a extensão e o cliente sem VS Code entram por aqui). Não liberado → página de recusa e `poll` → `denied`.
   `error` na query, troca recusada ou id_token inválido → página de erro e a sessão continua `pending` (dá para tentar de novo pelo mesmo link).
   Recarregar o retorno depois de concluído mostra o mesmo resultado sem falar com o Google.
-- Depois do retorno do Google a sessão vale pelo menos mais 5 min. Se vencer com o computador criado e o VS Code não buscou o acesso,
+- Depois do retorno do Google a sessão vale pelo menos mais 5 min. Se vencer com o serviço criado e o VS Code não buscou o acesso,
   o dispositivo é desfeito (ninguém tem o token dele).
-- A mesma conta Google pode conectar vários computadores (cada um é um dispositivo separado, revogável sozinho). `deny` não derruba
+- A mesma conta Google pode conectar vários serviços (cada um é um dispositivo separado, revogável sozinho). `deny` não derruba
   quem já conectou.
 - Desligado (sem client id/secret ou sem `PUBLIC_URL`): `/v1/login/*` → 503 `{ error: "google_off" }`; `/auth/google/*` → página 503.
 - Limite por IP (janela de 10 min) → 429 com `Retry-After`: `login/start` 10, `login/poll` 600, `/auth/google/start` 30, `/auth/google/callback` 30.
@@ -330,19 +386,19 @@ O VS Code não recebe o retorno do navegador; por isso ele inicia, abre `authUrl
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. Nunca vão para log: code, tokens, id_token, client_secret
   (o log das requisições só tem o caminho, sem a query).
 
-### Quem envia logins (só os computadores do administrador)
+### Quem envia logins (só os serviços do administrador)
 
-Um computador **pode enviar logins** (`canUploadLogins`) se: conectou com Google e o `googleEmail` é de administrador (`ADMIN_EMAILS`,
+Um serviço **pode enviar logins** (`canUploadLogins`) se: conectou com Google e o `googleEmail` é de administrador (`ADMIN_EMAILS`,
 comparação pela `emailKey`, a mesma do painel), **ou** foi pareado por código (`googleEmail` nulo — o código só sai pela linha de comando
 ou pelo painel, que são do administrador). Os outros (contas Google liberadas com `allow`) usam as contas do servidor.
 - `StateResponse.device.canUploadLogins: true|false` (GET `/v1/state`, heartbeat, troca, etc.). Quem decide é o server.js com o
   `ADMIN_EMAILS` desta subida (e passa o mesmo `isAdmin` ao motor em `engine.setAdminCheck`).
-- `POST /v1/logins` de quem não pode → 403 `{ error: "not_admin", message: "Só os computadores do administrador enviam logins ao servidor.
-  Este computador usa as contas do servidor." }`, conferido antes do corpo e **sem chamar** `engine.addLogin` (nada vai para a Anthropic;
+- `POST /v1/logins` de quem não pode → 403 `{ error: "not_admin", message: "Só os serviços do administrador enviam logins ao servidor.
+  Este serviço usa as contas do servidor." }`, conferido antes do corpo e **sem chamar** `engine.addLogin` (nada vai para a Anthropic;
   o login enviado não é gasto). Não conta como tentativa sem autorização (não bloqueia o IP). Log `[logins] login recusado de "X" (conta
   Google Y)...` a cada recusa (sem token) e histórico `kind:"alert"` "Login recusado de "X": só o administrador envia logins" no máximo
-  uma vez por computador por dia (fuso do servidor; lembrado só na memória).
-- O administrador saiu de `ADMIN_EMAILS` (mudança + reinício): os computadores dele conectados com Google passam a `canUploadLogins: false`
+  uma vez por serviço por dia (fuso do servidor; lembrado só na memória).
+- O administrador saiu de `ADMIN_EMAILS` (mudança + reinício): os serviços dele conectados com Google passam a `canUploadLogins: false`
   (continuam conectados, usando as contas do servidor). Sem `ADMIN_EMAILS`, só os pareados por código enviam.
 
 StateResponse:
@@ -353,7 +409,8 @@ StateResponse:
   records, rules, autoSwitch,
   credential: { number, gen, expiresAt } | null,
   history: [ { ts, kind, text, device } ],   // últimos 40
-  devices: [ { id, name, assigned, lastSeen, current } ],
+  devices: [ { id, name, platform, googleEmail, createdAt, lastSeen, assigned, current, active,
+               lastContact, connected, presence } ],   // engine.devicesList; os três últimos: presença, desde a 2.5.3
   diag,
   warnings: [ { kind: "dead" | "login_expiring", account: n, text } ] }
 ```
@@ -375,16 +432,29 @@ português; `status` e `allowed` mostram o(s) administrador(es) de `ADMIN_EMAILS
 `USER node`, `ENTRYPOINT ["/sbin/tini","--","/app/server/entrypoint.sh"]`, `HEALTHCHECK` via `node -e` no `/v1/health` do admin local.
 `entrypoint.sh`: se `TLS_MODE=self` e não houver certificado, gera (EC prime256v1, 3650 dias, CN swap-plus, SAN `IP:`/`DNS:` de `PUBLIC_HOST`);
 imprime a impressão digital; `exec node /app/server/src/server.js`.
-Encerramento (SIGTERM/SIGINT): fecha as portas, espera `engine.stop()` por até 40 s, grava o cofre (se falhar, tenta de novo por
-até 5 s; `BUSY` = outro dono da trava, não insiste) e sai; saída forçada em 50 s. Compose: `stop_grace_period: 60s`.
+Encerramento (SIGTERM/SIGINT): fecha as portas, espera `engine.stop()` por até 52 s, grava o cofre (se falhar, tenta de novo por
+até 5 s; `BUSY` = outro dono da trava, não insiste) e sai; saída forçada em 62 s. Compose: `stop_grace_period: 75s`.
 
 ## Cliente (extensão, `plus/`)
 
 > **3.0 (15/11/2026): a extensão é só modo servidor.** O que esta seção diz sobre `swapPlus.mode`, modo local,
 > `executablePath`, motor `swap-plus`, envio dos logins guardados pelo motor ("Enviar os logins deste computador") e
 > oferta de regras locais não vale mais: tudo isso saiu. Continuam valendo o batimento, a aplicação da credencial, o
-> envio do login atual (só computadores do administrador, `canUploadLogins`), `tokenOrigin` e o resto do contrato. O
+> envio do login atual (só serviços do administrador, `canUploadLogins`), `tokenOrigin` e o resto do contrato. O
 > `POST /v1/logins` usa 90 s de tempo máximo no cliente.
+>
+> **3.2.0 (21/11/2026): a tela de Configurações mostra só este VS Code.** A tela (webview "Swap Plus — Configurações"; o
+> comando `swapPlus.openSettings` passou de "Configurar trocas automáticas" para "Configurações") ficou com: o liga/desliga
+> do Swap Plus neste VS Code; o cartão **Conexão** (até a 3.1.3, "Servidor": situação, "Entrar com Google", "Colar código",
+> "Outro endereço…", "Sair", os avisos deste VS Code e "Usar a conta do servidor"); **Conta em uso aqui**, com "Trocar de
+> conta" ("Usar esta conta" → `POST /v1/switch`) e a troca automática só como leitura; e, em "Mais opções deste VS Code",
+> os avisos (`swapPlus.alerts.*`), a exibição e as atualizações. Saíram da tela o liga/desliga da troca automática, as
+> regras, os ajustes por conta, "+ Adicionar conta", a lista de dispositivos com revogar e o histórico: isso fica no painel
+> web (botão "Abrir o painel"). Mensagens novas da tela: `saveAlerts { alerts }` (grava só as configurações deste VS Code,
+> sem pedido ao servidor) e `openPanel` (abre no navegador o endereço guardado na conexão). O resto não mudou: ciclo,
+> gravação da credencial, envio de login, fila, janela dona, conectar e desconectar. Os tratadores que a tela não usa mais
+> (`setAuto`, `saveRules`, `account`, `add`, `revokeDevice`) continuam na extensão, e o comando "Ligar/desligar troca
+> automática" da paleta continua valendo (`PUT /v1/rules`).
 
 Configurações: `swapPlus.mode` (`"local"` | `"server"`, padrão `"local"`), `swapPlus.server.url`. As duas, e também `swapPlus.enabled`
 e `swapPlus.executablePath`, têm `"scope": "machine"` (só valem nas configurações do usuário: o `settings.json` de um projeto aberto não
@@ -420,7 +490,7 @@ com essa impressão digital; sem `fp`, validação normal. **O token só vale no
 Modo servidor na extensão:
 - **Endereço do token:** conectado, o endereço usado é SEMPRE o `url` guardado na conexão (`tokenOrigin` em todo `createServerClient`,
   inclusive na revogação do acesso órfão e na chave do cache do cliente). Endereço das configurações do usuário com outra origem, `origin_mismatch`
-  ou token sem `url` guardado → status *desconectado: o endereço mudou, conecte de novo*, sem nenhuma chamada. Revogar este computador
+  ou token sem `url` guardado → status *desconectado: o endereço mudou, conecte de novo*, sem nenhuma chamada. Revogar este serviço
   (reconectar/desconectar) vai para o servidor que emitiu o token.
 - **Fila única:** ciclo (batimento + gravação), troca manual, limite batido e "usar a conta do servidor" rodam um de cada vez. Desligar o Swap
   Plus, voltar ao modo local e desconectar seguram o ciclo e esperam o que estiver em andamento; antes de cada `writeLive` a extensão confere
@@ -436,7 +506,7 @@ Modo servidor na extensão:
   O `applied` é salvo logo depois do `writeLive`; erro no `writeOauthAccount` é avisado uma vez e não faz regravar a cada minuto.
   Falha de gravação: espera 1 min (a troca manual não espera). Troca manual e limite só dizem "agora na conta N"/"Trocou" se gravaram.
 - `readLive` que falhou (`live_unreadable`): nada é enviado nem gravado e o estado "login recusado" fica como estava.
-- Computador com `state.device.canUploadLogins: false` não envia logins (o servidor responderia 403 `not_admin`): usa as contas do servidor.
+- Serviço com `state.device.canUploadLogins: false` não envia logins (o servidor responderia 403 `not_admin`): usa as contas do servidor.
 - Se o login atual tem `refreshToken` (login novo no navegador) → `POST /v1/logins` (timeout 45 s) com ele e o `oauthAccount`, sob uma trava
   entre janelas por login (`mkdir`; existe = outra janela enviando), e em seguida grava a credencial do servidor por cima. Respostas 422:
   `dead_login`/`stale_login` → login gasto, grava a do servidor; `refresh_failed`/`profile_unavailable` → tenta de novo em ~1 min, sem aviso;
@@ -446,8 +516,8 @@ Modo servidor na extensão:
 - **Tela de login do Claude Code:** enquanto o modo servidor está ligado (ligado + conectado), `claudeCode.disableLoginPrompt: true` nas
   configurações globais do VS Code (sem refresh token, um 401 abriria a tela de login); o valor anterior fica no `globalState` e volta ao sair
   do modo servidor, desligar ou desconectar. Aviso uma vez: "Enquanto estiver no modo servidor, o login do Claude Code é feito pelo Swap Plus".
-- `credentialStoreWarnings()` aparece no cartão Servidor e na barra. Windows lendo do Gerenciador de Credenciais → não grava (a gravação seria
-  ignorada) e explica.
+- `credentialStoreWarnings()` aparece no cartão Conexão (até a 3.1.3, "Servidor") e na barra. Windows lendo do Gerenciador de Credenciais →
+  não grava (a gravação seria ignorada) e explica.
 - Ao conectar pela 1ª vez a um servidor: oferecer "Enviar os logins deste computador" (só no modo servidor; no modo local é recusado):
   `swap-plus export` para um temporário → cada conta com refreshToken vai em `POST /v1/logins` (plan do `swap-plus list --json`) → apaga o
   temporário. Mostrar quantas foram aceitas/recusadas e por quê. E, se as regras de troca daqui (`swapPlus.rules.*` e
@@ -455,9 +525,10 @@ Modo servidor na extensão:
   { rules, autoSwitch }` (uma vez por servidor).
 - Erro de limite nas transcrições → `POST /v1/events {kind:"limit_hit"}`. Troca manual pela lista → `POST /v1/switch`.
 - Barra, lista e tela usam `list`/`records`/`rules`/`history` do servidor (mesmo formato de hoje) — só no modo servidor; no modo local a lista
-  é sempre a do motor daqui. Histórico: computador que saiu da lista aparece pelo `deviceName` da entrada. Tela ganha: dispositivos (com revogar)
+  é sempre a do motor daqui. Histórico: serviço que saiu da lista aparece pelo `deviceName` da entrada. Tela ganha: dispositivos (com revogar)
   e o modo (local/servidor). Regras, troca automática (`srv.state.autoSwitch`) e ajustes por conta vão para o servidor (`PUT /v1/rules`,
-  `PATCH /v1/accounts/:n`).
+  `PATCH /v1/accounts/:n`). Desde a 3.2.0 a tela não mostra mais o histórico, os dispositivos, as regras nem os ajustes por conta (nota
+  "3.2.0", no alto desta seção): tudo isso se vê e se muda no painel web.
 - No modo servidor a extensão **nunca** chama o motor local (`swap-plus`) exceto o `list`/`export` da migração; o atualizador também não
   consulta nem oferece o motor.
 - Swap Plus desligado (1.9): sem heartbeat, sem nenhuma chamada ao servidor e sem gravar credencial.

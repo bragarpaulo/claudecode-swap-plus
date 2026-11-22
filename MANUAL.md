@@ -441,6 +441,12 @@ desliga na hora; as outras regras só mudam quando você clicar em **Salvar regr
   serviço para o **Opus 5.5** (as conversas novas já abrem nele) e volta para o Fable quando ele renova. Uma
   conversa que já estava aberta não muda sozinha: nela, escolha **Opus 5.5** no seletor de modelo e mande
   "continue". Com **Trocar de conta**, enquanto alguma conta tiver Fable a conversa aberta nem para.
+  **Conta que não tem o Fable** (extensão 3.4.1): algumas contas não têm o modelo no plano. No uso delas não
+  aparece a linha "Fable" (conta com Fable sem usar aparece como "Fable 0%"), e o Claude Code responde "Fable 5.2
+  requires usage credits". Enquanto o computador estiver numa conta assim, o modelo padrão passa para **o outro
+  modelo do painel** e volta ao Fable quando o computador for para uma conta que tem. Isso vale também com o painel
+  em preferido = Opus 5.5 e secundário = Fable 5.2: num computador que usa o Fable como padrão, a conta sem Fable
+  leva o padrão para o Opus 5.5.
 - **Para qual conta ir (estratégia):** **Aproveitar ao máximo** (o padrão), **Mais folga** ou **Por prioridade**.
   No mesmo cartão ficam os modelos:
   - **Modelo preferido** e o **esforço** dele: o modelo que as conversas usam e que o Swap procura nas contas (ao

@@ -9,6 +9,9 @@
 //
 // Por isso o Swap Plus cuida do modelo PADRÃO deste computador:
 //   - o modelo preferido acabou na conta em uso (erro visto na conversa) ou chegou na linha → padrão = o secundário;
+//   - a conta em uso NÃO TEM o modelo preferido (3.4.1): o uso dela vem sem o limite desse modelo enquanto outras
+//     contas informam, ou a conversa parou com "Fable 5.2 requires usage credits" → padrão = o secundário, enquanto
+//     o computador estiver nessa conta;
 //   - o preferido voltou (renovou, ou o computador foi para uma conta que tem) → padrão = o de antes.
 // Só mexe quando o padrão é o preferido (ou o do plano) e só desfaz o que ele mesmo fez: um marcador
 // guarda o valor de antes. Padrão escolhido à mão depois da troca fica como a pessoa deixou.
@@ -85,6 +88,43 @@ function inLine(m, line) {
   return t.startsWith(line) || t.startsWith(`claude-${line}`);
 }
 
+// ---------------------------------------------------------------- o par visto de cada computador (3.4.1)
+//
+// Os dois modelos do painel são a alternativa um do outro. O painel diz qual é o preferido do SERVIDOR (o que ele
+// procura nas contas); cada computador pode usar o outro como padrão do Claude Code. Exemplo: painel com preferido
+// = Opus 5.5 e secundário = Fable 5.2, e um computador com o padrão no Fable. Nesse computador, quando o Fable
+// falta na conta em uso (acabou, ou a conta não tem), o padrão vai para o Opus 5.5 — e volta depois. Para isso as
+// funções abaixo recebem o par "virado" (reversePair): o resto do arquivo não sabe a diferença.
+
+/** O par ao contrário: o secundário do painel no lugar do preferido. Virar de novo devolve o par de origem. */
+function reversePair(pair) {
+  if (pair.reversedFrom) return pair.reversedFrom;
+  return {
+    explicit: pair.explicit,
+    primaryId: pair.secondaryId,
+    primaryLine: pair.secondaryLine,
+    primaryName: limitNameOf(pair.secondaryId),
+    primaryEffort: pair.secondaryEffort,
+    secondaryId: pair.primaryId,
+    secondaryLine: pair.primaryLine,
+    secondaryValue: pair.primaryId, // o ID do preferido do painel
+    secondaryLabel: modelLabel(pair.primaryId),
+    secondaryEffort: pair.primaryEffort,
+    reversedFrom: pair,
+  };
+}
+
+/**
+ * O par visto deste computador. O modelo "desejado" é o padrão do Claude Code daqui — ou, com uma troca do Swap
+ * Plus anotada, o que era o padrão antes dela (marker.from). Se ele é da família do SECUNDÁRIO do painel, vale o
+ * par virado. Em qualquer outro caso (padrão no preferido, no modelo do plano, num terceiro modelo), o par do painel.
+ */
+function orient(pair, model, marker) {
+  // marker.from null = não havia modelo escolhido (valia o do plano): não é o secundário de ninguém.
+  const wanted = marker ? marker.from : model;
+  return inLine(wanted, pair.secondaryLine) && !inLine(wanted, pair.primaryLine) ? reversePair(pair) : pair;
+}
+
 /** O nome (do limite no uso, do modelo em uso) é do modelo preferido? */
 function isPrimaryName(name, pair = DEFAULT_PAIR) {
   return typeof name === "string" && name.toLowerCase().includes(pair.primaryLine);
@@ -156,6 +196,7 @@ function defaultLabel(m) {
 // ---------------------------------------------------------------- marcador (o que o Swap Plus trocou)
 //
 // { v, state: "fallback", from, to, account, reason, at, holdUntil, cycleEnd }
+//     reason: "limit" (erro de limite visto na conversa) | "line" (uso na linha) | "absent" (a conta não tem o modelo)
 //     from: valor de `model` antes da troca (null = a chave não existia)
 //     to: o que o Swap Plus pôs em `model` (o secundário daquela hora)
 //     holdUntil: limite visto na conversa — não volta ao preferido antes disso, nesta conta
@@ -232,6 +273,24 @@ function limitModel(text, rateLimitType) {
   return m ? m[1][0].toUpperCase() + m[1].slice(1).toLowerCase() : null;
 }
 
+/** "Fable 5.2 requires usage credits. Switch to another model to continue." (a API: "Usage credits are required for this model.") */
+const CREDITS_RE = /requires usage credits|usage credits are required/i;
+
+/**
+ * O erro diz que a conta em uso NÃO TEM o modelo: ele só sai com créditos de uso (pagos à parte), que a conta não tem.
+ * Não é limite que renova: nessa conta o modelo não volta sozinho. code: o `apiErrorCode` que o Claude Code grava
+ * junto do erro ("credits_required"), quando grava.
+ */
+function needsCredits(text, code) {
+  return code === "credits_required" || CREDITS_RE.test(String(text || ""));
+}
+
+/** A conta informa o limite do modelo preferido? (vale o último uso lido, mesmo antigo: é só para saber se ela tem o modelo) */
+function hasPrimaryLimit(acc, pair = DEFAULT_PAIR) {
+  const w = windows(acc);
+  return !!w && w.models.some((m) => isPrimaryName(m.name, pair));
+}
+
 // ---------------------------------------------------------------- decisão (função pura)
 
 /** Linha do modelo preferido para esta troca: a "linha do modelo" na regra "mesma conta"; 100% se a regra é trocar de conta. */
@@ -242,6 +301,7 @@ function fallbackLine(acc, r, records) {
 /**
  * O que fazer com o modelo padrão, pelo uso da conta em uso.
  *   want: "fallback" (passar para o secundário) | "preferred" (voltar ao de antes) | null (nada)
+ *   reason (no "fallback"): "line" = o uso chegou na linha | "absent" = a conta em uso não tem o modelo preferido
  *   forget: o marcador "escolhido à mão" não vale mais (conta ou ciclo mudou): apagar
  *   pair: o par de modelos (pairOf); sem ele, o de sempre (Fable → Opus 5.5)
  */
@@ -254,7 +314,16 @@ function plan({ list, records, r, marker, now, pair = DEFAULT_PAIR }) {
   const w = windows(active);
   if (!w || w.stale) return none("uso da conta em uso desatualizado");
   const fable = w.models.find((m) => isPrimaryName(m.name, pair));
-  if (!fable) return none(`a conta em uso não informa o limite do ${P}`);
+  if (!fable) {
+    // O uso desta conta veio sem o limite do preferido. Se nenhuma outra conta informa esse limite, não dá para
+    // concluir nada (o modelo pode nem ter limite próprio). Se outras informam, é esta conta que não tem o modelo
+    // (nela a Anthropic responde "requires usage credits"): vale o secundário enquanto o computador estiver nela.
+    if (!accounts.some((a) => a.number !== active.number && hasPrimaryLimit(a, pair))) return none(`a conta em uso não informa o limite do ${P}`);
+    const base = { account: active.number, name: P, pct: null, line: null, resetsAt: null, cycleEnd: null };
+    const byHand = !!marker && marker.state === "user";
+    if (byHand && markerCurrent(marker, active.number, now)) return none(`modelo padrão escolhido à mão depois da troca: fica assim nesta conta`, base);
+    return { want: "fallback", reason: "absent", forget: byHand, ...base };
+  }
   const line = fallbackLine(active, r, records);
   const cycleEnd = Date.parse(fable.resetsAt || "") || null;
   const base = { account: active.number, name: fable.name, pct: fable.pct, line, resetsAt: fable.resetsAt || null, cycleEnd };
@@ -462,6 +531,8 @@ module.exports = {
   TRANSIENT_LIMIT_RE,
   DEFAULT_PAIR,
   pairOf,
+  reversePair,
+  orient,
   isPrimaryName,
   readSettings,
   writeSettings,
@@ -476,6 +547,8 @@ module.exports = {
   clearMarker,
   markerCurrent,
   limitModel,
+  needsCredits,
+  hasPrimaryLimit,
   fallbackLine,
   plan,
   toFallback,

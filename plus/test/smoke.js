@@ -247,6 +247,12 @@ async function partL() {
   fs.appendFileSync(f, fableErr + "\n");
   hit = await T.scanLimitErrors(now - 60000, dir);
   check("limite do Fable: lê o tipo e a renovação gravados pelo Claude Code", !!hit && hit.rateLimitType === "seven_day_overage_included" && hit.resetsAt === reset * 1000 && T.limitLabel(hit.text) === null && M.limitModel(hit.text, hit.rateLimitType) === "Fable");
+  check("…e esse não é o erro de “créditos de uso”", hit.code === null && !M.needsCredits(hit.text, hit.code));
+  // 3.4.1: a conta não tem o modelo. O registro é o que o Claude Code 2.1.330 gravou em 21/11/2026.
+  const creditos = JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", apiError: "model_requires_usage_credits", apiErrorStatus: 429, apiErrorCode: "credits_required", apiErrorType: "rate_limit_error", timestamp: iso(now - 100), apiErrorParams: { rate_limit_info: { status: "rejected", overageDisabledReason: "org_level_disabled", isUsingOverage: false, errorCode: "credits_required", canUserPurchaseCredits: false } }, message: { model: "<synthetic>", content: [{ type: "text", text: "Fable 5.2 requires usage credits. Switch to another model to continue." }] } });
+  fs.appendFileSync(f, creditos + "\n");
+  hit = await T.scanLimitErrors(now - 60000, dir);
+  check("“Fable 5.2 requires usage credits”: lê o código do erro (a conta não tem o modelo)", !!hit && hit.code === "credits_required" && hit.rateLimitType === null && hit.resetsAt === null && T.limitLabel(hit.text) === null && M.limitModel(hit.text, hit.rateLimitType) === "Fable" && M.needsCredits(hit.text, hit.code));
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
@@ -302,7 +308,30 @@ function partC() {
   check("uso desatualizado: não decide", p.want === null, p.why);
   p = plano([{ ...acct(1), usage: { sevenDay: { pct: 10, resetsAt: new Date(now + HOUR).toISOString() } } }]);
   check("conta sem o limite do Fable informado: não decide", p.want === null, p.why);
-  const feito = { v: 1, state: "fallback", from: "fable", to: "opus", account: 1, at: now - HOUR, holdUntil: null, cycleEnd: now + 48 * HOUR };
+
+  // --- 3.4.1: a conta em uso não tem o Fable (o uso dela vem sem o limite, e outra conta informa) → o secundário
+  const semFable = (n, o = {}) => ({ ...acct(n, o), usage: { fiveHour: { pct: 0, resetsAt: new Date(now + 2 * HOUR).toISOString() }, sevenDay: { pct: o.w || 0, resetsAt: new Date(now + 48 * HOUR).toISOString() } } });
+  p = plano([semFable(1), acct(2, { f: 10 })]);
+  check("conta sem Fable e outra conta com Fable → o secundário, pelo motivo “a conta não tem”", p.want === "fallback" && p.reason === "absent" && p.account === 1 && !p.forget, p.why);
+  p = plano([semFable(1), semFable(2)]);
+  check("nenhuma conta informa o Fable: não decide", p.want === null && /não informa o limite do Fable/.test(p.why), p.why);
+  p = plano([semFable(1), acct(2, { f: 99, age: 7200 })]);
+  check("…a outra conta vale mesmo com dado antigo e Fable no fim (é só para saber se o modelo existe)", p.want === "fallback" && p.reason === "absent");
+  p = plano([semFable(1, { age: 3600 }), acct(2, { f: 10 })]);
+  check("conta sem Fable com uso desatualizado: não decide", p.want === null, p.why);
+  const ausente = { v: 1, state: "fallback", from: "fable", to: "opus", account: 1, reason: "absent", at: now - HOUR, holdUntil: null, cycleEnd: null };
+  p = plano([semFable(1), acct(2, { f: 10 })], { marker: ausente });
+  check("já no secundário por isso: continua nele enquanto estiver nessa conta", p.want === "fallback" && p.reason === "absent");
+  p = plano([semFable(1), acct(2, { f: 10 })], { active: 2, marker: ausente });
+  check("foi para uma conta que tem Fable: volta ao Fable", p.want === "preferred" && p.account === 2);
+  p = plano([semFable(1), acct(2, { f: 10 })], { marker: { v: 1, state: "user", from: "fable", account: 1, at: now - HOUR, cycleEnd: null } });
+  check("padrão escolhido à mão nessa conta: fica como a pessoa deixou", p.want === null && !p.forget, p.why);
+  p = plano([semFable(1), acct(2, { f: 10 })], { marker: { v: 1, state: "user", from: "fable", account: 2, at: now - HOUR, cycleEnd: null } });
+  check("…a escolha à mão era de outra conta: aqui vale o secundário", p.want === "fallback" && p.reason === "absent" && p.forget === true);
+  const CREDITOS_MSG = "Fable 5.2 requires usage credits. Switch to another model to continue.";
+  check("erro “requires usage credits”: é do Fable e diz que a conta não tem o modelo", M.limitModel(CREDITOS_MSG) === "Fable" && M.needsCredits(CREDITOS_MSG) && M.needsCredits("Usage credits are required for this model.") && M.needsCredits("", "credits_required") && !M.needsCredits(FABLE_MSG) && !M.needsCredits(FABLE_MSG, "rate_limit_error"));
+
+  const feito ={ v: 1, state: "fallback", from: "fable", to: "opus", account: 1, at: now - HOUR, holdUntil: null, cycleEnd: now + 48 * HOUR };
   p = plano([acct(1, { f: 92 })], { marker: feito });
   check("depois da troca, perto da linha (92%): espera a folga", p.want === null, p.why);
   p = plano([acct(1, { f: 90 })], { marker: feito });
@@ -412,6 +441,27 @@ function partC() {
   check("par Opus → Sonnet: Opus abaixo da linha → nada", p.want === null && /Opus abaixo da linha/.test(p.why), p.why);
   p = M.plan({ list: { activeAccountNumber: 1, accounts: [acct(1, { f: 10 })] }, records: {}, r: R1, marker: null, now, pair: SONNET });
   check("conta que não informa o limite do preferido: nada", p.want === null && /não informa o limite do Opus/.test(p.why), p.why);
+
+  // --- 3.4.1: o par visto de cada computador — painel Opus 5.5 → Fable 5.2, e este computador com o padrão no Fable
+  const PAINEL = M.pairOf({ primaryModel: "claude-opus-5-5", primaryEffort: "high", secondaryModel: "claude-fable-5-2", secondaryEffort: "xhigh" });
+  const VIRADO = M.orient(PAINEL, "fable", null);
+  check("padrão no secundário do painel: o par vale ao contrário (falta o Fable → Opus 5.5, cada um com o esforço dele)", VIRADO.primaryName === "Fable" && VIRADO.primaryId === "claude-fable-5-2" && VIRADO.primaryLine === "fable" && VIRADO.primaryEffort === "xhigh" && VIRADO.secondaryValue === "claude-opus-5-5" && VIRADO.secondaryLabel === "Opus 5.5" && VIRADO.secondaryEffort === "high" && M.reversePair(VIRADO) === PAINEL);
+  check("padrão no preferido, no modelo do plano ou num terceiro modelo: o par do painel", M.orient(PAINEL, "claude-opus-5-5", null) === PAINEL && M.orient(PAINEL, undefined, null) === PAINEL && M.orient(PAINEL, "sonnet", null) === PAINEL && M.orient(PAINEL, "claude-fable-5-2[1m]", null).primaryName === "Fable");
+  check("com uma troca anotada, vale o padrão de antes dela, não o de agora", M.orient(PAINEL, "claude-opus-5-5", { state: "fallback", from: "fable" }).primaryName === "Fable" && M.orient(PAINEL, "fable", { state: "fallback", from: "opus" }) === PAINEL && M.orient(PAINEL, "fable", { state: "user", from: null }) === PAINEL);
+  check("par de sempre (Fable → Opus) e padrão no Opus com troca anotada a partir do modelo do plano: não vira", M.orient(D, "opus", { state: "fallback", from: null }) === D && M.orient(D, "opus", { state: "fallback", from: "fable" }) === D);
+  p = M.plan({ list: { activeAccountNumber: 1, accounts: [semFable(1), acct(2, { f: 10 })] }, records: {}, r: R1, marker: null, now, pair: VIRADO });
+  check("painel Opus → Fable, padrão no Fable, conta sem Fable: pede o outro modelo do par", p.want === "fallback" && p.reason === "absent" && p.name === "Fable");
+  p = M.plan({ list: { activeAccountNumber: 1, accounts: [semFable(1), acct(2, { f: 10 })] }, records: {}, r: R1, marker: null, now, pair: PAINEL });
+  check("…com o padrão no Opus (o preferido do painel): nada, a conta sem Fable não atrapalha", p.want === null, p.why);
+  gravar("v1", { model: "fable", theme: "dark", modelSettings: { "claude-fable-5-2": { effortLevel: "xhigh" } } });
+  r = M.toFallback(f("v1"), mk("v1"), { account: 4, reason: "absent", now, pair: VIRADO });
+  check("par virado: o padrão vira o ID do preferido do painel, com o esforço dele; o resto do arquivo fica", r.ok && r.changed && ler("v1").model === "claude-opus-5-5" && ler("v1").modelSettings["claude-opus-5-5"].effortLevel === "high" && ler("v1").modelSettings["claude-fable-5-2"].effortLevel === "xhigh" && ler("v1").theme === "dark" && M.readMarker(mk("v1")).reason === "absent" && M.readMarker(mk("v1")).from === "fable" && M.readMarker(mk("v1")).to === "claude-opus-5-5");
+  const virado = () => M.orient(PAINEL, ler("v1").model, M.readMarker(mk("v1")));
+  check("…com a troca anotada o par continua virado, e o Opus no padrão continua sendo a troca do Swap Plus", virado().primaryName === "Fable" && M.noteUserChoice(f("v1"), mk("v1"), now, virado()).state === "fallback");
+  p = M.plan({ list: { activeAccountNumber: 2, accounts: [semFable(1), acct(2, { f: 10 })] }, records: {}, r: R1, marker: M.readMarker(mk("v1")), now, pair: virado() });
+  check("…foi para uma conta que tem Fable: pede a volta", p.want === "preferred" && p.account === 2);
+  r = M.toPreferred(f("v1"), mk("v1"), virado());
+  check("…e o padrão volta ao Fable, sem marcador", r.changed && r.state === "restored" && ler("v1").model === "fable" && M.readMarker(mk("v1")) === null && ler("v1").theme === "dark");
 
   // trocar e desfazer com o par do painel: grava o ID e o esforço do secundário
   gravar("p1", { model: "fable", theme: "dark", hooks: { StopFailure: [{ hooks: [{ type: "command", command: "node", args: ["x"] }] }] }, modelSettings: { "claude-fable-5-2": { effortLevel: "xhigh" } } });

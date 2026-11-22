@@ -565,12 +565,31 @@ function modelPair() {
   return modelSwitch.pairOf((srv.state && srv.state.rules) || null);
 }
 
+/**
+ * O par visto deste computador (3.4.1, ver modelSwitch.orient): os dois modelos do painel são a alternativa um do
+ * outro. Com o padrão do Claude Code daqui no SECUNDÁRIO do painel (ex.: painel Opus 5.5 → Fable 5.2, padrão daqui
+ * no Fable), o par vale ao contrário: quando o Fable falta na conta em uso, o padrão vai para o Opus 5.5, e volta.
+ */
+function localPair() {
+  const r = modelSwitch.readSettings(claudeSettingsPath());
+  return modelSwitch.orient(modelPair(), r.error ? undefined : r.data.model, modelSwitch.readMarker(modelMarkerFile()));
+}
+
+/** O servidor procura este modelo nas contas? (o nome do limite que ele olha: a regra preferModel, que segue o modelo preferido do painel) */
+function serverLooksFor(name) {
+  return String(rules().preferModel || "") === name;
+}
+
 const continueTip = (pair) => `Na conversa que parou, escolha ${pair.secondaryLabel} no seletor de modelo (embaixo da caixa de mensagem) e mande “continue”.`;
 const openTip = (pair) => `As conversas abertas seguem no modelo delas; para passar uma agora, escolha ${pair.secondaryLabel} no seletor de modelo.`;
 const EFFORT_WORDS = { low: "baixo", medium: "médio", high: "alto", xhigh: "muito alto" };
 const MODEL_NOTE_GAP_MS = 2 * 60 * 1000; // erros de limite em sequência (subagentes, várias conversas): um aviso só
+// Conta sem o modelo preferido, na regra "trocar de conta": um pedido de troca ao servidor a cada tanto. Se a conta
+// nova também não tiver o modelo, a conversa retomada para de novo — sem esta espera, o computador ficaria pulando.
+const ABSENT_ASK_GAP_MS = 10 * 60 * 1000;
 let modelErrShown = null;
 let modelLimitNotedAt = 0;
+let absentAskedAt = 0;
 
 function claudeSettingsPath() {
   return path.join(claudeConfigDir(), "settings.json");
@@ -589,7 +608,7 @@ function autoModelOn() {
 
 /** Para a tela: como está o modelo padrão do Claude Code neste computador. */
 function modelStatus() {
-  const pair = modelPair();
+  const pair = localPair();
   const base = { enabled: autoModelOn(), fallbackLabel: pair.secondaryLabel };
   const r = modelSwitch.readSettings(claudeSettingsPath());
   if (r.error) return { ...base, error: safe(r.error) };
@@ -611,7 +630,7 @@ function modelStatus() {
 
 /** Fim do aviso "o Fable chegou a X%" na regra "mesma conta". */
 function modelAlertTail(name, line) {
-  const pair = modelPair();
+  const pair = localPair();
   if (!modelSwitch.isPrimaryName(name, pair)) return "";
   return autoModelOn()
     ? ` Em ${fmtPct(line)} o Swap Plus passa o modelo padrão do Claude Code para o ${pair.secondaryLabel} (vale para as conversas novas); a conta não muda.`
@@ -629,21 +648,25 @@ const defaultModelText = (m) => (m === null || m === undefined ? "o modelo do pl
 
 /**
  * Passa o modelo padrão do Claude Code para o secundário (se hoje é o preferido) e avisa.
- * meta: { reason: "limit" | "line", account, pct, line, resetsAt (ISO), holdUntil (ms), cycleEnd (ms) }
+ * meta: { reason: "limit" | "line" | "absent", seen, account, pct, line, resetsAt (ISO), holdUntil (ms), cycleEnd (ms) }
+ *   reason "absent": a conta em uso não tem o modelo preferido (pelo uso das contas, ou pelo erro "requires usage credits").
+ *   seen: o motivo foi visto numa conversa, que parou (o "limit" é sempre assim).
+ *   pair: o par em que o modelo que falta é o "preferido" (sem ele, o par visto deste computador: localPair).
  */
 async function fallbackToOpus(meta) {
   if (!autoModelOn()) return null;
-  const pair = modelPair();
+  const pair = meta.pair || localPair();
   const P = pair.primaryName;
   const S = pair.secondaryLabel;
+  const limit = meta.reason === "limit" || !!meta.seen; // uma conversa parou com o erro: o preferido estava em uso
   const res = modelSwitch.toFallback(claudeSettingsPath(), modelMarkerFile(), {
     account: meta.account === undefined ? null : meta.account,
     reason: meta.reason,
     now: Date.now(),
     holdUntil: meta.holdUntil || null,
     cycleEnd: meta.cycleEnd || null,
-    // Erro de limite do preferido: ele estava em uso. Pela linha: só se foi usado neste computador há pouco.
-    fableInUse: meta.reason === "limit" || state.models.some((m) => modelSwitch.isPrimaryName(m.id, pair)),
+    // Erro visto na conversa: o preferido estava em uso. Pelo uso das contas: só se foi usado neste computador há pouco.
+    fableInUse: limit || state.models.some((m) => modelSwitch.isPrimaryName(m.id, pair)),
     pair,
   });
   if (!res.ok) {
@@ -651,10 +674,15 @@ async function fallbackToOpus(meta) {
     return res;
   }
   modelErrShown = null;
-  const limit = meta.reason === "limit";
-  const acc = meta.account === null || meta.account === undefined ? "" : ` na conta ${meta.account}`;
+  const known = !(meta.account === null || meta.account === undefined);
+  const acc = known ? ` na conta ${meta.account}` : "";
   const when = meta.resetsAt && fmtWhen(meta.resetsAt) ? ` (renova ${fmtWhen(meta.resetsAt)})` : "";
-  const what = limit ? `o ${P} acabou${acc}${when}` : `o ${P}${acc.replace(" na ", " da ")} chegou a ${fmtPct(meta.pct)} (linha ${fmtPct(meta.line)})`;
+  const what =
+    meta.reason === "absent"
+      ? `${known ? `a conta ${meta.account}` : "a conta em uso"} não tem o ${P}`
+      : limit
+        ? `o ${P} acabou${acc}${when}`
+        : `o ${P}${acc.replace(" na ", " da ")} chegou a ${fmtPct(meta.pct)} (linha ${fmtPct(meta.line)})`;
   const settings = (c) => c && openSettings();
   const noted = limit && Date.now() - modelLimitNotedAt < MODEL_NOTE_GAP_MS;
   if (limit) modelLimitNotedAt = Date.now();
@@ -679,7 +707,7 @@ async function fallbackToOpus(meta) {
 
 /** Desfaz a troca do Swap Plus: o modelo padrão volta ao de antes. `what` = o motivo, para o aviso. */
 async function backToPreferred(what) {
-  const res = modelSwitch.toPreferred(claudeSettingsPath(), modelMarkerFile(), modelPair());
+  const res = modelSwitch.toPreferred(claudeSettingsPath(), modelMarkerFile(), localPair());
   if (!res.ok) {
     reportModelError(safe(res.error));
     return res;
@@ -733,23 +761,47 @@ async function checkModelSwitch() {
   if (!autoModelOn()) return undoModelSwitch("a troca automática do modelo padrão está desligada");
   const list = state.list;
   if (!list) return null;
-  const pair = modelPair();
-  await syncModelEfforts(pair);
+  await syncModelEfforts(modelPair());
+  const pair = localPair(); // quem usa o secundário do painel como padrão cai no preferido do painel (e volta)
   const file = claudeSettingsPath();
   const mk = modelMarkerFile();
   const now = Date.now();
   const marker = modelSwitch.noteUserChoice(file, mk, now, pair);
   const p = modelSwitch.plan({ list, records: state.records, r: rules(), marker, now, pair });
   if (p.forget) modelSwitch.clearMarker(mk);
-  if (p.want === "fallback") return fallbackToOpus(p);
-  if (p.want === "preferred") return backToPreferred(`o ${pair.primaryName} voltou na conta ${p.account} (${fmtPct(p.pct)} usado)`);
+  if (p.want === "fallback") return fallbackToOpus({ ...p, pair });
+  if (p.want === "preferred") {
+    // Saiu de uma conta que não tem o modelo: ele não "voltou", é a conta nova que tem.
+    const absent = !!marker && marker.reason === "absent" && marker.account !== p.account;
+    return backToPreferred(absent ? `a conta ${p.account} tem o ${pair.primaryName} (${fmtPct(p.pct)} usado)` : `o ${pair.primaryName} voltou na conta ${p.account} (${fmtPct(p.pct)} usado)`);
+  }
   return null;
 }
 
-/** O limite de um modelo acabou na conta em uso (erro visto na conversa). Só o modelo preferido tem troca para o secundário. */
+/**
+ * Há outra conta, na troca automática e com o login vivo, em que o modelo preferido ainda está abaixo da linha?
+ * (Com os dados que este computador tem; quem escolhe a conta é o servidor.)
+ */
+function otherAccountHasPrimary(list, active, pair) {
+  const r = rules();
+  for (const a of (list && list.accounts) || []) {
+    if (active && a.number === active.number) continue;
+    if (recordOf(state.records, a.number).disabled || loginDead(a)) continue;
+    const w = windows(a);
+    const m = w ? w.models.find((x) => modelSwitch.isPrimaryName(x.name, pair)) : null;
+    if (m && m.pct < linesFor(a, r, state.records).model) return true;
+  }
+  return false;
+}
+
+/**
+ * O limite de um modelo acabou na conta em uso, ou a conta não tem o modelo (erro visto na conversa). Vale para o
+ * modelo que este computador usa como padrão (localPair: pode ser o secundário do painel) e, como sempre, para o
+ * preferido do painel. Erro de outro modelo: nada.
+ */
 async function modelLimitHit(model, hit) {
-  const pair = modelPair();
-  if (model !== pair.primaryName) return null;
+  const pair = [localPair(), modelPair()].find((p) => p.primaryName === model);
+  if (!pair) return null;
   // Sem conexão com o servidor o Swap Plus não mexe em nada (nem saberia quando o preferido volta).
   if (!srv.token || serverMeta().revokedAt) return null;
   const now = Date.now();
@@ -757,16 +809,29 @@ async function modelLimitHit(model, hit) {
   const active = list ? list.accounts.find((a) => a.number === list.activeAccountNumber) : null;
   const w = active ? windows(active) : null;
   const fable = w ? w.models.find((m) => modelSwitch.isPrimaryName(m.name, pair)) : null;
+  // "Fable 5.2 requires usage credits": a conta em uso não tem o modelo. Não é limite que renova.
+  const absent = !!hit && modelSwitch.needsCredits(hit.text, hit.code);
   // Quando o Fable renova: o que o Claude Code gravou junto do erro; senão o que o servidor informa.
   const fromUsage = fable ? Date.parse(fable.resetsAt || "") : NaN;
-  const resetMs = hit && hit.resetsAt > now ? hit.resetsAt : fromUsage > now ? fromUsage : null;
+  const resetMs = absent ? null : hit && hit.resetsAt > now ? hit.resetsAt : fromUsage > now ? fromUsage : null;
   if (rules().onModelLimit === "switchAccount") {
     // Regra "trocar de conta": primeiro o servidor procura uma conta que ainda tem o modelo preferido.
-    const res = await serverLimitHit(`limite do ${pair.primaryName}`, { quiet: autoModelOn() });
-    if (res && res.kind === "switch") return res;
+    // Modelo que o servidor não procura nas contas (o secundário do painel): ele poderia mandar o computador para
+    // outra conta sem o modelo, então não pede — vale o outro modelo do par, na mesma conta.
+    // Conta sem o modelo: só pede se alguma outra tem, e um pedido a cada tanto (ver ABSENT_ASK_GAP_MS).
+    const looksFor = serverLooksFor(pair.primaryName);
+    const ask = absent ? looksFor && now - absentAskedAt >= ABSENT_ASK_GAP_MS && otherAccountHasPrimary(list, active, pair) : looksFor || !pair.reversedFrom;
+    if (ask) {
+      if (absent) absentAskedAt = now;
+      const label = absent ? `limite do ${pair.primaryName} (a conta não tem esse modelo)` : `limite do ${pair.primaryName}`;
+      const res = await serverLimitHit(label, { quiet: autoModelOn() });
+      if (res && res.kind === "switch") return res;
+    }
   }
   return fallbackToOpus({
-    reason: "limit",
+    pair,
+    reason: absent ? "absent" : "limit",
+    seen: true,
     account: active ? active.number : null,
     resetsAt: resetMs ? new Date(resetMs).toISOString() : null,
     holdUntil: resetMs || now + modelSwitch.HOLD_MS,
@@ -906,7 +971,9 @@ async function scanLimitErrors(sinceMs, root = limitRoot) {
       const q = d.quotaLimits || (d.apiErrorParams && d.apiErrorParams.rate_limit_info) || null;
       const rateLimitType = q && typeof q.rateLimitType === "string" ? q.rateLimitType : null;
       const resetsAt = q && Number(q.resetsAt) > 0 ? Number(q.resetsAt) * 1000 : null;
-      if (!latest || ts > latest.ts) latest = { ts, text, file: f, rateLimitType, resetsAt };
+      // "credits_required" = a conta não tem o modelo ("Fable 5.2 requires usage credits"): ver modelSwitch.needsCredits.
+      const code = typeof d.apiErrorCode === "string" ? d.apiErrorCode : q && typeof q.errorCode === "string" ? q.errorCode : null;
+      if (!latest || ts > latest.ts) latest = { ts, text, file: f, rateLimitType, resetsAt, code };
     }
   }
   return latest;
@@ -3780,6 +3847,7 @@ module.exports = {
     modelStatus,
     checkModelSwitch,
     modelLimitHit,
+    resetAbsentAsk: () => (absentAskedAt = 0),
     modelMarkerFile,
     claudeSettingsPath,
     orderForDisplay,

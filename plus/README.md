@@ -148,6 +148,16 @@ Daqui para baixo: detalhes técnicos, para quem mexe no código.
   que ele mesmo trocou; padrão escolhido à mão depois da troca fica como a pessoa deixou. Na regra **Trocar de
   conta** (no painel, em **Quando o limite de um modelo acaba**), o erro de limite do Fable vai primeiro ao servidor
   (que procura uma conta com Fable); o modelo só muda se não houver conta com Fable.
+  **Conta sem o modelo preferido** (3.4.1): vale o secundário enquanto o computador estiver nela. Dois sinais: o
+  uso da conta em uso vem sem o limite do modelo enquanto outra conta informa esse limite (`plan()` devolve
+  `reason: "absent"`), ou a conversa para com "Fable 5.2 requires usage credits" (`apiErrorCode: credits_required`,
+  ver `needsCredits()`). Na regra **Trocar de conta**, esse erro pede ao servidor uma conta com o modelo no máximo
+  uma vez a cada 10 minutos, e só se alguma outra conta tem o modelo abaixo da linha.
+  **O par visto de cada computador** (3.4.1, `orient()` e `reversePair()` em `modelSwitch.js`, `localPair()` na
+  extensão): os dois modelos do painel são a alternativa um do outro. Com o padrão do Claude Code no SECUNDÁRIO do
+  painel (ex.: painel Opus 5.5 → Fable 5.2, padrão no Fable), as mesmas regras valem com o par virado: falta o
+  Fable na conta em uso → Opus 5.5, e volta. Nesse caso o erro na conversa não pede troca de conta ao servidor,
+  que não procura o secundário nas contas (`preferModel`).
   **Desde a 3.4.0 os dois modelos e o esforço vêm das regras do servidor** (painel → Regras de troca → **Modelo
   preferido** e **Modelo secundário**, cada um com o seu **Esforço**): `primaryModel`, `primaryEffort`,
   `secondaryModel`, `secondaryEffort`, dentro de `rules` do estado. `modelSwitch.pairOf()` monta o par a partir das

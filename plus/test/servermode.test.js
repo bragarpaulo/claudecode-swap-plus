@@ -704,6 +704,20 @@ const linhaConversa = (model) => JSON.stringify({ type: "assistant", timestamp: 
 // Formato que scanLimitErrors espera (o erro que o Claude Code grava quando bate o limite).
 const linhaLimite = (text) =>
   JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", timestamp: new Date().toISOString(), message: { model: "<synthetic>", content: [{ type: "text", text }] } });
+// A conta em uso não tem o modelo: o erro como o Claude Code 2.1.330 gravou em 21/11/2026 (só os campos que importam).
+const LIMITE_CREDITOS = "Fable 5.2 requires usage credits. Switch to another model to continue.";
+const linhaCreditos = () =>
+  JSON.stringify({
+    type: "assistant",
+    isApiErrorMessage: true,
+    error: "rate_limit",
+    apiError: "model_requires_usage_credits",
+    apiErrorStatus: 429,
+    apiErrorCode: "credits_required",
+    timestamp: new Date().toISOString(),
+    apiErrorParams: { rate_limit_info: { status: "rejected", overageDisabledReason: "org_level_disabled", isUsingOverage: false, errorCode: "credits_required" } },
+    message: { model: "<synthetic>", content: [{ type: "text", text: LIMITE_CREDITOS }] },
+  });
 
 async function limparLimite() {
   await globalState.update("swapPlus.lastLimitHit", 0);
@@ -1717,6 +1731,217 @@ test("8f. modelos escolhidos no painel (3.4.0): o esforço segue as regras; quan
   fake.fable = { 1: 20, 2: 10 };
   await ciclo();
   await waitFor(() => lerSettings().model === "fable", 3000, "voltar ao Fable");
+});
+
+test("8g. conta sem Fable (3.4.1): pelo uso das contas ou pelo erro “requires usage credits”, o modelo padrão passa para o secundário; volta numa conta que tem Fable", { timeout: T_MAX }, async () => {
+  // a) pelo uso: a conta 1 vem sem o limite do Fable e a conta 2 informa → Opus 5.5, sem nada ir ao servidor
+  await prepararServidor();
+  escreverSettings({ model: "fable", effortLevel: "xhigh", permissions: { allow: ["Bash(ls)"] } });
+  fake.rules = { onModelLimit: "sameAccount", modelPct: 95 };
+  fake.fable = { 2: 10 };
+  let mark = fake.calls.length;
+  let n0 = notes.length;
+  await ciclo();
+  await waitFor(() => lerSettings().model === "opus", 3000, "o padrão passar para o secundário na conta sem Fable");
+  assert.deepEqual(lerSettings().permissions, { allow: ["Bash(ls)"] }, "o resto do settings.json fica");
+  assert.deepEqual([lerMarcador().state, lerMarcador().reason, lerMarcador().account, lerMarcador().from, lerMarcador().holdUntil], ["fallback", "absent", 1, "fable", null]);
+  await ciclo();
+  await sleep(100);
+  assert.equal(fake.since(mark).filter(isEvents).length, 0, "pelo uso: nada vai ao servidor (a conta não muda)");
+  const avisos = notes.slice(n0).filter((n) => /a conta 1 não tem o Fable/.test(n.message));
+  assert.equal(avisos.length, 1, "um aviso só, mesmo com mais ciclos");
+  assert.match(avisos[0].message, /modelo padrão do Claude Code passou para o Opus 5\.5: toda conversa nova já abre nele/);
+  assert.match(avisos[0].message, /conversas abertas seguem no modelo delas/);
+  assert.ok(T.historyPayload().some((h) => h.kind === "model" && /^A conta 1 não tem o Fable: o modelo padrão do Claude Code passou de Fable para Opus 5\.5$/.test(h.text)), "fica no histórico deste VS Code");
+  assert.deepEqual([T.buildPayload().autoModel.switched, T.buildPayload().autoModel.account, T.buildPayload().autoModel.backLabel], [true, 1, "Fable"]);
+
+  // b) este computador vai para a conta 2, que tem Fable: o padrão volta
+  fake.assigned = 2;
+  n0 = notes.length;
+  await ciclo();
+  await waitFor(() => lerSettings().model === "fable", 3000, "o padrão voltar ao Fable na conta que tem");
+  assert.equal(lerMarcador(), null);
+  await waitFor(() => notes.slice(n0).some((n) => n.kind === "info" && /a conta 2 tem o Fable \(10% usado\)\. O modelo padrão do Claude Code voltou para o Fable/.test(n.message)), 2000, "aviso da volta");
+
+  // c) nenhuma conta informa o Fable (ou o modelo preferido nem tem limite próprio): não conclui nada, não mexe
+  await prepararServidor();
+  escreverSettings({ model: "fable" });
+  fake.rules = { onModelLimit: "sameAccount", modelPct: 95 };
+  fake.fable = {};
+  await ciclo();
+  await sleep(100);
+  assert.equal(lerSettings().model, "fable");
+  assert.equal(lerMarcador(), null);
+
+  // d) pelo erro na conversa (“requires usage credits”), com o uso ainda mostrando Fable nessa conta: troca e orienta a conversa que parou
+  fake.fable = { 1: 20, 2: 10 };
+  await ciclo();
+  await limparLimite();
+  mark = fake.calls.length;
+  n0 = notes.length;
+  let tr = escreverTranscricao("creditos", "c.jsonl", [linhaConversa("claude-fable-5-2"), linhaCreditos()]);
+  try {
+    const res = await T.checkLimitErrors();
+    assert.ok(res && res.changed, "trocou o modelo padrão");
+    assert.equal(lerSettings().model, "opus");
+    assert.deepEqual([lerMarcador().reason, lerMarcador().account], ["absent", 1]);
+    assert.ok(lerMarcador().holdUntil > Date.now(), "segura a volta: o uso (20%) não devolve o Fable logo em seguida");
+    await sleep(100);
+    assert.equal(fake.since(mark).filter(isEvents).length, 0, "“mesma conta”: o erro não vai ao servidor");
+    const aviso = notes.slice(n0).filter((n) => /a conta 1 não tem o Fable/.test(n.message));
+    assert.equal(aviso.length, 1);
+    assert.match(aviso[0].message, /escolha Opus 5\.5 no seletor de modelo .* e mande “continue”/);
+    assert.equal(notes.slice(n0).filter((n) => /Fable acabou/.test(n.message)).length, 0, "não diz que o Fable “acabou”");
+    await ciclo();
+    await sleep(50);
+    assert.equal(lerSettings().model, "opus", "o uso em 20% não devolve o Fable enquanto vale o erro visto na conversa");
+  } finally {
+    fs.rmSync(tr, { force: true });
+  }
+
+  // e) regra “trocar de conta”: a conta 1 não tem Fable e a 2 tem → UM pedido ao servidor; ele troca e o padrão volta ao Fable
+  await prepararServidor();
+  escreverSettings({ model: "fable" });
+  fake.rules = { onModelLimit: "switchAccount", modelPct: 95 };
+  fake.fable = { 2: 10 };
+  await ciclo();
+  await waitFor(() => lerSettings().model === "opus", 3000, "conta sem Fable: conversas novas no secundário");
+  await limparLimite();
+  T.resetAbsentAsk();
+  mark = fake.calls.length;
+  tr = escreverTranscricao("creditos-sw", "c.jsonl", [linhaConversa("claude-fable-5-2"), linhaCreditos()]);
+  try {
+    await T.checkLimitErrors();
+    await waitFor(() => lerLogin().claudeAiOauth.accessToken === acessoServidor(2, 1), 5000, "a conta 2 gravada");
+    const ev = fake.since(mark).filter(isEvents);
+    assert.equal(ev.length, 1);
+    assert.deepEqual(ev[0].body, { kind: "limit_hit", label: "limite do Fable (a conta não tem esse modelo)" });
+    await ciclo();
+    await waitFor(() => lerSettings().model === "fable", 3000, "na conta 2, que tem Fable, o padrão volta");
+    assert.equal(lerMarcador(), null);
+  } finally {
+    fs.rmSync(tr, { force: true });
+  }
+
+  // f) logo depois, de novo numa conta sem Fable: não pede outra troca (um pedido a cada 10 min) e fica no secundário
+  fake.fable = { 1: 10 }; // agora é a conta 2 (a em uso) que não tem
+  await ciclo();
+  await waitFor(() => lerSettings().model === "opus", 3000, "conta 2 sem Fable: secundário");
+  await limparLimite();
+  mark = fake.calls.length;
+  tr = escreverTranscricao("creditos-sw2", "c.jsonl", [linhaCreditos()]);
+  try {
+    await T.checkLimitErrors();
+    await sleep(150);
+    assert.equal(fake.since(mark).filter(isEvents).length, 0, "sem novo pedido de troca ao servidor");
+    assert.equal(lerSettings().model, "opus");
+    assert.equal(lerMarcador().account, 2);
+    assert.equal(lerLogin().claudeAiOauth.accessToken, acessoServidor(2, 1), "a conta não muda");
+  } finally {
+    fs.rmSync(tr, { force: true });
+  }
+
+  // g) passado o intervalo, mas nenhuma outra conta com Fable abaixo da linha: também não pede (não adiantaria)
+  T.resetAbsentAsk();
+  fake.fable = { 1: 99 };
+  await ciclo();
+  await limparLimite();
+  mark = fake.calls.length;
+  tr = escreverTranscricao("creditos-sw3", "c.jsonl", [linhaCreditos()]);
+  try {
+    await T.checkLimitErrors();
+    await sleep(150);
+    assert.equal(fake.since(mark).filter(isEvents).length, 0, "nenhuma conta com Fable sobrando: não pede troca");
+    assert.equal(lerSettings().model, "opus");
+  } finally {
+    fs.rmSync(tr, { force: true });
+  }
+});
+
+test("8h. par visto deste computador (3.4.1): painel Opus 5.5 → Fable 5.2 e o padrão daqui no Fable — sem Fable na conta, o padrão vai para o Opus 5.5 e volta; nada é pedido ao servidor", { timeout: T_MAX }, async () => {
+  // As regras como estavam no servidor em 22/11/2026: preferido = Opus 5.5, secundário = Fable 5.2, "trocar de conta".
+  const REGRAS = { onModelLimit: "switchAccount", modelPct: 95, marginPct: 5, preferModel: "Opus", primaryModel: "claude-opus-5-5", primaryEffort: "high", secondaryModel: "claude-fable-5-2", secondaryEffort: "high" };
+
+  // a) conta com Fable: o padrão fica no Fable; só o esforço segue o painel
+  await prepararServidor();
+  escreverSettings({ model: "fable", theme: "dark", modelSettings: { "claude-fable-5-2": { effortLevel: "xhigh" } } });
+  fake.rules = { ...REGRAS };
+  fake.fable = { 1: 30, 2: 10 };
+  await ciclo();
+  await waitFor(() => lerSettings().modelSettings["claude-fable-5-2"].effortLevel === "high", 3000, "o esforço do painel chegar ao settings.json");
+  assert.equal(lerSettings().model, "fable");
+  assert.equal(lerMarcador(), null);
+  assert.equal(T.buildPayload().autoModel.fallbackLabel, "Opus 5.5", "para quem usa o Fable aqui, o outro modelo é o Opus 5.5");
+
+  // b) a conta em uso não tem Fable (a 2 tem): o padrão passa para o preferido do painel, pelo ID, com o esforço dele
+  fake.fable = { 2: 10 };
+  let mark = fake.calls.length;
+  let n0 = notes.length;
+  await ciclo();
+  await waitFor(() => lerSettings().model === "claude-opus-5-5", 3000, "o padrão passar para o Opus 5.5");
+  assert.equal(lerSettings().modelSettings["claude-opus-5-5"].effortLevel, "high");
+  assert.equal(lerSettings().theme, "dark");
+  assert.deepEqual([lerMarcador().state, lerMarcador().reason, lerMarcador().account, lerMarcador().from, lerMarcador().to], ["fallback", "absent", 1, "fable", "claude-opus-5-5"]);
+  const aviso = notes.slice(n0).filter((n) => /a conta 1 não tem o Fable\. O modelo padrão do Claude Code passou para o Opus 5\.5/.test(n.message));
+  assert.equal(aviso.length, 1);
+  const am = T.buildPayload().autoModel;
+  assert.deepEqual([am.switched, am.account, am.label, am.backLabel], [true, 1, "Opus 5.5", "Fable"]);
+  await ciclo();
+  await sleep(50);
+  assert.equal(lerSettings().model, "claude-opus-5-5", "continua no Opus 5.5 enquanto estiver nessa conta");
+  assert.equal(lerMarcador().state, "fallback", "o Opus no padrão continua sendo a troca do Swap Plus");
+
+  // c) uma conversa aberta em Fable para com “requires usage credits”: o servidor não procura Fable nas contas
+  //    (o preferido dele é o Opus), então nada é pedido a ele; o padrão já é o Opus 5.5
+  await limparLimite();
+  T.resetAbsentAsk();
+  mark = fake.calls.length;
+  let tr = escreverTranscricao("virado", "c.jsonl", [linhaConversa("claude-fable-5-2"), linhaCreditos()]);
+  try {
+    await T.checkLimitErrors();
+    await sleep(150);
+    assert.equal(fake.since(mark).filter(isEvents).length, 0, "nenhum pedido de troca de conta");
+    assert.equal(lerSettings().model, "claude-opus-5-5");
+    assert.equal(lerLogin().claudeAiOauth.accessToken, acessoServidor(1, 1), "a conta não muda");
+  } finally {
+    fs.rmSync(tr, { force: true });
+  }
+
+  // d) o computador vai para a conta 2, que tem Fable: o padrão volta ao Fable
+  fake.assigned = 2;
+  n0 = notes.length;
+  await ciclo();
+  await waitFor(() => lerSettings().model === "fable", 3000, "o padrão voltar ao Fable");
+  assert.equal(lerMarcador(), null);
+  await waitFor(() => notes.slice(n0).some((n) => n.kind === "info" && /a conta 2 tem o Fable \(10% usado\)\. O modelo padrão do Claude Code voltou para o Fable/.test(n.message)), 2000, "aviso da volta");
+
+  // e) o Fable ACABA nessa conta (erro na conversa): também vai para o Opus 5.5, sem pedir troca de conta
+  await limparLimite();
+  mark = fake.calls.length;
+  tr = escreverTranscricao("virado2", "c.jsonl", [linhaConversa("claude-fable-5-2"), linhaLimite(LIMITE_FABLE)]);
+  try {
+    const res = await T.checkLimitErrors();
+    assert.ok(res && res.changed);
+    assert.equal(lerSettings().model, "claude-opus-5-5");
+    assert.deepEqual([lerMarcador().reason, lerMarcador().account, lerMarcador().from], ["limit", 2, "fable"]);
+    await sleep(100);
+    assert.equal(fake.since(mark).filter(isEvents).length, 0);
+  } finally {
+    fs.rmSync(tr, { force: true });
+  }
+
+  // f) outro computador, com o padrão no Opus 5.5 (o preferido do painel): conta sem Fable não muda nada
+  await prepararServidor();
+  escreverSettings({ model: "claude-opus-5-5" });
+  fake.rules = { ...REGRAS };
+  fake.fable = { 2: 10 };
+  n0 = notes.length;
+  await ciclo();
+  await ciclo();
+  await sleep(100);
+  assert.equal(lerSettings().model, "claude-opus-5-5");
+  assert.equal(lerMarcador(), null);
+  assert.equal(notes.slice(n0).filter((n) => /não tem o Fable|modelo padrão do Claude Code passou/.test(n.message)).length, 0);
 });
 
 test("9. nenhum token em notificações, histórico, logs, tela, barra, globalState ou temporários", { timeout: T_MAX }, async () => {

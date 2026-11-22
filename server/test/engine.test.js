@@ -485,9 +485,9 @@ test("credentialFor: renova para valer ≥ 30 min, grava antes e nunca devolve r
   // Nem o estado nem a lista levam token nenhum.
   const state = engine.stateFor("d1");
   assertNoTokens(fake.allTokens(), state, "o StateResponse");
-  assert.deepEqual(Object.keys(state).sort(), ["autoSwitch", "credential", "device", "devices", "diag", "history", "list", "records", "rules", "serverTime", "version", "warnings"].sort());
+  assert.deepEqual(Object.keys(state).sort(), ["autoSwitch", "credential", "device", "devices", "diag", "features", "history", "list", "records", "rules", "serverTime", "version", "warnings"].sort());
   assert.deepEqual(state.warnings, []);
-  assert.deepEqual(state.device, { id: "d1", name: "PC d1", assigned: 1, lastSwitchAt: store.state.devices.d1.lastSwitchAt, canUploadLogins: true });
+  assert.deepEqual(state.device, { id: "d1", name: "PC d1", assigned: 1, lastSwitchAt: store.state.devices.d1.lastSwitchAt, canUploadLogins: true, want: store.state.devices.d1.models.length ? ["Fable"] : [], modelBlock: null });
   assert.deepEqual(state.credential, { number: 1, gen: 2, expiresAt: cred.claudeAiOauth.expiresAt });
   assert.equal(state.list.schemaVersion, 1);
   assert.equal(state.list.activeAccountNumber, 1);
@@ -2151,9 +2151,20 @@ test("modelo preferido (Fable): “aproveitar ao máximo” não troca uma conta
   assert.equal(store.state.history.some((h) => /para a conta 1: a cota semanal dela zera/.test(h.text)), false);
   assert.equal(engine.bestAccountFor(null), 2);
 
-  // Sem o modelo preferido marcado, “aproveitar ao máximo” vai para a que zera antes (como sempre).
+  // Sem o modelo preferido marcado, “aproveitar ao máximo” vai para a que zera antes (como sempre) — desde que
+  // nenhum serviço esteja no Fable (2.7.0: o modelo que o serviço usa vale mais que o preferido do painel).
   await engine.setRules({ rules: { preferModel: "" } });
   await passar(1);
+  assert.deepEqual([mac.assigned, win.assigned], [2, 2], "o Windows usa o Fable: não vai para a conta sem Fable sobrando");
+  delete win.modelSeen;
+  const usarOpus = async () => {
+    clock.t += 60000;
+    usar();
+    await engine.heartbeat("mac", { models: ["claude-opus-5-5"] });
+    await engine.heartbeat("win", { models: ["claude-opus-5-5"] });
+    await engine.tick();
+  };
+  await usarOpus();
   assert.deepEqual([mac.assigned, win.assigned], [1, 1]);
   assert.match(store.state.history[0].text, /para a conta 1: a cota semanal dela zera .* com 23% sobrando/);
   assert.equal(engine.bestAccountFor(null), 1);
@@ -2207,6 +2218,11 @@ test("serviços juntos: os ativos ficam na mesma conta (a do topo da fila) e tro
   await engine.setRules({ rules: { onModelLimit: "switchAccount" } });
   d1.models = ["claude-opus-4-5"];
   d2.models = [];
+  // 2.7.0: troca só pelo modelo vai só para conta que TEM o modelo (a 2 não tem a linha do Fable): o grupo fica.
+  await engine.tick();
+  assert.deepEqual([d1.assigned, d2.assigned], [1, 1], "nenhuma outra conta com Fable: fica");
+  assert.equal(engine.stateFor("d1").device.modelBlock, null, "ninguém usa o Fable: sem pergunta (o modelBlock é do modelo em uso)");
+  store.state.accounts["2"].usage.scoped = [{ name: "Fable", pct: 10, resetsAt: null }];
   await engine.tick();
   assert.deepEqual([d1.assigned, d2.assigned], [2, 2], "Fable na linha: o grupo inteiro troca, mesmo com os dois no Opus");
   assert.equal(store.state.history[0].text, "Serviços trocados juntos para a conta 2: Fable em 97% (linha 95%) — PC d1 e PC d2");

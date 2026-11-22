@@ -447,6 +447,11 @@ desliga na hora; as outras regras só mudam quando você clicar em **Salvar regr
   modelo do painel** e volta ao Fable quando o computador for para uma conta que tem. Isso vale também com o painel
   em preferido = Opus 5.5 e secundário = Fable 5.2: num computador que usa o Fable como padrão, a conta sem Fable
   leva o padrão para o Opus 5.5.
+  **Desde o servidor 2.7.0 / extensão 3.5.0:** a conta segue o modelo que cada computador usa de verdade (o que
+  você escolher no VS Code manda, não só o painel). Quem usa o Fable só vai para conta com Fable; numa conta sem
+  Fable, o servidor troca na hora. O modelo padrão só muda se você disser que quer: quando nenhuma conta tem o
+  Fable disponível, aparece "Não há mais nenhuma conta com Fable disponível. Você quer mudar para o Opus 5.5?".
+  Detalhes em `NOVIDADES-3.5.md`.
 - **Para qual conta ir (estratégia):** **Aproveitar ao máximo** (o padrão), **Mais folga** ou **Por prioridade**.
   No mesmo cartão ficam os modelos:
   - **Modelo preferido** e o **esforço** dele: o modelo que as conversas usam e que o Swap procura nas contas (ao

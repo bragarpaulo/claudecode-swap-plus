@@ -48,7 +48,7 @@ const {
 const { createWeb, webReplacer, uaSummary } = require("./web");
 const access = require("./access");
 
-const VERSION = "2.6.0";
+const VERSION = "2.7.0";
 const MAX_BODY = 256 * 1024; // corpo máximo aceito
 const HARD_BODY = MAX_BODY * 4; // acima disso nem lê o resto: responde 413 e fecha
 const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -1279,7 +1279,13 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
         expiresAt: typeof l.expiresAt === "number" && Number.isFinite(l.expiresAt) ? l.expiresAt : null,
       };
     }
-    await engine.heartbeat(device.id, { models, live });
+    // O modelo padrão do Claude Code do serviço (2.7.0): o `model` do settings.json dele ("opus", "claude-fable-5-2"…).
+    let defaultModel;
+    if (body.defaultModel !== undefined) {
+      if (body.defaultModel !== null && typeof body.defaultModel !== "string") throw bad("defaultModel precisa ser texto ou null");
+      defaultModel = body.defaultModel ? body.defaultModel.slice(0, 100) : null;
+    }
+    await engine.heartbeat(device.id, defaultModel === undefined ? { models, live } : { models, live, defaultModel });
     return stateOf(device);
   }
 
@@ -1356,7 +1362,13 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
   }
 
   async function events({ device, body }) {
-    if (body.kind !== "limit_hit") throw bad('kind precisa ser "limit_hit"');
+    if (body.kind === "model_missing") {
+      // "<modelo> requires usage credits" (2.7.0): a conta em uso não tem o modelo; o servidor troca na hora para uma que tem.
+      const model = typeof body.model === "string" ? cleanText(body.model, 100) : "";
+      const r = (await engine.modelMissing(device.id, model)) || {};
+      return { switched: !!r.switched, text: typeof r.text === "string" ? r.text : "", noModel: r.noModel || null, state: await stateOf(device) };
+    }
+    if (body.kind !== "limit_hit") throw bad('kind precisa ser "limit_hit" ou "model_missing"');
     const label = body.label === undefined || body.label === null ? null : cleanText(String(body.label), 80) || null;
     const r = (await engine.limitHit(device.id, label)) || {};
     return { switched: !!r.switched, text: typeof r.text === "string" ? r.text : "", state: await stateOf(device) };

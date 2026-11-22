@@ -158,6 +158,12 @@ Daqui para baixo: detalhes técnicos, para quem mexe no código.
   painel (ex.: painel Opus 5.5 → Fable 5.2, padrão no Fable), as mesmas regras valem com o par virado: falta o
   Fable na conta em uso → Opus 5.5, e volta. Nesse caso o erro na conversa não pede troca de conta ao servidor,
   que não procura o secundário nas contas (`preferModel`).
+  **Servidor 2.7.0 / extensão 3.5.0 (`serverPicksByModel()`, `features: ["model_missing"]` no estado):** o servidor
+  escolhe a conta pelo modelo que cada serviço usa (`dev.modelSeen` pelos batimentos, `defaultModel`; `want` no
+  `decide()`), e não só pelo `preferModel`. A extensão manda o erro "requires usage credits" como
+  `POST /v1/events {kind: "model_missing", model}`; o servidor troca na hora. Com a regra **Trocar de conta**, o
+  modelo padrão não muda sozinho: só depois do "sim" da pessoa na pergunta `askModelChange()`, que aparece quando
+  o estado traz `device.modelBlock` (nenhuma conta com o modelo).
   **Desde a 3.4.0 os dois modelos e o esforço vêm das regras do servidor** (painel → Regras de troca → **Modelo
   preferido** e **Modelo secundário**, cada um com o seu **Esforço**): `primaryModel`, `primaryEffort`,
   `secondaryModel`, `secondaryEffort`, dentro de `rules` do estado. `modelSwitch.pairOf()` monta o par a partir das

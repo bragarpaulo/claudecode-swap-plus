@@ -460,12 +460,12 @@ acontecem se o motor tiver o método (`typeof … === "function"`). O que o moto
 |---|---|---|
 | `GET /v1/health` (sem auth) | — | `{ ok: true, version }` |
 | `POST /v1/pair` (sem auth) | `{ code, name, platform }` | `{ deviceId, token }` — código de uso único, 10 min, 5 erros descartam o código |
-| `POST /v1/heartbeat` | `{ models: [id], live: { email, orgUuid, expiresAt } \| null }` | StateResponse |
+| `POST /v1/heartbeat` | `{ models: [id], live: { email, orgUuid, expiresAt } \| null, defaultModel?: string \| null }` (2.7.0: `models` = modelos das conversas dos últimos 30 min; o servidor escolhe a conta por eles — ver `NOVIDADES-3.5.md`) | StateResponse (2.7.0: `features`, `device.want`, `device.modelBlock`) |
 | `GET /v1/state` | — | StateResponse |
 | `GET /v1/credential` | — | `{ number, gen, claudeAiOauth: { accessToken, expiresAt, scopes, subscriptionType, rateLimitTier, refreshTokenExpiresAt? }, oauthAccount }` (nunca `refreshToken`) ou 409 `{error:"no_account"}` |
 | `POST /v1/logins` | `{ claudeAiOauth, oauthAccount, plan? }` | `{ number, created }` ou 422 `{error: code, message}`; serviço que não é do administrador → 403 `not_admin` (abaixo) |
 | `POST /v1/switch` | `{ number \| null }` | StateResponse |
-| `POST /v1/events` | `{ kind: "limit_hit", label }` | `{ switched, text, state }` |
+| `POST /v1/events` | `{ kind: "limit_hit", label }` ou (2.7.0) `{ kind: "model_missing", model }` ("requires usage credits": a conta em uso não tem o modelo) | `{ switched, text, state }` (+ `noModel` no `model_missing`) |
 | `PATCH /v1/accounts/:n` | `{ disabled?, threshold?, weeklyThreshold?, modelThreshold?, priority?, alias? }` (linhas: 50–100 ou null = regra geral) | StateResponse |
 | `DELETE /v1/accounts/:n` | — | StateResponse |
 | `PUT /v1/rules` | `{ rules?, autoSwitch? }` | StateResponse |

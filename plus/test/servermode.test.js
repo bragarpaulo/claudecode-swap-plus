@@ -171,6 +171,8 @@ function criarServidorFalso() {
     f.history = [{ ts: new Date().toISOString(), kind: "info", text: "Servidor de teste no ar", device: null }];
     f.fable = {}; // conta → % do limite semanal do Fable (sem a conta: o servidor não informa o Fable)
     f.rules = {}; // regras do servidor (o que faltar vale o padrão do rules.js)
+    f.features = undefined; // servidor 2.7.0+: ["want_model", "model_missing"] (sem: servidor antigo)
+    f.modelBlock = null; // servidor 2.7.0+: nenhuma conta tem o modelo deste computador
   };
   f.reset();
   f.since = (mark) => f.calls.slice(mark);
@@ -204,7 +206,9 @@ function criarServidorFalso() {
       assigned: f.assigned,
       lastSwitchAt: 0,
       ...(f.canUpload === undefined ? {} : { canUploadLogins: f.canUpload }),
+      ...(f.features ? { modelBlock: f.modelBlock } : {}),
     },
+    ...(f.features ? { features: f.features } : {}),
     list: { schemaVersion: 1, activeAccountNumber: f.assigned, accounts: f.accounts.map(publicAccount) },
     records: {},
     rules: f.rules,
@@ -1942,6 +1946,93 @@ test("8h. par visto deste computador (3.4.1): painel Opus 5.5 → Fable 5.2 e o 
   assert.equal(lerSettings().model, "claude-opus-5-5");
   assert.equal(lerMarcador(), null);
   assert.equal(notes.slice(n0).filter((n) => /não tem o Fable|modelo padrão do Claude Code passou/.test(n.message)).length, 0);
+});
+
+test("8i. servidor 2.7.0: “requires usage credits” vai ao servidor (model_missing), que troca de conta; o modelo só muda se a pessoa disser que quer", { timeout: T_MAX }, async () => {
+  // O caso de 22/11/2026: painel com o preferido = Opus 5.5 e o secundário = Fable 5.2, regra “trocar de conta”;
+  // o VS Code com o padrão “opus”, mas usando o Fable na conversa. A conta 1 não tem Fable; a 2 tem.
+  await prepararServidor();
+  escreverSettings({ model: "opus" });
+  fake.features = ["want_model", "model_missing"];
+  fake.rules = { onModelLimit: "switchAccount", modelPct: 95, preferModel: "Opus", primaryModel: "claude-opus-5-5", secondaryModel: "claude-fable-5-2" };
+  fake.fable = { 2: 10 };
+  let mark = fake.calls.length;
+  await ciclo();
+  const hb = fake.since(mark).find(isHeartbeat);
+  assert.ok(hb, "batimento");
+  assert.equal(hb.body.defaultModel, "opus", "o servidor fica sabendo do modelo padrão do Claude Code daqui");
+  await sleep(100);
+  assert.equal(lerSettings().model, "opus");
+  assert.equal(fake.since(mark).filter(isEvents).length, 0, "pelo uso: nada vai ao servidor (ele mesmo vê a conta sem Fable)");
+
+  // a) erro na conversa: UM pedido model_missing; o servidor troca para a conta 2 e ela é gravada aqui
+  await limparLimite();
+  mark = fake.calls.length;
+  let n0 = notes.length;
+  let tr = escreverTranscricao("creditos-27", "c.jsonl", [linhaConversa("claude-fable-5-2"), linhaCreditos()]);
+  try {
+    await T.checkLimitErrors();
+    await waitFor(() => lerLogin().claudeAiOauth.accessToken === acessoServidor(2, 1), 5000, "a conta 2 gravada");
+    const ev = fake.since(mark).filter(isEvents);
+    assert.equal(ev.length, 1);
+    assert.deepEqual(ev[0].body, { kind: "model_missing", model: "claude-fable-5-2" });
+    assert.equal(lerSettings().model, "opus", "o modelo padrão não é mexido");
+    assert.equal(notes.slice(n0).filter((n) => /modelo padrão do Claude Code passou|Você quer mudar/.test(n.message)).length, 0);
+    assert.ok(notes.slice(n0).some((n) => n.kind === "info" && /Trocou da conta 1 para a conta 2/.test(n.message)), "avisa a troca");
+  } finally {
+    fs.rmSync(tr, { force: true });
+  }
+
+  // b) nenhuma conta com Fable: o servidor não troca e manda o modelBlock → a pergunta; “Mudar” passa o padrão
+  await prepararServidor();
+  escreverSettings({ model: "fable" });
+  fake.features = ["want_model", "model_missing"];
+  fake.rules = { onModelLimit: "switchAccount", modelPct: 95, preferModel: "Opus", primaryModel: "claude-opus-5-5", secondaryModel: "claude-fable-5-2" };
+  fake.fable = {};
+  await ciclo();
+  await sleep(100);
+  assert.equal(lerSettings().model, "fable", "conta sem Fable: com o servidor 2.7.0 o padrão não muda sozinho");
+  const block = { model: "Fable", since: Date.now(), account: 1, text: "A conta 1 não tem o Fable, mas nenhuma outra conta tem o Fable disponível" };
+  fake.handlers["POST /v1/events"] = (call) => {
+    fake.modelBlock = block;
+    return { status: 200, body: { switched: false, noModel: "Fable", text: block.text, state: fake.stateFor(call.device) } };
+  };
+  ui.warn = (msg, buttons) => (/Você quer mudar/.test(msg) ? buttons.find((b) => /^Mudar para/.test(b)) : undefined);
+  await limparLimite();
+  T.resetAbsentAsk();
+  mark = fake.calls.length;
+  n0 = notes.length;
+  tr = escreverTranscricao("creditos-27b", "c.jsonl", [linhaConversa("claude-fable-5-2"), linhaCreditos()]);
+  try {
+    await T.checkLimitErrors();
+    await waitFor(() => lerSettings().model === "claude-opus-5-5" || lerSettings().model === "opus", 3000, "o padrão passar para o Opus 5.5 depois do sim");
+    const ask = notes.slice(n0).filter((n) => /Você quer mudar/.test(n.message));
+    assert.equal(ask.length, 1);
+    assert.equal(ask[0].message, "Não há mais nenhuma conta com Fable disponível. Você quer mudar para o Opus 5.5?");
+    assert.equal(ask[0].modal, true);
+    assert.deepEqual(ask[0].buttons, ["Mudar para o Opus 5.5", "Continuar esperando o Fable"]);
+    assert.match(ask[0].detail, /escolha Opus 5\.5 no seletor de modelo e mande “continue”/);
+    // O batimento seguinte traz o mesmo modelBlock: não pergunta de novo.
+    await ciclo();
+    await sleep(100);
+    assert.equal(notes.slice(n0).filter((n) => /Você quer mudar/.test(n.message)).length, 1, "uma pergunta por vez sem conta com o modelo");
+  } finally {
+    fs.rmSync(tr, { force: true });
+    delete fake.handlers["POST /v1/events"];
+  }
+
+  // c) outra vez sem conta com Fable (outro episódio), vindo só pelo batimento; “Continuar esperando” não mexe em nada
+  escreverSettings({ model: "fable" });
+  T.clearModelMarker();
+  fake.modelBlock = { ...block, since: block.since + 3600e3 };
+  ui.warn = (msg, buttons) => (/Você quer mudar/.test(msg) ? buttons.find((b) => /^Continuar/.test(b)) : undefined);
+  n0 = notes.length;
+  await ciclo();
+  await waitFor(() => notes.slice(n0).some((n) => /fico de olho/.test(n.message)), 3000, "a resposta “continuar esperando”");
+  assert.equal(notes.slice(n0).filter((n) => /Você quer mudar/.test(n.message)).length, 1);
+  assert.equal(lerSettings().model, "fable");
+  resetUi();
+  fake.modelBlock = null;
 });
 
 test("9. nenhum token em notificações, histórico, logs, tela, barra, globalState ou temporários", { timeout: T_MAX }, async () => {

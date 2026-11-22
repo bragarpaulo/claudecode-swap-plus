@@ -46,7 +46,7 @@ const crypto = require("crypto");
 const { RULE_DEFAULTS, STRATEGY_LABELS, CAND_STALE_SEC, MODEL_EFFORTS, MODEL_ID_RE, modelLine, limitNameOf, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.6.0";
+const VERSION = "2.7.0";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
 // Presença (para mostrar e, desde a 2.5.5, para saber quem segura cada conta: holders): contato = qualquer pedido autenticado do serviço. Quem falou com
@@ -146,6 +146,23 @@ const DEVICE_PLACEMENTS = ["separate", "together"]; // rules.devicePlacement
 // Modo "together": trocas que definem a conta do grupo (a atribuição "assign" não define: no modo "separate" ela
 // escolhe uma conta livre, não a do topo da fila).
 const GROUP_LEADER_BY = new Set(["auto", "limit", "manual", "painel", "group"]);
+// Modelo que o serviço USA (2.7.0): o serviço manda, a cada batimento, os modelos das conversas dos últimos 30 min
+// (e o modelo padrão do Claude Code dele). O servidor lembra a última vez que viu cada um (dev.modelSeen, pelo nome
+// do limite: "Fable", "Opus"…) e escolhe a conta por ele: quem usa o Fable só vai para conta que tem o Fable.
+const WANT_TTL_MS = 12 * 3600 * 1000; // o serviço parou de usar o modelo (ou ficou parado): vale ainda por 12 h…
+const WANT_DROP_MS = 30 * 60 * 1000; // …a não ser que ele esteja usando OUTRO modelo há mais de 30 min desde então
+const SEEN_GAP_MS = 5 * 60 * 1000; // sem sinal do modelo por mais que isso: o próximo uso é um uso novo
+/** dev.modelSeen[nome] → { first, last } (aceita o número antigo). */
+const seenOf = (v) => {
+  if (Number.isFinite(Number(v)) && !isObj(v)) return { first: Number(v), last: Number(v) };
+  if (isObj(v) && Number.isFinite(Number(v.last))) return { first: Number(v.first) || Number(v.last), last: Number(v.last) };
+  return null;
+};
+// O serviço viu "requires usage credits" numa conta: ela não tem o modelo (acc.lacksModel[nome] = quando). Vale por
+// 24 h, mesmo que o uso dela mostre a linha do modelo (não fica indo e voltando); depois disso vale o que o uso mostra
+// (conta sem a linha do modelo = sem o modelo).
+const LACKS_TTL_MS = DAY_MS;
+const FEATURES = ["want_model", "model_missing"]; // o que este servidor sabe fazer (a extensão olha)
 
 /** Status HTTP sugerido para cada `.code` de erro lançado pelo motor. */
 const ERROR_STATUS = {
@@ -1019,8 +1036,12 @@ class Engine {
             assigned: dev.assigned === undefined ? null : dev.assigned,
             lastSwitchAt: Number(dev.lastSwitchAt) || 0,
             canUploadLogins: this.canUploadLogins(dev), // false = este serviço usa as contas do servidor, não envia logins
+            want: this.wantOf([dev]), // os modelos que o servidor acha que este serviço usa (2.7.0)
+            // nenhuma conta tem o modelo que este serviço usa (2.7.0): { model, since, account, text } | null
+            modelBlock: isObj(dev.modelBlock) ? { ...dev.modelBlock } : null,
           }
         : null,
+      features: FEATURES,
       list: this.publicList(deviceId),
       records: this.records(), // global (sem o filtro por serviço)
       rules: this.rulesEffective(),
@@ -1749,7 +1770,8 @@ class Engine {
       const g = this.groupAccount(active, t);
       group = g ? g.account : null;
       if (group === n) {
-        groupTo = this.renewTarget(null, this.sharedRecords(active.filter((d) => access.canUse(this.st, d, n))), t);
+        const team = active.filter((d) => access.canUse(this.st, d, n));
+        groupTo = this.renewTarget(null, this.sharedRecords(team), t, team);
         if (groupTo === null) return false; // o grupo fica: tirar só os parados não deixaria a conta livre
         group = groupTo;
       }
@@ -1778,9 +1800,14 @@ class Engine {
    * que só não estão na vez de renovar. É troca voluntária: sem conta assim, null (melhor ficar onde está) — e, como
    * toda troca voluntária, só para conta em que o modelo preferido ainda sobra o mínimo (rules.preferMinFreePct).
    */
-  renewTarget(dev, records, t = this.now()) {
+  renewTarget(dev, records, t = this.now(), devs = null) {
     const r = this.rulesEffective();
-    const pref = str(r.preferModel) || null;
+    // O modelo que os serviços usam (2.7.0) vale mais que o preferido do painel; com ele, conta sem o modelo fica de fora.
+    const ma = this.modelArgs(devs || (dev ? [dev] : []), t);
+    const scopedNow = this.scopedNow();
+    const need = ma.want.find((x) => scopedNow.has(x)) || null;
+    const lacks = new Set(ma.missing);
+    const pref = need || str(r.preferModel) || null;
     const minFree = Math.max(0, Number(r.preferMinFreePct) || 0); // mínimo do modelo preferido sobrando no destino
     const stale = new Set(); // sem leitura recente, ou com o modelo preferido quase no fim
     for (const p of this.publicList(null).accounts) {
@@ -1790,15 +1817,16 @@ class Engine {
         continue;
       }
       // Como nas trocas voluntárias do decide(): conta sem a linha do modelo não entra nesta conta.
-      const s = pref ? w.models.find((m) => m.name === pref) : null;
-      if (s && 100 - (Number(s.pct) || 0) < minFree) stale.add(p.number);
+      const s = pref && !lacks.has(p.number) ? w.models.find((m) => m.name === pref) : null;
+      if (need && !s) stale.add(p.number); // o serviço usa o modelo e esta conta não tem
+      else if (s && 100 - (Number(s.pct) || 0) < minFree) stale.add(p.number);
     }
     for (const times of [2, 1]) {
       const skip = new Set(stale);
       for (const a of this.accountList()) {
         if (!a.cred || (Number(a.cred.expiresAt) || 0) - t < times * this.aheadMs(a)) skip.add(a.number);
       }
-      const to = this.bestAccountFor(dev, { requireOk: true, records: this.withDisabled(records, skip) });
+      const to = this.bestAccountFor(dev, { requireOk: true, records: this.withDisabled(records, skip), want: ma });
       if (to !== null) return to;
     }
     return null;
@@ -1840,11 +1868,12 @@ class Engine {
     const t = this.now();
     const others = this.othersAccounts(dev.id, t);
     const base = this.recordsFor(dev); // contas não liberadas para este serviço nunca são destino
-    const args = { list: this.publicList(dev.id), r: this.rulesEffective(), modelIds: dev.models || [], now: t, lastSwitchAt: Number(dev.lastSwitchAt) || 0 };
+    const args = { list: this.publicList(dev.id), r: this.rulesEffective(), modelIds: dev.models || [], now: t, lastSwitchAt: Number(dev.lastSwitchAt) || 0, ...this.modelArgs([dev], t) };
     // Contas de outros dispositivos ativos ficam de fora (não dividir a sessão de 5h)...
     let d = decide({ ...args, records: this.withDisabled(base, others) });
     // ...a não ser que não haja outra saída: dividir é melhor que parar (ainda só entre as liberadas).
     if (d.kind === "blocked" && others.size) d = decide({ ...args, records: base });
+    this.noteModelBlock([dev], d, t);
     if (d.action === "switch") {
       this.applySwitch(dev, d.to, "auto", "switch", `Trocou ${d.text}`);
       return true;
@@ -1913,7 +1942,7 @@ class Engine {
           x.i - y.i
       );
     for (const { d } of cands) if (!this.needsAssign(d)) return { account: Number(d.assigned), leader: d };
-    let n = this.bestAccountFor(null, { records: this.sharedRecords(active) });
+    let n = this.bestAccountFor(null, { records: this.sharedRecords(active), want: this.modelArgs(active, t) });
     if (n !== null) return { account: n, leader: active.find((d) => access.canUse(this.st, d, n)) || active[0] };
     for (const d of active) {
       n = this.bestAccountFor(d);
@@ -1931,9 +1960,10 @@ class Engine {
     const devs = team.length ? team : [leader];
     const modelIds = [...new Set(devs.flatMap((d) => (Array.isArray(d.models) ? d.models : [])))];
     const lastSwitchAt = Math.max(0, ...devs.map((d) => Number(d.lastSwitchAt) || 0));
-    const args = { list: this.listWithActive(account), r: this.rulesEffective(), modelIds, now: t, lastSwitchAt, limitHit };
+    const args = { list: this.listWithActive(account), r: this.rulesEffective(), modelIds, now: t, lastSwitchAt, limitHit, ...this.modelArgs(devs, t) };
     let d = decide({ ...args, records: this.sharedRecords(devs) });
     if (d.kind === "blocked" && devs.length > 1) d = decide({ ...args, records: this.recordsFor(leader) });
+    this.noteModelBlock(devs, d, t);
     return d;
   }
 
@@ -2025,7 +2055,9 @@ class Engine {
       modelIds: dev.models || [],
       now: t,
       lastSwitchAt: Number(dev.lastSwitchAt) || 0,
+      ...this.modelArgs([dev], t),
     });
+    this.noteModelBlock([dev], d, t);
     if (d.action === "switch") {
       this.applySwitch(dev, d.to, "auto", "switch", `Trocou ${d.text}`);
       return true;
@@ -2050,6 +2082,7 @@ class Engine {
     dev.assigned = Number(to);
     dev.lastSwitchAt = this.now();
     dev.lastSwitchBy = by;
+    delete dev.modelBlock;
     this.notes.delete(dev.id);
   }
 
@@ -2108,10 +2141,15 @@ class Engine {
    * records: records já filtrados (ex.: só as contas que todos os serviços do grupo podem usar), no lugar de recordsFor(dev).
    * Modo "together": nenhuma conta está ocupada (os serviços dividem a conta de propósito).
    */
-  bestAccountFor(dev, { freeOnly = false, requireOk = false, records = null } = {}) {
+  bestAccountFor(dev, { freeOnly = false, requireOk = false, records = null, want = null } = {}) {
     const t = this.now();
     const r = this.rulesEffective();
-    const pref = str(r.preferModel) || null; // modelo preferido (Fable): contas com ele vêm primeiro
+    // O modelo que o serviço usa (com limite próprio nas contas) vale mais que o preferido do painel.
+    const ma = want || this.modelArgs(dev ? [dev] : [], t);
+    const scopedNow = this.scopedNow();
+    const need = ma.want.find((n) => scopedNow.has(n)) || null;
+    const lacks = new Set(ma.missing);
+    const pref = need || str(r.preferModel) || null; // modelo preferido (Fable): contas com ele vêm primeiro
     const recs = records || this.recordsFor(dev);
     const others = r.devicePlacement === "together" ? new Set() : this.othersAccounts(dev ? dev.id : null, t);
     const list = this.publicList(dev ? dev.id : null);
@@ -2130,7 +2168,7 @@ class Engine {
         const rows = [{ pct: Number(w.session.pct) || 0, line: l.session }];
         if (w.weekly) rows.push({ pct: Number(w.weekly.pct) || 0, line: l.weekly });
         const reset = w.weekly && w.weekly.resetsAt ? Date.parse(w.weekly.resetsAt) : NaN;
-        const ps = pref ? w.models.find((m) => m.name === pref) : null;
+        const ps = pref && !lacks.has(p.number) ? w.models.find((m) => m.name === pref) : null;
         known.push({
           n: p.number,
           prefOk: !!ps && Number(ps.pct) <= l.model - r.marginPct,
@@ -2187,15 +2225,148 @@ class Engine {
     return pickAny(live);
   }
 
+  // ------------------------------------------------------------------ o modelo que cada serviço usa (2.7.0)
+
+  /** Os nomes dos limites por modelo que alguma conta informa (hoje, "Fable"). */
+  scopedNow() {
+    const out = new Set();
+    for (const a of this.accountList()) for (const x of (a.usage && a.usage.scoped) || (a.lastGoodUsage && a.lastGoodUsage.scoped) || []) if (x && x.name) out.add(x.name);
+    return out;
+  }
+
+  /**
+   * Anota, em dev.modelSeen, que o serviço usa estes modelos agora (pelo nome do limite: "Fable", "Opus"…):
+   * { first, last } = começo e fim do uso contínuo atual (o serviço manda o que foi usado nos últimos 30 min, a cada
+   * 30 s; um intervalo maior que SEEN_GAP_MS começa outro uso).
+   */
+  noteModels(dev, ids, t = this.now()) {
+    const seen = isObj(dev.modelSeen) ? dev.modelSeen : {};
+    for (const id of ids || []) {
+      const name = limitNameOf(id);
+      if (!name) continue;
+      const prev = seenOf(seen[name]);
+      seen[name] = { first: prev && t - prev.last <= SEEN_GAP_MS ? prev.first : t, last: t };
+    }
+    for (const [k, v] of Object.entries(seen)) {
+      const x = seenOf(v);
+      if (!x || !(x.last > t - WANT_TTL_MS)) delete seen[k];
+    }
+    dev.modelSeen = seen;
+  }
+
+  /**
+   * Os modelos de que estes serviços precisam (nomes dos limites, ex.: ["Fable"]): os usados nas conversas há até
+   * 12 h — menos o que ele trocou por outro (outro modelo em uso há mais de 30 min depois do último uso dele) — e o
+   * modelo padrão do Claude Code de cada um. decide() só olha os que têm limite próprio nas contas (hoje, o Fable).
+   */
+  wantOf(devs, t = this.now()) {
+    const out = new Set();
+    for (const d of devs || []) {
+      if (!d) continue;
+      const seen = isObj(d.modelSeen) ? d.modelSeen : {};
+      const all = Object.entries(seen)
+        .map(([name, v]) => [name, seenOf(v)])
+        .filter(([, x]) => x && x.last > t - WANT_TTL_MS);
+      for (const [name, x] of all) {
+        // Passou a usar outro modelo: um uso dele que já dura mais de 30 min depois do último uso deste.
+        const replaced = all.some(([n2, y]) => n2 !== name && y.last - Math.max(y.first, x.last) > WANT_DROP_MS);
+        if (!replaced) out.add(name);
+      }
+      const def = limitNameOf(d.defaultModel || "");
+      if (def) out.add(def);
+    }
+    return [...out];
+  }
+
+  /** Contas em que um serviço viu "requires usage credits" nas últimas 24 h, com os nomes dos modelos. */
+  lackingAccounts(t = this.now()) {
+    const out = [];
+    for (const a of this.accountList()) {
+      const lm = isObj(a.lacksModel) ? a.lacksModel : null;
+      if (!lm) continue;
+      for (const [name, ts] of Object.entries(lm)) {
+        if (!(Number(ts) > t - LACKS_TTL_MS)) {
+          delete lm[name];
+          this.dirty = true;
+        }
+      }
+      if (!Object.keys(lm).length) {
+        delete a.lacksModel;
+        continue;
+      }
+      out.push({ number: a.number, names: Object.keys(lm) });
+    }
+    return out;
+  }
+
+  /** Os argumentos de modelo para o decide(): want (o que os serviços usam) e missing (contas sem esse modelo). */
+  modelArgs(devs, t = this.now()) {
+    const want = this.wantOf(devs, t);
+    const missing = this.lackingAccounts(t)
+      .filter((x) => x.names.some((n) => want.includes(n)))
+      .map((x) => x.number);
+    return { want, missing };
+  }
+
+  /**
+   * Guarda (ou limpa) nos serviços o "nenhuma conta tem o modelo": a extensão pergunta à pessoa se quer mudar de
+   * modelo. Só nos serviços que usam esse modelo. d = o resultado do decide().
+   */
+  noteModelBlock(devs, d, t = this.now()) {
+    for (const dev of devs || []) {
+      if (!dev) continue;
+      if (d && d.noModel && this.wantOf([dev], t).includes(d.noModel)) {
+        const prev = isObj(dev.modelBlock) && dev.modelBlock.model === d.noModel ? dev.modelBlock : null;
+        dev.modelBlock = { model: d.noModel, since: prev ? prev.since : t, account: dev.assigned === undefined ? null : dev.assigned, text: cap(d.text || "") };
+      } else if (dev.modelBlock && !(d && d.kind === "idle" && /desatualizado/.test(d.text || ""))) {
+        delete dev.modelBlock;
+      }
+    }
+  }
+
+  /**
+   * O Claude Code do serviço respondeu "<modelo> requires usage credits": a conta em uso não tem o modelo. Anota na
+   * conta, anota que o serviço usa o modelo e decide na hora (modo "juntos": o grupo inteiro vai junto).
+   * → { switched, to, text, noModel }
+   */
+  async modelMissing(deviceId, model) {
+    const dev = this.needDevice(deviceId);
+    const t = this.now();
+    dev.lastSeen = t;
+    const name = limitNameOf(model || "") || "Fable";
+    const acc = this.acc(dev.assigned);
+    if (!acc) return { switched: false, text: "nenhuma conta atribuída a este serviço" };
+    acc.lacksModel = { ...(isObj(acc.lacksModel) ? acc.lacksModel : {}), [name]: t };
+    this.pollSoon.add(acc.number);
+    this.noteModels(dev, [name.toLowerCase()], t);
+    this.dirty = true;
+    const from = acc.number;
+    if (this.st.autoSwitch === false) {
+      const text = `A conta ${from} não tem o ${name} (troca automática desligada).`;
+      this.pushHistory("alert", text, dev.id);
+      await this.saveQuiet();
+      return { switched: false, text };
+    }
+    this.pushHistory("alert", `${devName(dev)}: a conta ${from} não tem o ${name} ("requires usage credits")`, dev.id);
+    this.decideDevice(dev);
+    await this.saveQuiet();
+    const to = dev.assigned === null || dev.assigned === undefined ? null : Number(dev.assigned);
+    if (to !== null && to !== from) return { switched: true, to, text: `Trocou da conta ${from} para a conta ${to}: a conta ${from} não tem o ${name}` };
+    const block = isObj(dev.modelBlock) ? dev.modelBlock : null;
+    return { switched: false, noModel: block ? block.model : null, text: block ? block.text : `A conta ${from} não tem o ${name}, e não troquei de conta.` };
+  }
+
   // ------------------------------------------------------------------ dispositivos
 
-  async heartbeat(deviceId, { models, live } = {}) {
+  async heartbeat(deviceId, { models, live, defaultModel } = {}) {
     const dev = this.needDevice(deviceId);
     const t = this.now();
     const returning = !this.isActive(dev, t);
     dev.lastSeen = t;
     dev.models = cleanModels(models);
     dev.live = cleanLive(live, t);
+    this.noteModels(dev, dev.models, t);
+    if (defaultModel !== undefined) dev.defaultModel = str(defaultModel) ? str(defaultModel).slice(0, 100) : null;
     this.dirty = true; // lastSeen/modelos vão para o cofre no próximo ciclo
     // "Juntos": quem conecta ou volta a ficar ativo entra na conta do grupo (a dos outros ativos), em vez de puxar o
     // grupo para a conta dele (uma troca antiga dele não define mais a conta do grupo).
@@ -2378,7 +2549,7 @@ class Engine {
     }
     const others = this.othersAccounts(dev.id, t);
     const base = this.recordsFor(dev); // só contas liberadas para este serviço (também na reserva abaixo)
-    const args = { list: this.publicList(dev.id), r: this.rulesEffective(), modelIds: dev.models || [], now: t, lastSwitchAt: Number(dev.lastSwitchAt) || 0, limitHit: lbl };
+    const args = { list: this.publicList(dev.id), r: this.rulesEffective(), modelIds: dev.models || [], now: t, lastSwitchAt: Number(dev.lastSwitchAt) || 0, limitHit: lbl, ...this.modelArgs([dev], t) };
     let d = decide({ ...args, records: this.withDisabled(base, others) });
     if (d.kind === "blocked" && others.size) d = decide({ ...args, records: base });
     if (d.action === "switch") {

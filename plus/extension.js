@@ -580,6 +580,106 @@ function serverLooksFor(name) {
   return String(rules().preferModel || "") === name;
 }
 
+/**
+ * O servidor escolhe a conta pelo modelo que este computador USA (servidor 2.7.0+, "model_missing")? Então é ele que
+ * resolve conta sem o modelo ("requires usage credits") e modelo esgotado: leva este computador para uma conta que
+ * tem o modelo, e só se não houver nenhuma o Swap Plus pergunta se quer mudar de modelo (askModelChange).
+ */
+function serverPicksByModel() {
+  const f = srv.state && Array.isArray(srv.state.features) ? srv.state.features : [];
+  return f.includes("model_missing") && !!srv.token && !serverMeta().revokedAt;
+}
+
+/** O modelo padrão do Claude Code deste computador (o `model` do settings.json), para o servidor saber; null = o do plano. */
+function claudeDefaultModel() {
+  const r = modelSwitch.readSettings(claudeSettingsPath());
+  return !r.error && typeof r.data.model === "string" && r.data.model ? r.data.model.slice(0, 100) : null;
+}
+
+/**
+ * O par em que `name` ("Fable") é o modelo que falta: o deste computador; senão o do painel (virado, se `name` é o
+ * secundário dele — ex.: painel Opus 5.5 → Fable 5.2 e falta o Fable: Fable → Opus 5.5); senão o de sempre.
+ */
+function pairMissing(name) {
+  const local = localPair();
+  if (local.primaryName === name) return local;
+  const panel = modelSwitch.orient(modelPair(), name.toLowerCase(), null);
+  if (panel.primaryName === name) return panel;
+  return modelSwitch.pairOf(null);
+}
+
+const MODEL_ASK_KEY = "swapPlus.modelAskShown";
+const MISSING_GAP_MS = 60 * 1000; // várias conversas (e subagentes) com o mesmo erro: um pedido ao servidor
+let missingAskedAt = 0;
+let modelAsking = false;
+
+/**
+ * "Não há mais nenhuma conta com Fable disponível. Você quer mudar?" — só quando o servidor diz que nenhuma conta tem
+ * o modelo que este computador usa (device.modelBlock). Uma vez por episódio (o `since` do servidor), em uma janela.
+ * Mudar = o modelo padrão do Claude Code passa para o outro modelo do par (as conversas novas abrem nele), e a conversa
+ * aberta precisa do seletor de modelo (o Claude Code não deixa outra extensão mudar o modelo dela).
+ */
+async function askModelChange(block) {
+  if (!block || !block.model || modelAsking) return null;
+  const key = `${block.model}:${block.since || ""}`;
+  if (extContext.globalState.get(MODEL_ASK_KEY) === key) return null;
+  modelAsking = true;
+  try {
+    await extContext.globalState.update(MODEL_ASK_KEY, key);
+    const name = block.model;
+    const pair = pairMissing(name);
+    const S = pair.secondaryLabel;
+    const change = `Mudar para o ${S}`;
+    const keep = `Continuar esperando o ${name}`;
+    await pushHistory([{ ts: new Date().toISOString(), kind: "alert", text: `Nenhuma conta com ${name} disponível` }]);
+    postState();
+    const c = await vscode.window.showWarningMessage(
+      `Não há mais nenhuma conta com ${name} disponível. Você quer mudar para o ${S}?`,
+      { modal: true, detail: `${safe(block.text || "")}\n\nSe mudar: o modelo padrão do Claude Code passa para o ${S} (as conversas novas abrem nele). Na conversa que parou, escolha ${S} no seletor de modelo e mande “continue”.\nSe esperar: assim que uma conta com ${name} ficar disponível, o Swap Plus troca sozinho.` },
+      change,
+      keep
+    );
+    if (c === change) {
+      const acc = block.account === null || block.account === undefined ? null : Number(block.account);
+      const res = await fallbackToOpus({ pair, reason: "limit", seen: true, account: acc, holdUntil: Date.now() + modelSwitch.HOLD_MS });
+      if (!res) vscode.window.showInformationMessage(`Swap Plus: ${continueTip(pair)}`);
+      return res;
+    }
+    if (c === keep) vscode.window.showInformationMessage(`Swap Plus: fico de olho. Quando uma conta com ${name} ficar disponível, troco sozinho.`);
+    return null;
+  } finally {
+    modelAsking = false;
+  }
+}
+
+/** Depois de cada batimento, na janela dona: o servidor disse que nenhuma conta tem o modelo deste computador? */
+async function checkModelBlock() {
+  if (!extContext || !swapOn() || !isOwnerNow() || !serverPicksByModel()) return null;
+  const block = srv.state && srv.state.device ? srv.state.device.modelBlock : null;
+  if (!block) return null;
+  return askModelChange(block);
+}
+
+/**
+ * Servidor 2.7.0+: conta sem o modelo ("requires usage credits") ou modelo esgotado na regra "trocar de conta".
+ * O servidor leva este computador (e, no modo "juntos", o grupo) para uma conta que tem o modelo; a conversa que
+ * parou retoma sozinha lá (gancho de retomada). Sem nenhuma conta com o modelo: pergunta (askModelChange).
+ */
+async function modelHitViaServer(name, absent) {
+  const now = Date.now();
+  if (absent && now - missingAskedAt < MISSING_GAP_MS) return null;
+  if (absent) missingAskedAt = now;
+  const pair = pairMissing(name);
+  const label = absent ? `limite do ${name} (a conta não tem esse modelo)` : `limite do ${name}`;
+  const body = absent ? { kind: "model_missing", model: pair.primaryId } : { kind: "limit_hit", label };
+  const res = await serverLimitHit(label, { quiet: true, body });
+  if (res && res.kind === "switch") return res;
+  const block = srv.state && srv.state.device ? srv.state.device.modelBlock : null;
+  if (block) return askModelChange(block);
+  if (res && res.text) vscode.window.showWarningMessage(`Swap Plus: ${res.text}.`);
+  return res;
+}
+
 const continueTip = (pair) => `Na conversa que parou, escolha ${pair.secondaryLabel} no seletor de modelo (embaixo da caixa de mensagem) e mande “continue”.`;
 const openTip = (pair) => `As conversas abertas seguem no modelo delas; para passar uma agora, escolha ${pair.secondaryLabel} no seletor de modelo.`;
 const EFFORT_WORDS = { low: "baixo", medium: "médio", high: "alto", xhigh: "muito alto" };
@@ -769,6 +869,9 @@ async function checkModelSwitch() {
   const marker = modelSwitch.noteUserChoice(file, mk, now, pair);
   const p = modelSwitch.plan({ list, records: state.records, r: rules(), marker, now, pair });
   if (p.forget) modelSwitch.clearMarker(mk);
+  // Servidor 2.7.0+: conta sem o modelo é com ele (troca de conta); na regra "trocar de conta", o modelo esgotado
+  // também. O modelo padrão só muda se a pessoa disser que quer (askModelChange, quando nenhuma conta tem o modelo).
+  if (p.want === "fallback" && serverPicksByModel() && (p.reason === "absent" || rules().onModelLimit === "switchAccount")) return null;
   if (p.want === "fallback") return fallbackToOpus({ ...p, pair });
   if (p.want === "preferred") {
     // Saiu de uma conta que não tem o modelo: ele não "voltou", é a conta nova que tem.
@@ -800,6 +903,11 @@ function otherAccountHasPrimary(list, active, pair) {
  * preferido do painel. Erro de outro modelo: nada.
  */
 async function modelLimitHit(model, hit) {
+  // Servidor 2.7.0+: ele escolhe a conta pelo modelo que este computador usa (vale para qualquer modelo do painel).
+  if (serverPicksByModel()) {
+    const absent = !!hit && modelSwitch.needsCredits(hit.text, hit.code);
+    if (absent || rules().onModelLimit === "switchAccount") return modelHitViaServer(model, absent);
+  }
   const pair = [localPair(), modelPair()].find((p) => p.primaryName === model);
   if (!pair) return null;
   // Sem conexão com o servidor o Swap Plus não mexe em nada (nem saberia quando o preferido volta).
@@ -2362,7 +2470,7 @@ async function serverSync() {
   // 2) batimento (pode repetir: só avisa que este computador está vivo)
   let resp;
   try {
-    resp = await retryOnce(() => client.request("POST", "/v1/heartbeat", { models: models.map((m) => m.id), live: liveSummary(live) }));
+    resp = await retryOnce(() => client.request("POST", "/v1/heartbeat", { models: models.map((m) => m.id), live: liveSummary(live), defaultModel: claudeDefaultModel() }));
   } catch (e) {
     return serverFailed(e, "batimento");
   }
@@ -2375,6 +2483,7 @@ async function serverSync() {
   finishSync();
   checkAlerts().catch((e) => console.error("[swap-plus] alerts", safeErr(e)));
   checkModelSwitch().catch((e) => console.error("[swap-plus] modelo padrão", safeErr(e)));
+  checkModelBlock().catch((e) => console.error("[swap-plus] nenhuma conta com o modelo", safeErr(e)));
   checkNewerInstalled();
 }
 
@@ -2476,7 +2585,7 @@ async function serverLimitHit(label, opts) {
 }
 
 /** quiet: sem o aviso de "não trocou" (quem chamou avisa do jeito dele). */
-async function serverLimitHitNow(label, { quiet = false } = {}) {
+async function serverLimitHitNow(label, { quiet = false, body = null } = {}) {
   if (!swapOn()) return null;
   let client = null;
   try {
@@ -2486,7 +2595,7 @@ async function serverLimitHitNow(label, { quiet = false } = {}) {
   claimOwner(true); // esta janela viu o limite e vai gravar a conta nova
   let res;
   try {
-    res = await client.request("POST", "/v1/events", { kind: "limit_hit", label });
+    res = await client.request("POST", "/v1/events", body || { kind: "limit_hit", label });
   } catch (e) {
     await serverFailed(e, "limite");
     if (!quiet) vscode.window.showWarningMessage(`Swap Plus: a conta em uso bateu o ${label}, mas não consegui avisar o servidor: ${srvErrText(e)}.`);
@@ -2512,7 +2621,7 @@ async function serverLimitHitNow(label, { quiet = false } = {}) {
       .then((c) => c && switchBest());
   }
   finishSync();
-  return { kind: res && res.switched ? (wrote ? "switch" : "blocked") : "blocked", text };
+  return { kind: res && res.switched ? (wrote ? "switch" : "blocked") : "blocked", text, noModel: (res && res.noModel) || null };
 }
 
 async function setServerAuto(on) {
@@ -3847,7 +3956,8 @@ module.exports = {
     modelStatus,
     checkModelSwitch,
     modelLimitHit,
-    resetAbsentAsk: () => (absentAskedAt = 0),
+    resetAbsentAsk: () => ((absentAskedAt = 0), (missingAskedAt = 0)),
+    clearModelMarker: () => modelSwitch.clearMarker(modelMarkerFile()),
     modelMarkerFile,
     claudeSettingsPath,
     orderForDisplay,

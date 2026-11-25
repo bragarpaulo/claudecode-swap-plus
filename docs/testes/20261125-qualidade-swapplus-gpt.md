@@ -162,3 +162,74 @@ As três respostas da reabertura retornaram 304. A massa padrão foi 300 projeto
 | Reabertura do painel, bytes | 226.712 | 0 | 0% |
 
 As três respostas condicionais retornaram 304. A massa padrão foi 300 projetos × 40 transcrições antigas mais 5 recentes, com dez execuções por varredura. O benchmark mediu a massa padrão e o smoke exercitou a correção de links. Frente a `origin/main`, `app.css` ganhou 141 B (0,29%) e `panel.css` ganhou 61 B (0,49%), dentro de 1%. Os testes usaram dados fictícios, sem push nem tag.
+
+## Volta 3
+
+- **Veredito** APROVADO para a Fase 1.
+- **Commit testado** `ab85ff0d98ca55ae79bece012226fc8844f5dba2`.
+- **Base de comparação** `origin/main` local em `afbf75d6b60c14e52f56c4d5ec3caf1f562bf6a4`.
+
+### Execução
+
+Rodei a suíte com `node dev/ambiente-local.js testes --portas 3018,3019,3020`. Os 42 arquivos passaram em `node --check`, assim como o smoke e o validador de design. As suítes tiveram 112 testes de extensão, 305 de servidor e 183 de cliente, todos aprovados e com zero bloqueios da guarda de rede. A parte Swap Plus executa JavaScript diretamente. O diff contra `origin/main` apontou um espaço em branco sobrando em `.vscode/launch.json:47`.
+
+Fiz a validação manual em uma cópia de `git archive ab85ff0` com Node 24.22.3. O servidor, o VS Code em Xvfb e o Chromium headless rodaram em uma namespace de rede com apenas loopback. Usei dados fictícios, as portas 3018–3020 para o ambiente principal e 3008–3010 dentro da namespace para verificar o caminho padrão. A limpeza foi feita em outra cópia descartável.
+
+### Critérios de aceite
+
+| # | Resultado | Evidência |
+|---|---|---|
+| 1 | Passou | Subida limpa em 0,3 s, com código novo, e-mail administrativo e health `ok:true`. Também subi com portas padrão na namespace privada. |
+| 2 | Passou | Google simulado autenticou o admin e o painel confirmou quatro contas e um Hermes na conta 1. |
+| 3 | Passou | Sessão separada recusou `intruso@local.test` com “Conta não liberada”. |
+| 4 | Passou | SIGINT encerrou e gravou o cofre. A segunda subida levou 0,4 s e manteve as quatro contas e um Hermes. |
+| 5 | Passou | Simulador recebeu 95% às 10:08:00. O painel registrou Hermes da conta 1 para a 3 às 10:08:31, por sessão em 95% com linha de 90%. Para exercitar o polling real de conta perto de uma linha, configurei a linha de modelo da conta 1 em 65%, ação de troca de conta e cooldown zero. [Histórico](prints-gpt/volta3-painel-troca.png) |
+| 6 | Passou | 600 testes, mais smoke, sintaxe e design. Zero falhas e zero bloqueios na suíte. |
+| 7 | Passou | Sonda com `NODE_OPTIONS` retornou `bloqueado` e `[sem-internet] bloqueado: example.com:443`. |
+| 8 | Passou | O subcomando `cliente` pareou, completou o ciclo e gravou token simulado em `dev/.dados/portas-3018/cliente/.claude/`. |
+| 9 | Passou | VS Code real conectado por código, conta 3, com sessão de 10% e semanal de 15%. O token simulado ficou no `HOME` do ambiente. O mtime do arquivo real continuou em `1795611027`. Confirmei também que o subcomando `vscode` reabre esse perfil. [Barra](prints-gpt/volta3-vscode-status.png) · [Configurações](prints-gpt/volta3-vscode-alto-contraste.png) |
+| 10 | Passou | F5 abriu a extensão de `plus/` em processo separado com o perfil correspondente às portas. A configuração composta também iniciou e anexou o depurador ao host. Evidência detalhada abaixo. |
+| 11 | Passou | `limpar --sim` padrão removeu `home/` e preservou sentinelas em `portas-3018/`, `portas-3118/` e fora de `.dados`. Depois, `limpar --portas 3018,3019,3020 --sim` tirou apenas o primeiro ambiente alternativo. |
+| 12 | Passou | Suíte de API e nomes cobriu espaços, caixa e reutilização do código. VS Code recebeu 409 para `Hermes (simulado)`, reabriu o campo e aceitou `NoteWin GPT V3` com o mesmo código. [VS Code](prints-gpt/volta3-vscode-nome-duplicado.png) |
+| 13 | Passou | `nomes.test.js` cobriu sigma grego, caixa e acento. |
+| 14 | Passou | `nomes.test.js` cobriu José, Jose e forma NFD. |
+| 15 | Passou | VS Code mostrou conflito e solicitou outro nome para `Hermes (simulado)`. Para testar o retorno, iniciei com nome livre, registrei esse nome pelo cliente enquanto aguardava o Google e concluí o login em Chromium headless. O callback retornou 409, o navegador exibiu a mensagem, o VS Code reabriu o nome e o log confirmou que o callback não criou serviço. `google.test.js` confirmou o poll `name_taken`. [Início](prints-gpt/volta3-vscode-google-duplicado.png) · [Navegador](prints-gpt/volta3-navegador-google-duplicado.png) · [Retorno ao VS Code](prints-gpt/volta3-vscode-google-retorno.png) |
+| 16 | Passou | Reconectei `NoteWin GPT V3` no VS Code. O id `9886c5b3eb92` foi substituído por `8767cf3c8b5a`, apareceu “o acesso anterior deixou de valer” e a chamada com a credencial anterior recebeu 401. `api.test.js` e `google.test.js` confirmaram a substituição. |
+| 17 | Passou | `api.test.js` verificou pareamentos concorrentes com dois códigos válidos. |
+| 18 | Passou | `web.test.js` verificou conflito ao renomear para nome alheio e mudança da caixa do próprio nome. |
+| 19 | Passou | `api.test.js` e `web.test.js` verificaram preservação dos duplicados legados. |
+| 20 | Passou | `servermode.test.js` confirmou um aviso e uma linha no histórico em três instâncias. |
+| 21 | Passou | `servermode.test.js` confirmou um evento `limit_hit` em duas instâncias. |
+| 22 | Passou | Smoke encontrou o erro de limite e o modelo em transcrições por link simbólico. Verificou links de projeto, transcrição e subagente, além de link quebrado e destino que é pasta. |
+| 23 | Passou | API e motor verificaram nome com até 60 pontos de código. PATCH local devolveu o apelido com `x` e 39 emojis inteiros. Teste complementar em cópia descartável chamou o motor real e confirmou cortes de plano, `preferModel` e rótulo de limite em 40, 40 e 80 pontos de código. |
+| 24 | Passou | `web.test.js` renomeou um serviço de 55 caracteres para outro nome de 55. |
+| 25 | Passou | Todas as metas na massa padrão. O relatório de cada ambiente foi gravado na respectiva pasta `portas-*`. |
+| 26 | Passou | `app.js` veio com 41.231 B em gzip. Com `gzip;q=0, *;q=1`, veio com 141.455 B e sem `Content-Encoding`. Benchmark confirmou 304 e corpo vazio. |
+| 27 | Passou | API `/v1/health` respondeu sem `Content-Encoding` quando pediu gzip. |
+| 28 | Passou | Validador passou na suíte e reprovou a cor literal adicionada em cópia descartável, apontando `server/web/app.css:1341`. |
+| 29 | Passou | Temas claro e escuro renderizados em Chromium headless, com `h1` computado em 22 px. [Claro](prints-gpt/volta3-painel-claro.png) · [Escuro](prints-gpt/volta3-painel-escuro.png) |
+| 30 | Passou | Configurações no VS Code real com Dark High Contrast, interruptor ligado e botão Sair legíveis. As regras do interruptor e do botão usam variáveis do tema. [Alto contraste](prints-gpt/volta3-vscode-alto-contraste.png) |
+
+### Reteste do F5
+
+1. Configurei o editor pai para `http://127.0.0.1:3098` e iniciei o VS Code com `SWAP_PLUS_PORTAS=3018,3019,3020`. Pressionei F5 em “Swap Plus (plus/) — ambiente local”.
+2. O novo processo recebeu `--user-data-dir` e `--extensions-dir` sob `dev/.dados/portas-3018/vscode/`. O log desse perfil registrou a ativação de `paulo-local.swap-plus`, e a barra mostrou `127.0.0.1:3018`. O inspector em 9339 confirmou `HOME` em `dev/.dados/portas-3018/home`, `CLAUDE_CONFIG_DIR` no `.claude` desse HOME e `TMPDIR` na pasta de 3018. A configuração `3098` permaneceu no perfil pai.
+3. Selecionei “ambiente local + depurador” e pressionei F5. O painel Call Stack mostrou `ambiente-local.js` e o processo remoto em execução. Na execução seguinte, com `SWAP_PLUS_PORTAS` removida do ambiente do pai, F5 abriu o perfil padrão em `dev/.dados/vscode/` e mostrou `127.0.0.1:3008`. [Portas alternativas](prints-gpt/volta3-vscode-f5.png) · [Depurador](prints-gpt/volta3-vscode-depurador.png) · [Portas padrão](prints-gpt/volta3-vscode-f5-padrao.png)
+
+### Medições da Volta 3
+
+| Medida | `origin/main` | `ab85ff0` | Proporção |
+|---|---:|---:|---:|
+| `scanLimitErrors`, mediana em ms | 3.266 | 638 | 20% |
+| `detectModels`, mediana em ms | 3.148 | 504 | 16% |
+| `scanLimitErrors`, execução fria em ms | 3.654 | 667 | 18% |
+| Varreduras completas por minuto, três janelas | 18 | 4 | 22% |
+| Primeira abertura do painel, bytes | 226.712 | 61.779 | 27% |
+| Reabertura do painel, bytes | 226.712 | 0 | 0% |
+
+Massa padrão de 300 projetos × 40 transcrições antigas, mais cinco transcrições recentes e dez medições por varredura. As três respostas condicionais retornaram 304 e as versões encontraram o mesmo erro e modelos. Rodei também com sete projetos, cinco arquivos e duas execuções para verificar a geração com poucos projetos. As versões encontraram o mesmo erro e os mesmos modelos, e o relatório saiu em `dev/.dados/portas-3118/medidas.json`, junto ao de 3018 preservado. A mediana do caso pequeno ficou em 45% da base. A meta de 40% do critério 25 usa a massa de 300 × 40.
+
+### Observações
+
+- **[SUGESTÃO]** `git diff origin/main...ab85ff0 --check` apontou espaços no fim da linha em `.vscode/launch.json:47`. O VS Code leu o arquivo e iniciou as duas configurações testadas.
+- Frente a `origin/main`, `app.css` aumentou 141 B (0,29%) e `panel.css` aumentou 61 B (0,49%). As ressalvas aceitas pelo PM seguem registradas na demanda e no `NOVIDADES-3.6.md`. O pareamento da extensão 3.5 ficou com a ressalva conhecida de mensagem genérica para nome em uso. Esta rodada usou a extensão de `plus/` no commit testado.

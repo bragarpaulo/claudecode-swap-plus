@@ -1,0 +1,11 @@
+{
+  "_leia": "Dados SIMULADOS do ambiente local (node dev/ambiente-local.js). Nada aqui é conta de verdade. Editável à mão: o Anthropic falso relê a cada pedido; a semeadura só roda com o cofre vazio (rode 'limpar' para semear de novo).",
+  "contas": [
+    { "numero": 1, "email": "conta1@local.test", "organizacao": "Org Simulada", "plano": "Max", "assinatura": "max", "sessao": 2, "semanal": 30, "fable": 57 },
+    { "numero": 2, "email": "conta2@local.test", "organizacao": "Org Simulada", "plano": "Max", "assinatura": "max", "sessao": 40, "semanal": 85, "fable": 20 },
+    { "numero": 3, "email": "conta3@local.test", "organizacao": "Org Simulada", "plano": "Pro", "assinatura": "pro", "sessao": 10, "semanal": 15, "semFable": true },
+    { "numero": 4, "email": "conta4@local.test", "organizacao": "Org Simulada", "plano": "Max", "assinatura": "max", "sessao": 0, "semanal": 0, "morta": true }
+  ],
+  "googleLiberadas": ["pessoa@local.test"],
+  "servicos": [{ "nome": "Hermes (simulado)", "plataforma": "linux" }]
+}

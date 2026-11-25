@@ -2,7 +2,28 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Extension",
+      // F5: a extensão Swap Plus (plus/), isolada em dev/.dados/: perfil próprio do VS Code (nunca o seu, que pode ter
+      // o acesso do servidor de verdade), login do Claude Code e temporários de mentira.
+      // Antes, suba o ambiente local num terminal: node dev/ambiente-local.js (ele cria as configurações desse perfil:
+      // servidor http://127.0.0.1:3008 e atualizações desligadas).
+      "name": "Swap Plus (plus/) — ambiente local",
+      "type": "extensionHost",
+      "request": "launch",
+      "runtimeExecutable": "${execPath}",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/plus",
+        "--user-data-dir=${workspaceFolder}/dev/.dados/vscode/user-data",
+        "--extensions-dir=${workspaceFolder}/dev/.dados/vscode/extensions",
+        "--disable-extensions"
+      ],
+      "env": {
+        "HOME": "${workspaceFolder}/dev/.dados/home",
+        "CLAUDE_CONFIG_DIR": "${workspaceFolder}/dev/.dados/home/.claude",
+        "TMPDIR": "${workspaceFolder}/dev/.dados/tmp"
+      }
+    },
+    {
+      "name": "Original (claude-swap-status, só referência)",
       "type": "extensionHost",
       "request": "launch",
       "runtimeExecutable": "${execPath}",

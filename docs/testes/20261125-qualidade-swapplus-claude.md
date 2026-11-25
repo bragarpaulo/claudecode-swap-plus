@@ -1,13 +1,216 @@
 # Relatório de teste — 20261125-qualidade-swapplus — claude
 
-- **Commit testado (volta 2):** `deed985` (deed9853299b0a2079cb0d9bd8c7632b751474c5), último da branch
-  `bragarpaulo/20261125-qualidade-swapplus`, comparado com `origin/main` (`afbf75d`).
+- **Commit testado (volta 3):** `ab85ff0` (ab85ff0d98ca55ae79bece012226fc8844f5dba2), último commit de código da branch
+  `bragarpaulo/20261125-qualidade-swapplus`, comparado com `origin/main` (`afbf75d`). Durante o teste entrou o
+  `1c05f3e`, que traz só o relatório do GPT, sem código.
 - **Spec:** `docs/specs/20261125-qualidade-swapplus.md`, só a Fase 1.
-- **Veredito (volta 2):** APROVADO. Os 30 critérios passam no `deed985`. Os dois bloqueantes da volta 1 foram corrigidos
-  e conferidos: o apelido com meio emoji (meu) e o link simbólico de subagente (do GPT). Não achei regressão.
-- A volta 1 (`04004f4`, REPROVADO) continua abaixo, sem mudanças.
+- **Veredito (volta 3):** APROVADO. Os 30 critérios passam no `ab85ff0`.
+  - O F5 agora abre um VS Code separado, no perfil isolado. Reproduzi o cenário do GPT, com um perfil pai apontando para
+    outra porta, e o host não herdou nada dele.
+  - O F5 acompanha o `SWAP_PLUS_PORTAS`, e o `limpar` padrão preserva `portas-*`.
+  - Nada da volta 2 regrediu.
+  - Ficam três sugestões, nenhuma bloqueante.
+- As voltas 2 (`deed985`, APROVADO) e 1 (`04004f4`, REPROVADO) continuam abaixo, sem mudanças.
 
-## Volta 2
+## Volta 3
+
+### Como o teste foi feito
+
+- Tudo foi feito nesta máquina: Node 24.22.3, VS Code portátil, Xvfb próprio (`:96`) e Chromium headless
+  (playwright-core).
+  - Nada foi enviado ao servidor real, à Anthropic ou ao Google.
+  - Nenhum token real foi usado. Não houve push nem tag.
+- Meu ambiente rodou nas portas padrão **3008/3009/3010**, com `dev/.dados/`. O tester GPT trabalhou numa pasta dele
+  (`/tmp/swap-gpt-v3-repo`, 3018–3020).
+- Um VS Code que sobrou da volta 2 do GPT ainda estava aberto no perfil `dev/.dados/vscode/` deste repositório. Não mexi
+  nele.
+  - Por isso o F5 e o subcomando `vscode` foram testados numa cópia `git archive ab85ff0` (com `git init`), apontando
+    para o meu servidor na 3008. Outro VS Code no mesmo perfil passaria a janela para a instância que já estava aberta.
+- O ambiente da cópia nas portas 3028–3030 serviu para o F5 com `SWAP_PLUS_PORTAS`.
+- Para os prints do VS Code, usei o framebuffer do Xvfb (`-fbdir`) convertido para PNG.
+- No fim, encerrei tudo o que abri: ambientes com Ctrl+C (SIGINT), VS Code e Xvfb. Nenhuma porta ficou ocupada.
+
+### Comandos rodados
+
+| Comando | Resultado |
+|---|---|
+| `node dev/ambiente-local.js testes` | ok. `node --check` (42 arquivos) ok, `smoke --unit` ok. Extensão **112/0**, servidor **305/0**, cliente **183/0**, design ok. **0 bloqueios `[sem-internet]`**. |
+| `git diff --check origin/main...ab85ff0` | **acusa** `.vscode/launch.json:47: trailing whitespace`. Ver sugestão 1. |
+| `git diff --stat deed985 ab85ff0 -- plus server cliente src` | vazio: o código do produto não mudou desde a volta 2. Só mudaram `launch.json`, `README.md`, `dev/ambiente-local.js` e `dev/medir-desempenho.js`. |
+| `node dev/ambiente-local.js` | no ar em 0,3 s: "Cofre já tinha dados (4 contas, 16 serviço(s)): nada semeado de novo". |
+| `node dev/ambiente-local.js medir` | ok; todas as metas ok (tabela abaixo). Grava em `dev/.dados/medidas.json`. |
+| `medir --portas 3028,3029,3030 --projetos 10 --arquivos 5 --vezes 2` | grava em `dev/.dados/portas-3028/medidas.json`. Com 10 projetos, "mesmoResultado ok": as duas versões acham o limite em `recente-4.jsonl`. Isso confirma a correção do `medir` com menos de 29 projetos. O "scan40 NÃO" é esperado com tão pouco dado e não é critério; a meta vale com o padrão de 300 projetos. |
+| `cliente --dados dev/.dados/cliente-claude-v3 --nome "Cliente Claude V3"` | pareou e fez o ciclo. Token `sk-ant-oat01-SIMULADO-1-…`. `~/.claude/.credentials.json` ficou com o mesmo mtime (1795611027). |
+| `NODE_OPTIONS="--require ./dev/sem-internet.js" node -e "fetch('https://example.com')…"` | `[sem-internet] bloqueado: example.com:443` e `bloqueado` |
+| `--portas 1,2,3` / `3028,3028,3030` / `abc`; `SWAP_PLUS_PORTAS=99999,3029,3030` | todos saem com 2 |
+
+Resultado do `medir` (antes = `origin/main` afbf75d). A máquina estava carregada, com o outro tester rodando junto.
+
+| medida | antes | depois | dep/ant | meta |
+|---|---|---|---|---|
+| scanLimitErrors — mediana (ms) | 2076 | 315 | 15% | ≤ 40% |
+| detectModels — mediana (ms) | 2304 | 286 | 12% | |
+| scanLimitErrors — 1ª execução, fria (ms) | 574 | 557 | 97% | |
+| varreduras completas/min, 3 janelas | 18 | 4 | 22% | ≤ 4 |
+| painel: 1ª abertura com gzip (bytes) | 226712 | 61779 | 27% | ≤ 30% |
+| painel: reabertura com If-None-Match (bytes) | 226712 | 0 | 0% | 304 |
+
+A 1ª execução fria saiu parecida nas duas versões porque o cache do disco já estava quente. Não é meta.
+
+### Foco da volta 3
+
+**1. F5 isolado de verdade (bloqueante do GPT na volta 2): corrigido.**
+- Montei o cenário do GPT na cópia `ab85ff0`.
+  - O VS Code "pai" usa o perfil `scratchpad/pai/user` com `"swapPlus.server.url": "http://127.0.0.1:3999"`, além de
+    `HOME` próprio.
+  - Ele abre a pasta da cópia, e o F5 roda na configuração "Swap Plus (plus/) — ambiente local".
+- O F5 roda `node ./dev/ambiente-local.js vscode --inspect-extensions=9339`. Esse comando abre **outro processo** do
+  VS Code com `--user-data-dir=<cópia>/dev/.dados/vscode/user-data`, `--extensions-dir` no mesmo lugar e
+  `--no-sandbox`, que o próprio script acrescenta.
+  - O Extension Development Host saiu numa janela própria.
+  - Os processos do renderer e do host de extensões rodam com o perfil isolado, e não com o do pai.
+- **Endereço:** em "Swap Plus: Conectar ao servidor", o host oferece "Entrar com Google **127.0.0.1:3008**", e não o
+  `3999` do pai (`v3-vscode-f5-isolado.png`).
+  - Conectei pelo código: "conectado ao servidor 127.0.0.1:3008", e a barra mostrou o uso (`v3-vscode-f5-conectado.png`).
+- **HOME e CLAUDE_CONFIG_DIR:** a credencial `sk-ant-oat01-SIMULADO-3-0` foi gravada em
+  `<cópia>/dev/.dados/home/.claude/.credentials.json`.
+  - A `HOME` do pai continuou sem `.claude`, e o `~/.claude` real manteve o mesmo mtime.
+- **Segredos/estado:** o `state.vscdb` do perfil isolado tem as chaves de `paulo-local.swap-plus`. O do perfil pai não tem
+  nenhuma. O `exthost.log` do pai não registra a ativação do `paulo-local.swap-plus`, e o do perfil isolado registra
+  (`onStartupFinished`).
+- **Shift+F5** encerra o `ambiente-local` e, com ele, o VS Code isolado: não sobra processo.
+- **Depurador:** a configuração composta "Swap Plus (plus/) — ambiente local + depurador" abriu o host isolado e anexou o
+  depurador.
+  - `ss` mostra a 9339 escutando no host de extensões isolado, com uma conexão aberta a partir do processo do VS Code pai
+    (`v3-vscode-f5-depurador.png`).
+  - O ícone de depuração mostra 2 sessões.
+
+**2. F5 acompanhando `SWAP_PLUS_PORTAS`.**
+- Subi o ambiente da cópia com `SWAP_PLUS_PORTAS=3028,3029,3030` e abri o VS Code pai com a mesma variável no ambiente.
+  O F5 abriu o host com `--user-data-dir=<cópia>/dev/.dados/portas-3028/vscode/user-data`.
+- "Conectar ao servidor" ofereceu **127.0.0.1:3028** (`v3-vscode-f5-portas-3028.png`). A conexão pelo código do `subir`
+  da 3028 funcionou, e a credencial foi para `portas-3028/home/.claude/`.
+- Sem a variável no ambiente, o `launch.json` passa `SWAP_PLUS_PORTAS=""` (`${env:…}` vazio). O script trata isso como
+  portas padrão: conferido no ambiente do processo `ambiente-local.js vscode` lançado pelo F5.
+- Limite: a porta do depurador é sempre 9339 (sugestão 2).
+
+**3. `limpar` padrão preservando `portas-*` (minha sugestão da volta 2): corrigido.**
+- Na cópia, com `home`, `tmp`, `vscode`, `portas-3028` e `portas-3038` em `dev/.dados/`:
+  - `limpar --sim` → "Apagado: dev/.dados/ (ficaram os ambientes de outras portas: portas-3028, portas-3038; apague cada
+    um com limpar --portas)". Só sobraram as duas `portas-*`.
+  - `limpar --sim --portas 3028,3029,3030` → "Apagado: dev/.dados/portas-3028/". A 3038 continuou lá.
+  - Sem `--sim`, a resposta "n" dá "Nada apagado.", e "s" apaga com a mesma regra.
+  - `git status` ficou limpo em todos os casos.
+- A pergunta sem `--sim` ainda não cita as `portas-*` que ficam, mas a saída depois cita. Não é defeito.
+
+**4. Nada da volta 2 regrediu.**
+- **Link simbólico de subagente e de transcrição.** Rodei o mesmo roteiro da volta 2, chamando o `scanLimitErrors` real
+  da extensão com o vscode falso do `smoke.js`, nas duas versões:
+
+| layout | origin/main | ab85ff0 |
+|---|---|---|
+| A. `subagents/agent.jsonl` é link para arquivo | acha | acha |
+| B. pasta `subagents` é link | acha | acha |
+| C. pasta da sessão é link | nada | **acha** |
+| D. transcrição do projeto é link | nada | **acha** |
+| E. pasta do projeto é link | nada | **acha** |
+| F. laço + link quebrado | nada | nada (2 ms, sem travar) |
+| G. arquivo comum | acha | acha |
+
+- O ganho de tempo se manteve: ver a tabela do `medir`.
+- **Apelido e cortes sem meio emoji (motor real, pela API):** `PATCH /v1/accounts/4`, depois `GET /v1/state`.
+  - `"x"+30×😀` → 31 pontos de código.
+  - `39×"a"+😀` → 40.
+  - `41×😀` → 40 (80 unidades UTF-16).
+  - `"  "+25×👍🏽+"  "` → 40.
+  - Nome de serviço `"V3"+70×😀` → 60 pontos de código.
+  - Nenhum deixou surrogate solto.
+  - No VS Code, o apelido da conta 2 ("bbb…b👍") aparece inteiro (`v3-vscode-alto-contraste.png`).
+- **Reinício (critério 4).**
+  - Ctrl+C: "cofre gravado; até mais", e as portas foram liberadas.
+  - Subi de novo: "Cofre já tinha dados (4 contas, 27 serviço(s))", no ar em 0,3 s.
+  - Painel, antes e depois: 4 contas, 27 serviços, 1 "Hermes (simulado)", 0 nomes repetidos
+    (`v3-painel-servicos-antes.png` / `-depois.png`).
+- **Propagação da mudança de uso (critério 5).**
+  - 10:07:33: `POST :3010/_simular/uso {"conta":3,"sessao":95}`. Nesse momento, uma sonda (serviço com heartbeat a cada
+    30 s) estava na conta 3.
+  - 10:17:19, **9 min 46 s** depois (dentro do "até 10 min" avisado): o histórico registra `Trocou da conta 3 para a conta
+    1: sessão em 95% (linha 90%)` para "Sonda V3" e para o outro serviço ativo na conta 3.
+  - A conta 1 estava em 2% (`v3-painel-historico.png`).
+
+### Critérios de aceite (volta 3, ab85ff0)
+
+| # | Critério | Resultado | Evidência |
+|---|---|---|---|
+| 1 | Sobe em ≤ 15 s com endereço, código e admin; health ok | passou | 0,3 s (duas vezes); `/v1/health` → `{"ok":true,"version":"2.8.0"}` |
+| 2 | Admin pelo Google falso vê 4 contas e "Hermes (simulado)" | passou | `v3-painel-dark.png`: contas 1–4, a conta 4 com "Login morto". Serviços com 1 Hermes. |
+| 3 | `intruso@local.test` recusado | passou | `v3-painel-intruso.png`: "Conta não liberada" |
+| 4 | Ctrl+C e subir de novo não duplica | passou | foco 4 |
+| 5 | Uso a 95% → painel mostra; troca no histórico | passou | foco 4 (9 min 46 s) |
+| 6 | `testes` passa, 0 bloqueios, totais ≥ 106/283/181 | passou | 112/305/183, 0 bloqueios |
+| 7 | `sem-internet` bloqueia example.com | passou | comandos |
+| 8 | `cliente` pareia, ciclo, token SIMULADO; `~/.claude` intacto | passou | comandos |
+| 9 | VS Code: conectar pelo código, barra com uso, credencial simulada, nada do usuário muda | passou | Subcomando `vscode` (`v3-vscode-conectado.png`): barra "Sessão (5h): 2% … Semanal: 30%", credencial `SIMULADO-1` no `CLAUDE_CONFIG_DIR` isolado. O subcomando foi lançado com `VSCODE_IPC_HOOK_CLI` apontando para um socket falso e sem `--no-sandbox`, e abriu mesmo assim: limpou as variáveis e pôs a flag sozinho. Pelo F5, ver foco 1. |
+| 10 | F5 abre o Dev Host com o Swap Plus | passou | foco 1 e 2: agora isolado de verdade |
+| 11 | `limpar --sim` apaga só `dev/.dados/`, git limpo | passou | foco 3 |
+| 12 | Variações de "NoteWin" → 409 com a mensagem; código continua valendo | passou | "notewin", " NoteWin ", "NOTEWIN" → 409 `name_taken` com a mensagem exata. Depois, o mesmo código conectou "Alfa V3-…" (200). |
+| 13 | Σίσυφος × ΣΊΣΥΦΟΣ/σίσυφοσ → 409; variantes conectam | passou | 409, 409; "Σισυφος V3b-…" 200 |
+| 14 | José × Jose → conecta; Jose+U+0301 → 409 | passou | 409 para Jose+U+0301; "José V3b-…" e "Jose V3b-…" 200 / 200 |
+| 15 | Google com nome repetido | passou (testes + volta 2) | O código do produto não mudou desde `deed985`, quando conferi no VS Code. `google.test.js` passa. |
+| 16 | Reconectar o mesmo VS Code com o mesmo nome: um só, token antigo 401, linha no histórico | passou | VS Code: diálogo "Este computador já está conectado a 127.0.0.1:3008. Conectar de novo?" → código → "VSCode Claude V3". Ficou um só serviço com esse nome (id `7ed631d945d8` → `c8feec9e2b7c`), e o histórico registrou `Serviço "VSCode Claude V3" reconectado: o acesso anterior deixou de valer` (`v3-vscode-reconectado.png`). API com `replaces: {deviceId, token}`: 200, token antigo **401**, novo 200, 1 serviço. |
+| 17 | Pareamentos simultâneos: nunca dois serviços | passou | Dois `POST /v1/pair` ao mesmo tempo, "Corrida V3-…" e a mesma em minúsculas → 200 + 401 |
+| 18 | Renomear B para o nome de A → erro; mudar só a caixa → aceito | passou | Painel (`PATCH /web/api/devices/:id` com CSRF): B → nome de A em maiúsculas dá 409 `name_taken`; B → o próprio nome em maiúsculas dá 200 |
+| 19 | Cofre com dois "NoteWin" antigos fica intacto | passou (por teste) | `api.test.js` / `web.test.js` |
+| 20 | 3 janelas → 1 aviso e 1 linha | passou (por teste) | `servermode.test.js` 22g |
+| 21 | 2 janelas → 1 `limit_hit` | passou (por teste) | `servermode.test.js` 22h |
+| 22 | `CLAUDE_CONFIG_DIR` nas varreduras, sem perder transcrição atrás de link | passou | `smoke --unit` e a tabela do foco 4 |
+| 23 | Nome e apelido sem surrogate solto | passou | foco 4 |
+| 24 | Nome de 55 renomeado para outro de 55 | passou | Painel: 55→55 e →60 dão 200; 61 dá 400 "de 1 a 60 caracteres" |
+| 25 | `medir` com as metas | passou | tabela acima |
+| 26 | `app.js` gzip ≤ 45.000; If-None-Match → 304 | passou | 41.231 B, `Content-Encoding: gzip`, `Vary: Accept-Encoding`, ETag; 304 com 0 B. `gzip;q=0, *;q=1` → sem gzip (141.455 B). |
+| 27 | API sem `Content-Encoding` | passou | `/v1/health` e `/web/api/me` com `Accept-Encoding: gzip`: sem o cabeçalho |
+| 28 | `conferir-design` 0 | passou | suíte `testes` |
+| 29 | Painel claro e escuro legível; h1 22px | passou | `v3-painel-dark.png`, `v3-painel-light.png`; h1 calculado 22px nos dois |
+| 30 | Interruptor no alto contraste usa a cor do tema | passou | Tema "Dark High Contrast", Configurações do Swap Plus: o interruptor "Ligado" tem fundo `rgb(137,209,133)` = `#89d185`, o `charts.green` do tema (`v3-vscode-alto-contraste.png`) |
+
+### Problemas encontrados (volta 3)
+
+Nenhum bloqueante.
+
+#### [SUGESTÃO] 1. Espaço sobrando no `launch.json`
+- **Onde:** `.vscode/launch.json:47`, uma linha só com dois espaços antes do `],`.
+- **Como reproduzir:** `git diff --check origin/main...ab85ff0` sai com 2 e mostra "trailing whitespace". Na volta 2,
+  saía 0.
+- Não é critério e não afeta o F5. É só a conferência de diff.
+
+#### [SUGESTÃO] 2. A porta do depurador (9339) não acompanha o `SWAP_PLUS_PORTAS`
+- **Onde:** `.vscode/launch.json`, `--inspect-extensions=9339` e a configuração "anexar ao host isolado (porta 9339)".
+- **Como reproduzir:**
+  1. Com um F5 aberto (por exemplo, `SWAP_PLUS_PORTAS=3028,…`), rode um segundo
+     `node dev/ambiente-local.js vscode --inspect-extensions=9339` nas portas padrão, o mesmo comando do F5.
+  2. O segundo host abre e ativa o Swap Plus, mas a 9339 continua com o primeiro.
+- **Obtido:** a configuração "+ depurador" do segundo anexaria ao host do outro ambiente, sem aviso. O perfil, o `HOME` e o
+  servidor seguem certos; só o depurador cai no host errado.
+- Também ocupa a 9339 de quem já a usa. Sugestão: derivar a porta do depurador das portas do ambiente, ou documentar.
+
+#### [SUGESTÃO] 3. `limpar --portas` deixa `dev/.dados/` vazio
+- Depois de apagar a última `portas-*`, sobra a pasta `dev/.dados/` vazia. Ela é ignorada pelo git, então isso é só
+  cosmético.
+
+### Observações (volta 3)
+
+- O F5 fica preso ao perfil `dev/.dados/vscode/` do repositório. Se um VS Code já estiver aberto nesse perfil (pelo
+  `vscode` ou por outro F5), a nova janela vai para a instância aberta. Esse é o comportamento normal do VS Code com o
+  mesmo `--user-data-dir`. Para dois testers na mesma pasta, o `SWAP_PLUS_PORTAS` resolve.
+- Os prints da volta 3 ficam em `docs/testes/prints-claude/v3-*.png`. Os das voltas anteriores foram mantidos.
+
+---
+
+## Volta 2 (deed985)
+
+- **Veredito (volta 2):** APROVADO. Os 30 critérios passaram no `deed985` (deed9853299b0a2079cb0d9bd8c7632b751474c5).
+  Os dois bloqueantes da volta 1 foram corrigidos e conferidos: o apelido com meio emoji (meu) e o link simbólico de
+  subagente (do GPT).
 
 ### Como o teste foi feito
 

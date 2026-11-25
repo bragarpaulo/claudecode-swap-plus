@@ -19,6 +19,7 @@
   --focus: #6cb6ff;
   --ok: #3fb950;
   --okfill: #2ea043;
+  --okring: rgba(46, 160, 67, 0.2);
   --conn: #58a6ff; /* serviço conectado, sem uso agora (bolinha azul) */
   --warn: #d29922;
   --bad: #ff7b72;
@@ -69,6 +70,7 @@
     --focus: #0969da;
     --ok: #1a7f37;
     --okfill: #1f883d;
+    --okring: rgba(31, 136, 61, 0.2);
     --conn: #218bff;
     --warn: #9a6700;
     --bad: #cf222e;
@@ -118,7 +120,7 @@ body {
 }
 
 h1, h2, h3, h4 { line-height: 1.3; font-weight: 650; }
-h1 { font-size: 20px; margin: 0; line-height: 1.25; }
+h1 { font-size: var(--fs-2xl); margin: 0; line-height: 1.25; }
 h2 { font-size: var(--fs-xl); margin: 0 0 8px; }
 h3 { font-size: var(--fs-lg); margin: 0 0 8px; }
 h4 { font-size: var(--fs-base); margin: 24px 0 4px; }
@@ -206,7 +208,7 @@ a.button.secondary {
 button.secondary:hover,
 a.button.secondary:hover { background: var(--btn2-hover); }
 button.danger {
-  color: #fff;
+  color: var(--accent-fg);
   background: var(--danger);
 }
 button.danger:hover { background: var(--danger-hover); }
@@ -338,7 +340,7 @@ input.sw {
 input.sw:checked {
   border-color: var(--okfill);
   background-color: var(--okfill);
-  background-image: radial-gradient(circle at calc(100% - 11px) 50%, #fff 0 7px, transparent 7.5px);
+  background-image: radial-gradient(circle at calc(100% - 11px) 50%, var(--accent-fg) 0 7px, transparent 7.5px);
 }
 input.sw:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -383,7 +385,7 @@ input.sw:disabled { opacity: 0.5; cursor: not-allowed; }
   align-items: center;
   gap: 8px;
 }
-.logincard h1 { font-size: 26px; margin-top: 8px; }
+.logincard h1 { font-size: var(--fs-2xl); margin-top: 8px; }
 .lead { color: var(--soft); font-size: var(--fs-lg); margin: 0 0 16px; }
 .loginmsg {
   width: 100%;
@@ -568,7 +570,7 @@ fieldset.card > legend + .hint { margin-bottom: 4px; }
 /* bolinha de situação. Nos serviços, uma cor para cada presença: sem contato (a de base, cinza cheia) · ativo agora
    (.on, verde com halo) · conectado e sem uso (.conn, azul) · aguardando contato (.wait, só o contorno cinza) */
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--soft); flex: none; }
-.dot.on { background: var(--okfill); box-shadow: 0 0 0 3px rgba(46, 160, 67, 0.2); }
+.dot.on { background: var(--okfill); box-shadow: 0 0 0 3px var(--okring); }
 .dot.conn { background: var(--conn); }
 .dot.wait { background: transparent; box-shadow: inset 0 0 0 2px var(--soft); }
 .dot.bad { background: var(--bad); }
@@ -1065,11 +1067,11 @@ button.thsort:hover {
   text-transform: inherit;
 }
 button.thsort:hover { color: var(--fg); }
-button.thsort::after { content: "\2195"; font-size: 11px; opacity: 0.5; }
+button.thsort::after { content: "\2195"; font-size: var(--fs-xs); opacity: 0.5; }
 th[aria-sort="ascending"] > .thsort,
 th[aria-sort="descending"] > .thsort { color: var(--fg); }
-th[aria-sort="ascending"] > .thsort::after { content: "\25B2"; font-size: 9px; opacity: 1; }
-th[aria-sort="descending"] > .thsort::after { content: "\25BC"; font-size: 9px; opacity: 1; }
+th[aria-sort="ascending"] > .thsort::after { content: "\25B2"; font-size: var(--fs-xs); opacity: 1; }
+th[aria-sort="descending"] > .thsort::after { content: "\25BC"; font-size: var(--fs-xs); opacity: 1; }
 .utable tbody th { font-weight: 600; overflow-wrap: anywhere; }
 .utable tbody tr:hover > * { background: var(--rowhover); }
 .utable td.actions { width: 1%; text-align: right; white-space: nowrap; }
@@ -1252,7 +1254,7 @@ button.closebtn { min-height: 36px; padding: 6px 12px 6px 10px; gap: 6px; }
 
   .sec { padding-top: 16px; }
   .sectop > button { width: 100%; }
-  .sechead { font-size: 20px; }
+  .sechead { font-size: var(--fs-xl); }
 
   /* tabela de usuários vira cartões empilhados: e-mail e ação na 1ª linha, o resto embaixo com o nome da coluna.
      O cabeçalho some (cada dado leva o nome da coluna); ordenar pelos cabeçalhos fica só na tela larga. */

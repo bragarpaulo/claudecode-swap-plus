@@ -258,6 +258,94 @@ async function partL() {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+// ------------------------------------------------------------ parte I: CLAUDE_CONFIG_DIR e o inventário das transcrições (3.6.0)
+async function partI() {
+  console.log("\n# I. CLAUDE_CONFIG_DIR e o inventário único das transcrições");
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-cfg-"));
+  const antes = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfgDir;
+  T.setLimitRoot(null); // o caminho de verdade: <CLAUDE_CONFIG_DIR>/projects, calculado na hora
+  try {
+    const now = Date.now();
+    const iso = (ms) => new Date(ms).toISOString();
+    fs.mkdirSync(path.join(cfgDir, "projects", "p"), { recursive: true });
+    const f = path.join(cfgDir, "projects", "p", "s.jsonl");
+    fs.writeFileSync(
+      f,
+      [
+        JSON.stringify({ type: "assistant", timestamp: iso(now - 60000), message: { model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }] } }),
+        JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", timestamp: iso(now - 1000), message: { model: "<synthetic>", content: [{ type: "text", text: "You've hit your 5-hour limit" }] } }),
+      ].join("\n") + "\n"
+    );
+    T.transcripts.invalidate();
+    const hit = await T.scanLimitErrors(now - 60000);
+    check("CLAUDE_CONFIG_DIR: o erro de limite em <config>/projects é achado", !!hit && hit.file === f && T.limitLabel(hit.text) === "limite da sessão de 5h");
+    const models = await T.detectModels();
+    check("CLAUDE_CONFIG_DIR: o modelo usado há 1 min é detectado", models.length === 1 && models[0].id === "claude-opus-5-5", JSON.stringify(models));
+    // Subagente: entra na procura do limite, não no "modelo em uso".
+    fs.mkdirSync(path.join(cfgDir, "projects", "p", "sess", "subagents"), { recursive: true });
+    fs.writeFileSync(path.join(cfgDir, "projects", "p", "sess", "subagents", "a.jsonl"), JSON.stringify({ type: "assistant", timestamp: iso(now), message: { model: "claude-haiku-5-5" } }) + "\n");
+    T.transcripts.invalidate();
+    const m2 = await T.detectModels();
+    check("subagente não muda o modelo em uso", m2.length === 1 && m2[0].id === "claude-opus-5-5", JSON.stringify(m2));
+
+    // Inventário único: a procura do limite e o modelo em uso, juntos, fazem UMA varredura (resultado vale 10 s).
+    T.transcripts.invalidate();
+    const s0 = T.transcripts.stats.scans;
+    await Promise.all([T.scanLimitErrors(now - 60000), T.detectModels(), T.scanLimitErrors(now - 60000)]);
+    await T.detectModels();
+    check("inventário único: limite + modelo em uso = 1 varredura", T.transcripts.stats.scans - s0 === 1, String(T.transcripts.stats.scans - s0));
+    // Lista da pasta só é relida quando o mtime dela muda.
+    T.transcripts.invalidate();
+    const r0 = T.transcripts.stats.dirReads;
+    await T.detectModels();
+    check("pastas sem mudança: nenhuma lista relida", T.transcripts.stats.dirReads === r0, String(T.transcripts.stats.dirReads - r0));
+    fs.writeFileSync(path.join(cfgDir, "projects", "p", "novo.jsonl"), "");
+    const fut = new Date(Date.now() + 3000);
+    fs.utimesSync(path.join(cfgDir, "projects", "p"), fut, fut);
+    T.transcripts.invalidate();
+    const list = await T.transcripts.list(path.join(cfgDir, "projects"));
+    check("pasta mudou: arquivo novo aparece", list.some((x) => x.file.endsWith("novo.jsonl")));
+    // Sem sobreposição: o vigia (checkLimitErrors) não roda sem ser a janela dona.
+    check("janela que não é a dona não varre", (await T.checkLimitErrors()) === null);
+  } finally {
+    if (antes === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = antes;
+    fs.rmSync(cfgDir, { recursive: true, force: true });
+  }
+
+  // Inventário isolado: varredura em andamento é aproveitada (sem empilhar) e o resultado vale até o TTL.
+  const { createInventory, mapLimit } = require(path.join(root, "transcricoes.js"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-inv-"));
+  try {
+    for (let i = 0; i < 5; i++) {
+      fs.mkdirSync(path.join(dir, `p${i}`));
+      for (let j = 0; j < 4; j++) fs.writeFileSync(path.join(dir, `p${i}`, `t${j}.jsonl`), "x");
+    }
+    let t = 1000;
+    const inv = createInventory({ now: () => t });
+    const [a, b2] = await Promise.all([inv.list(dir), inv.list(dir)]);
+    check("varredura em andamento é aproveitada (1 só)", inv.stats.scans === 1 && a === b2 && a.length === 20);
+    await inv.list(dir);
+    check("resultado reaproveitado dentro de 10 s", inv.stats.scans === 1 && inv.stats.cacheHits === 1);
+    t += 10001;
+    await inv.list(dir);
+    check("depois de 10 s varre de novo", inv.stats.scans === 2);
+    check("pasta que não existe → lista vazia", (await inv.list(path.join(dir, "nao-existe"))).length === 0);
+    let max = 0;
+    let cur = 0;
+    await mapLimit([...Array(100).keys()], 32, async () => {
+      cur++;
+      max = Math.max(max, cur);
+      await new Promise((r) => setImmediate(r));
+      cur--;
+    });
+    check("stat em paralelo: no máximo 32 ao mesmo tempo", max === 32, String(max));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // ------------------------------------------------------------ parte V: versão nova instalada por fora
 function partV() {
   console.log("\n# V. Versão mais nova já instalada (pede para recarregar)");
@@ -680,6 +768,7 @@ async function partG() {
   partA();
   partV();
   await partL();
+  await partI();
   partC();
   partE();
   partU();

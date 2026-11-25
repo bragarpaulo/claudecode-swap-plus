@@ -1,13 +1,202 @@
 # Relatório de teste — 20261125-qualidade-swapplus — claude
 
+- **Commit testado (volta 2):** `deed985` (deed9853299b0a2079cb0d9bd8c7632b751474c5), último da branch
+  `bragarpaulo/20261125-qualidade-swapplus`, comparado com `origin/main` (`afbf75d`).
+- **Spec:** `docs/specs/20261125-qualidade-swapplus.md`, só a Fase 1.
+- **Veredito (volta 2):** APROVADO. Os 30 critérios passam no `deed985`. Os dois bloqueantes da volta 1 foram corrigidos
+  e conferidos: o apelido com meio emoji (meu) e o link simbólico de subagente (do GPT). Não achei regressão.
+- A volta 1 (`04004f4`, REPROVADO) continua abaixo, sem mudanças.
+
+## Volta 2
+
+### Como o teste foi feito
+
+- Tudo foi feito nesta máquina: Node 24.22.3, VS Code portátil 1.148, Xvfb e Chromium headless (playwright-core).
+  - Nada foi enviado ao servidor real, à Anthropic ou ao Google.
+  - Nenhum token real foi usado. Não houve push nem tag.
+- Usei o ambiente no repositório, nas portas padrão **3008/3009/3010**, com os dados em `dev/.dados/`.
+  - O tester GPT usou `--portas 3018,3019,3020`, com os dados dele em `dev/.dados/portas-3018/`. Os dois ambientes
+    rodaram juntos, sem conflito.
+- O cofre em `dev/.dados/` já tinha dados de antes. O `subir` respondeu "Cofre já tinha dados (4 contas, 3 serviço(s)):
+  nada semeado de novo".
+- Um VS Code que sobrou do outro tester ainda estava aberto no perfil padrão `dev/.dados/vscode/`, aberto às 09:06 e
+  ligado ao meu servidor como "NoteWin GPT". Não mexi nele.
+  - Por isso abri o meu VS Code com **o mesmo comando do subcomando `vscode`**. Só mudei as pastas:
+    `dev/.dados/vscode-claude/` e `dev/.dados/home-claude/`, com Xvfb próprio (`:97`) e depuração na porta 9339.
+  - O F5 foi conferido numa cópia `git archive deed985`, porque o `launch.json` aponta sempre para
+    `dev/.dados/vscode/`.
+- No fim, encerrei com Ctrl+C (SIGINT) o meu ambiente, o meu VS Code e o meu Xvfb.
+
+### Comandos rodados
+
+| Comando | Resultado |
+|---|---|
+| `node dev/ambiente-local.js testes` | ok em 84 s. `node --check` (42 arquivos) ok, `smoke --unit` ok. Extensão **112/0**, servidor **305/0** (antes 303: entraram os 2 testes do motor para o critério 23), cliente **183/0**, design ok. **0 bloqueios `[sem-internet]`**. |
+| `git diff --check origin/main...deed985` | ok |
+| `node dev/ambiente-local.js` | no ar em **0,3 s**, com o painel, o código de conexão e `admin@local.test`. Agora avisa: "O número novo pode levar até 10 min". |
+| `node dev/ambiente-local.js medir` | ok; todas as metas ok (tabela abaixo) |
+| `node dev/ambiente-local.js cliente --dados dev/.dados/cliente-claude --nome "Cliente Claude V2"` | pareou e fez o ciclo. Token `sk-ant-oat01-SIMULADO-1-…`. `~/.claude/.credentials.json` ficou com o mesmo mtime (1795603647). |
+| `NODE_OPTIONS="--require ./dev/sem-internet.js" node -e "fetch('https://example.com')…"` | `[sem-internet] bloqueado: example.com:443` e `bloqueado` |
+| `--portas 1,2,3` / `3028,3028,3030` / `3028,3029` / `abc`; `SWAP_PLUS_PORTAS=99999,3029,3030` | todos saem com 2 e a mensagem "Use três portas diferentes de 1024 a 65535…" |
+| cópia com `git init`: `limpar --sim --portas 3028,3029,3030`, depois `limpar --sim` | 1º: "Apagado: dev/.dados/portas-3028/", e `servidor/` continua lá. 2º: "Apagado: dev/.dados/". `git status` limpo. |
+| `node dev/conferir-design.js` | 0. Com `color:#123456` numa cópia, sai 1 e aponta `server/web/app.css:1340`. |
+
+Resultado do `medir` (antes = `origin/main` afbf75d). A máquina estava carregada, com o outro tester rodando junto. Por
+isso o "antes" saiu mais lento que na volta 1, mas as proporções valem.
+
+| medida | antes | depois | dep/ant | meta |
+|---|---|---|---|---|
+| scanLimitErrors — mediana (ms) | 2260 | 281 | 12% | ≤ 40% |
+| detectModels — mediana (ms) | 2288 | 292 | 13% | |
+| scanLimitErrors — 1ª execução, fria (ms) | 4268 | 386 | 9% | |
+| varreduras completas/min, 3 janelas | 18 | 4 | 22% | ≤ 4 |
+| painel: 1ª abertura com gzip (bytes) | 226712 | 61779 | 27% | ≤ 30% |
+| painel: reabertura com If-None-Match (bytes) | 226712 | 0 | 0% | 304 |
+
+A conferência do `medir` acha o mesmo limite e os mesmos modelos nas duas versões. O ganho de tempo continua mesmo
+seguindo links simbólicos.
+
+### Foco da volta 2
+
+**1. Link simbólico de subagente e de transcrição (bloqueante do GPT na volta 1): corrigido.**
+- Script próprio (`scanLimitErrors(now-60s, projects)` com `vscode` falso) rodado contra `origin/main` e `deed985`, com o
+  mesmo erro de limite em cada layout:
+
+| layout | origin/main | deed985 |
+|---|---|---|
+| A. `subagents/agent.jsonl` é link para o arquivo (caso do GPT) | acha | **acha** |
+| B. pasta `subagents` é link | acha | acha |
+| C. pasta da sessão é link | não acha | acha |
+| D. transcrição do projeto é link | não acha | acha |
+| E. pasta do projeto é link | não acha | acha |
+| F. laço (pasta aponta para o próprio projeto) e link quebrado | nada (ok) | nada (ok), sem travar, 1 ms |
+| G. controle: arquivo comum | acha | acha |
+
+- A 3.6 lê tudo o que a base lia e um pouco mais. O `smoke.js --unit` agora cobre link de subagente, de projeto, de
+  pasta, link quebrado e link para pasta.
+
+**2. Apelido e demais cortes do motor sem meio emoji (meu bloqueante da volta 1): corrigido, no motor real.**
+- Testei pela API, com `PATCH /v1/accounts/3` e um serviço pareado, lendo depois `GET /v1/state`:
+  - `"x"+30×😀` → 31 pontos de código, inteiro (antes saía meio emoji).
+  - `39×"a"+😀` → 40 pontos de código.
+  - `41×😀` → 40 emojis inteiros, 80 unidades UTF-16.
+  - `"  "+25×👍🏽+"  "` → 40 pontos de código.
+  - Nenhum desses deixou surrogate solto.
+- Pelo painel, com `PATCH /web/api/accounts/2` e o CSRF do admin: `39×"b"+👍🏽` → `"bbb…b👍"`, sem surrogate.
+  - No VS Code, a conta 2 aparece com o apelido inteiro ("…bbbb👍"), sem "▫"; ver `v2-vscode-alto-contraste.png`.
+- Nome do serviço com `"N"+70×😀` → gravado com 60 pontos de código, sem surrogate.
+- O `planOf`, o `preferModel` e o rótulo do `limitHit` passaram a usar o mesmo `cortar()`.
+  - Na leitura do código, isso fecha o resto do padrão que eu tinha apontado.
+
+**3. Reinício do ambiente (critério 4).**
+- Ctrl+C no `subir`: "Encerrando (o servidor grava o cofre)…" e "cofre gravado; até mais". As portas foram liberadas.
+- Subi de novo: "Cofre já tinha dados (4 contas, 16 serviço(s)): nada semeado de novo", no ar em 0,2 s.
+  - Antes e depois: 4 contas (conta1–4, uma vez cada), 16 serviços, 1 "Hermes (simulado)", nenhum nome repetido.
+- O VS Code continuou na conta 3 depois do reinício. O painel mostra a sessão da conta 1 em 95%
+  (`v2-painel-light-apos-reinicio.png`, `v2-painel-servicos-apos-reinicio.png`).
+
+**4. Propagação da mudança de uso (critério 5).**
+- 09:44:33: `POST :3010/_simular/uso {"conta":1,"sessao":95}`.
+- 09:53:54: o servidor releu a conta 1 (5h = 95%). Foram 9 min 20 s, dentro do "até 10 min" que o `subir` agora
+  avisa.
+- No mesmo instante, o histórico registrou uma linha por serviço ativo: `Trocou da conta 1 para a conta 3: sessão em 95%
+  (linha 90%)`, para "VSCode Claude V2" e para "outro-v2" (`v2-painel-historico.png`).
+- O VS Code passou para a **Conta 3**: a barra mostrou "Sessão (5h): 10% … Semanal: 15%" e a credencial isolada passou a
+  `sk-ant-oat01-SIMULADO-3-…`.
+- Os serviços "aguardando contato" e o que só faz `GET /v1/state` ("conectado", sem presença ativa) ficaram na conta 1.
+  Esse é o comportamento do motor, já visto na volta 1.
+
+**5. F5 (critério 10).**
+- Abri a cópia `deed985` num VS Code e apertei F5. Abriu o "[Extension Development Host]" com a barra do Swap Plus
+  ("não conectado — clique para entrar com Google"); ver `v2-vscode-f5.png`.
+- O Dev Host abre dentro do processo do VS Code que o lançou. Isso é o desvio já aceito pelo PM.
+
+### Critérios de aceite (volta 2, deed985)
+
+| # | Critério | Resultado | Evidência |
+|---|---|---|---|
+| 1 | Sobe em ≤ 15 s com endereço, código e admin; health ok | passou | 0,3 s e 0,2 s; `/v1/health` → `"ok":true`, 2.8.0 |
+| 2 | Admin pelo Google falso vê 4 contas e "Hermes (simulado)" | passou | `v2-painel-dark.png`: contas 1–4, a conta 4 com "Login morto". Aba Serviços com 1 "Hermes (simulado)". |
+| 3 | `intruso@local.test` recusado | passou | `v2-painel-intruso.png`: "Conta não liberada" |
+| 4 | Ctrl+C e subir de novo não duplica | passou | ver foco 3 |
+| 5 | Uso a 95% → painel mostra; troca no histórico | passou | ver foco 4 |
+| 6 | `testes` passa, 0 bloqueios, totais ≥ 106/283/181 | passou | 112/305/183, 0 bloqueios |
+| 7 | `sem-internet` bloqueia example.com | passou | ver comandos |
+| 8 | `cliente` pareia, ciclo, token SIMULADO; `~/.claude` intacto | passou | ver comandos |
+| 9 | VS Code: conectar pelo código, barra com uso, credencial simulada, nada do usuário muda | passou | `v2-vscode-conectado.png`: barra com a conta 1 (2%/30%/Fable 57%), credencial isolada `SIMULADO-1`. `~/.claude` com o mesmo mtime; `~/.config/Code` não existe. |
+| 10 | F5 abre o Dev Host com o Swap Plus | passou | ver foco 5 |
+| 11 | `limpar --sim` apaga só `dev/.dados/`, git limpo | passou | ver comandos (também com `--portas`) |
+| 12 | Variações de "NoteWin" → 409 com a mensagem; código continua valendo | passou | API: "notewin", " NoteWin ", "NOTEWIN" → 409 `name_taken` com a mensagem exata. Com "Note  Win" conectado, "Note Win" e "note   win" → 409. O mesmo código, depois, conectou "Outro-V2" (200). No VS Code, " NOTEWIN " pede outro nome com a mensagem (`v2-vscode-codigo-nome-repetido.png`). |
+| 13 | Σίσυφος × ΣΊΣΥΦΟΣ/σίσυφοσ → 409; Sisyphos/Σισυφος conectam | passou | 409, 409, 200, 200 |
+| 14 | José × Jose → conecta; Jose+U+0301 → 409 | passou | 200 / 200 / 409 |
+| 15 | Google com nome repetido | passou | VS Code: "Entrar com Google" com "NOTEWIN" → `POST /v1/login/start 409` e o nome é pedido de novo com a mensagem (`v2-vscode-google-nome-repetido.png`). O conflito na volta do Google está coberto por `google.test.js` e foi visto no VS Code na volta 1. Esse código não mudou. |
+| 16 | Reconectar o mesmo VS Code com o mesmo nome: um só, token antigo 401, linha no histórico | passou | Diálogo nativo "Conectar de novo" → código → "VSCode Claude V2". O id passou de `8da7d8283df4` para `0a53f6b7de89`, e ficou 1 só. Histórico: `Serviço "VSCode Claude V2" reconectado: o acesso anterior deixou de valer` (`v2-vscode-reconectado.png`). Pela API com `replaces`: token antigo 200 → **401**, novo 200. |
+| 17 | Pareamentos simultâneos: nunca dois serviços | passou | Dois `POST /v1/pair` ao mesmo tempo com "Corrida V2"/"corrida v2" → 200 + 401 e 1 serviço. A disputa de nome com dois códigos está coberta por `api.test.js`. |
+| 18 | Renomear B para o nome de A → erro; mudar só a caixa → aceito | passou | Painel: "Outro-V2" → "notewin" dá 409 `name_taken`; "Outro-V2" → "OUTRO-v2" dá 200 |
+| 19 | Cofre com dois "NoteWin" antigos fica intacto | passou (por teste) | `api.test.js` e `web.test.js` "(critério 19)" |
+| 20 | 3 janelas → 1 aviso e 1 linha | passou (por teste) | `servermode.test.js` 22g |
+| 21 | 2 janelas → 1 `limit_hit` | passou (por teste) | `servermode.test.js` 22h |
+| 22 | `CLAUDE_CONFIG_DIR` nas varreduras, sem perder transcrição atrás de link | passou | `smoke.js --unit` (seção I, com os casos de link) e a tabela do foco 1 |
+| 23 | Nome e **apelido** sem surrogate solto | **passou** | ver foco 2 (motor real, pela API e pelo painel) |
+| 24 | Nome de 55 renomeado para outro de 55 | passou | Painel: 55→55 e →60 dão 200; 61 dá 400 "de 1 a 60 caracteres" |
+| 25 | `medir` com as metas | passou | tabela acima |
+| 26 | `app.js` gzip ≤ 45.000; If-None-Match → 304 | passou | 41.231 B, `Content-Encoding: gzip`, `Vary`, ETag; 304 com 0 B |
+| 27 | API sem `Content-Encoding` | passou | `GET /v1/health` e `/web/api/me` com `Accept-Encoding: gzip`: sem `Content-Encoding` |
+| 28 | `conferir-design` 0; cor literal → ≠ 0 com arquivo:linha | passou | ver comandos |
+| 29 | Painel claro e escuro legível; h1 22px | passou | `v2-painel-dark.png`, `v2-painel-light.png`; h1 calculado 22px nos dois |
+| 30 | Interruptor da extensão no alto contraste usa a cor do tema | passou | `v2-vscode-alto-contraste.png`, tema "Default High Contrast" (`vscode-high-contrast`): o fundo do interruptor é `rgb(137,209,133)`, igual a `--vscode-charts-green` (#89d185); o botão é branco, igual a `--vscode-button-foreground` |
+
+Sugestão do GPT na volta 1 (`gzip;q=0, *;q=1`), conferida com curl em `/static/app.js`:
+
+| `Accept-Encoding` | resposta |
+|---|---|
+| `gzip;q=0, *;q=1` | sem gzip, 141.455 B (corrigido) |
+| `*;q=0` | sem gzip |
+| `identity` | sem gzip |
+| `*` | gzip |
+| `br, gzip;q=0.5` | gzip |
+| `GZIP` | gzip |
+
+### Problemas encontrados (volta 2)
+
+Nenhum bloqueante.
+
+#### [SUGESTÃO] `limpar` nas portas padrão apaga também o ambiente das outras portas
+- **Onde:** `dev/ambiente-local.js`, `limpar()`. Com as portas padrão, `DADOS` é `dev/.dados/`, que contém
+  `dev/.dados/portas-*/`.
+- **Como reproduzir:** em uma cópia, crie `dev/.dados/portas-3028/x` e rode `node dev/ambiente-local.js limpar --sim`.
+- **Esperado / obtido:** quem roda o `limpar` "dele", nas portas padrão, apaga também o cofre e o VS Code do outro
+  ambiente, mesmo com ele no ar. A pergunta sem `--sim` diz só "Apagar dev/.dados/ (cofre simulado…)".
+- O critério 11 passa, porque só `dev/.dados/` some.
+- Sugestão: pular `portas-*` no `limpar` padrão, ou ao menos listar essas pastas na pergunta.
+
+#### [SUGESTÃO] F5 não acompanha o `--portas`
+- **Onde:** `.vscode/launch.json`. O perfil é sempre `dev/.dados/vscode/` e o servidor fica em
+  `settings.json`, que aponta para 3008 depois do `subir` padrão.
+- Com dois ambientes na mesma pasta, o F5 sempre cai no perfil e no servidor das portas padrão. Também colide com um
+  `vscode` padrão já aberto. Vale uma linha no README. Não é critério.
+
+### Observações (volta 2)
+
+- **Ritmo do uso:** o aviso novo no `subir` e no README resolve a observação da volta 1. A troca saiu em 9 min 20 s.
+- **Histórico da reconexão:** além de "reconectado", aparecem "Serviço … conectado" e "Conta N atribuída a …". Não é
+  defeito. A linha pedida pelo critério 16 está lá, e o serviço é um só.
+- Não foi testado: a extensão 3.5 contra o servidor 2.8, que é a ressalva conhecida do PM.
+- Os prints da volta 2 ficam em `docs/testes/prints-claude/v2-*.png`. Os da volta 1, sem prefixo, foram mantidos.
+
+---
+
+## Volta 1 (04004f4)
+
 - **Commit testado:** `04004f4` (04004f44c641cb747a1e5fec94b7a8ec22eaf348), branch `bragarpaulo/20261125-qualidade-swapplus`,
   comparado com `origin/main` (`afbf75d`). Durante o teste o outro tester gravou `a416541` (só o relatório dele). O código
   é o mesmo do `04004f4`.
 - **Spec:** `docs/specs/20261125-qualidade-swapplus.md`, só a Fase 1.
-- **Veredito:** REPROVADO. Um critério falhou: o **23**, na parte do apelido da conta. O resto passou: 29 critérios
+- **Veredito (volta 1):** REPROVADO. Um critério falhou: o **23**, na parte do apelido da conta. O resto passou: 29 critérios
   conferidos, sem regressão nas suítes.
 
-## Como o teste foi feito
+
+### Como o teste foi feito
 
 - Tudo foi feito nesta máquina: Node 24.22.3, VS Code portátil 1.148 em `~/.local/opt/vscode` e Xvfb.
   - Nada foi enviado ao servidor real, à Anthropic ou ao Google.
@@ -25,7 +214,7 @@
   - comandado pelo protocolo de depuração do Chromium, mais `xdotool` para os diálogos nativos;
   - prints em `docs/testes/prints-claude/`.
 
-## Comandos rodados
+### Comandos rodados
 
 | Comando | Resultado |
 |---|---|
@@ -47,7 +236,7 @@ Resultado do `medir` (antes = `origin/main` afbf75d):
 | painel: 1ª abertura com gzip (bytes) | 226712 | 61779 | 27% | ≤ 30% |
 | painel: reabertura com If-None-Match (bytes) | 226712 | 0 | 0% | 304 |
 
-## Critérios de aceite
+### Critérios de aceite
 
 | # | Critério | Resultado | Evidência |
 |---|---|---|---|
@@ -82,9 +271,9 @@ Resultado do `medir` (antes = `origin/main` afbf75d):
 | 29 | Painel claro e escuro legível; h1 22px | passou | `painel-dark.png`, `painel-light.png`, `painel-interruptor-*.png`. Estilos calculados: h1 22px nos dois temas. Interruptor com o botão em `--accent-fg`. `--okring` com `rgba(46,160,67,.2)` no escuro e `rgba(31,136,61,.2)` no claro. "Desconectar" legível nos dois. |
 | 30 | Interruptor da extensão no alto contraste usa a cor do tema | passou | `vscode-configuracoes-alto-contraste.png` e `vscode-configuracoes-escuro.png`. Interruptor em `var(--vscode-charts-green)` e botão em `--vscode-button-foreground` (`panel.css:8,73-74`). |
 
-## Problemas encontrados
+### Problemas encontrados
 
-### [BLOQUEANTE] Apelido da conta ainda fica com meio emoji (critério 23)
+#### [BLOQUEANTE] Apelido da conta ainda fica com meio emoji (critério 23)
 - **Onde:** `server/src/engine.js:2892`. Lá, `next.alias = v.trim().slice(0, 40)` corta por unidade UTF-16.
   - O `cleanText(body.alias, 40)` do `server.js` já corta por ponto de código.
   - Mas o motor corta de novo, agora em 40 **unidades UTF-16**.
@@ -101,16 +290,16 @@ Resultado do `medir` (antes = `origin/main` afbf75d):
 - **Correção sugerida:** usar `cortar(v.trim(), 40)` de `server/src/nomes.js` no motor e cobrir com um teste no motor real.
   - `preferModel` (`engine.js:360`) tem o mesmo padrão, mas recebe nomes de modelo e não entra no critério.
 
-### [SUGESTÃO] `curl -sI` do critério 27 recebe 405
+#### [SUGESTÃO] `curl -sI` do critério 27 recebe 405
 - **Onde:** API (`/v1/health` só aceita GET).
 - O critério passa, porque não há `Content-Encoding`, mas o comando escrito na spec não testa nada.
 - Sugestão: trocar, na spec ou no README, por `curl -s -D - -o /dev/null -H 'Accept-Encoding: gzip' …`.
 
-### [SUGESTÃO] `ambiente-local.js` com portas fixas
+#### [SUGESTÃO] `ambiente-local.js` com portas fixas
 - Dois testers na mesma pasta não conseguem ter cada um o seu ambiente.
 - Um `--portas` ou variáveis de ambiente (`PORTA_API` etc.) evitariam ter que copiar o repositório. Isso não é critério.
 
-## Observações
+### Observações
 
 - **Critério 5 (tempo):** a troca saiu cerca de 9 min depois do curl.
   - A conta 1 estava "longe das linhas" (sessão 2%), e nesse caso o motor relê a cada 10 min (`POLL_ACTIVE_FAR_MS`).

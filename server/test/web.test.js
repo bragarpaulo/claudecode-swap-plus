@@ -2072,7 +2072,7 @@ test("painel: serviços permitidos por conta (PUT /web/api/accounts/:n/devices) 
   assert.deepEqual(cofreEmDisco(ctx).accountDevices, { 1: [] });
 });
 
-test("painel: renomear serviço (PATCH /web/api/devices/:id { name }): 1 a 40 caracteres, sem controle; histórico", async (t) => {
+test("painel: renomear serviço (PATCH /web/api/devices/:id { name }): 1 a 60 caracteres, sem controle; histórico", async (t) => {
   const ctx = await setup(t);
   const T = ctx.clock.t;
   ctx.store.state.devices = { d2: dispositivo("d2", "Windows", T) };
@@ -2091,7 +2091,7 @@ test("painel: renomear serviço (PATCH /web/api/devices/:id { name }): 1 a 40 ca
   assert.deepEqual(h, { ts: h.ts, kind: "info", text: `Serviço "Windows" renomeado para "PC da sala" pelo painel (${me})`, device: "d2", deviceName: "PC da sala" });
 
   // Inválidos → 400 e nada muda.
-  const ruins = ["", "   ", "x".repeat(41), "com\nquebra", "com\ttab", "nul\u0000", "‮esrever", 123, null, ["a"]];
+  const ruins = ["", "   ", "x".repeat(61), "com\nquebra", "com\ttab", "nul\u0000", "‮esrever", 123, null, ["a"]];
   for (const name of ruins) {
     r = await call(ctx, "PATCH", "/web/api/devices/d2", { s, body: { name } });
     assert.equal(r.status, 400, `${JSON.stringify(name)}: ${r.text}`);
@@ -2100,13 +2100,13 @@ test("painel: renomear serviço (PATCH /web/api/devices/:id { name }): 1 a 40 ca
   assert.equal(r.status, 400);
   assert.equal(ctx.store.state.devices.d2.name, "PC da sala");
   // As mensagens falam em "serviço" (o painel mostra a mensagem do servidor como aviso).
-  r = await call(ctx, "PATCH", "/web/api/devices/d2", { s, body: { name: "x".repeat(41) } });
-  assert.equal(r.json.message, "o nome do serviço precisa ter de 1 a 40 caracteres");
+  r = await call(ctx, "PATCH", "/web/api/devices/d2", { s, body: { name: "x".repeat(61) } });
+  assert.equal(r.json.message, "o nome do serviço precisa ter de 1 a 60 caracteres");
   r = await call(ctx, "PATCH", "/web/api/devices/d2", { s, body: { name: "com\nquebra" } });
   assert.equal(r.json.message, "o nome do serviço não pode ter quebra de linha, tabulação nem caracteres de controle");
 
-  // 40 caracteres (acento conta como um) servem; o mesmo nome de novo não repete no histórico.
-  const quarenta = "é".repeat(40);
+  // 60 caracteres (acento conta como um) servem; o mesmo nome de novo não repete no histórico.
+  const quarenta = "é".repeat(60);
   r = await call(ctx, "PATCH", "/web/api/devices/d2", { s, body: { name: quarenta } });
   assert.equal(r.status, 200, r.text);
   assert.equal(ctx.store.state.devices.d2.name, quarenta);
@@ -2253,4 +2253,100 @@ test("painel de verdade (server/web), 2.6.0: “Modelo preferido” e “Modelo 
   assert.ok(js.includes('toast("O modelo preferido e o secundário precisam ser diferentes.", "error");'), "não deixa salvar os dois iguais");
   assert.ok(js.includes("· atualizados em "), "linha “N modelos · atualizados em DD/MM HH:MM”");
   assert.ok(css.includes(".r-models {"), "os campos novos têm estilo");
+});
+
+// ---------------------------------------------------------------------------
+// 2.8.0: nome único ao renomear; arquivos do painel com gzip, ETag e 304
+// ---------------------------------------------------------------------------
+
+test("2.8.0 painel: renomear para o nome de OUTRO serviço → 409 name_taken; o próprio com outra caixa pode (critério 18)", async (t) => {
+  const ctx = await setup(t);
+  const T = ctx.clock.t;
+  ctx.store.state.devices = { a: dispositivo("a", "A", T), b: dispositivo("b", "B", T + 1) };
+  const { s } = await webLogin(ctx, ADMIN);
+  let r = await call(ctx, "PATCH", "/web/api/devices/b", { s, body: { name: "a" } });
+  assert.equal(r.status, 409, r.text);
+  assert.deepEqual(r.json, { error: "name_taken", message: "Já existe um serviço com este nome; escolha outro ou desconecte o antigo no painel." });
+  assert.equal(ctx.store.state.devices.b.name, "B");
+  r = await call(ctx, "PATCH", "/web/api/devices/a", { s, body: { name: "a" } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(ctx.store.state.devices.a.name, "a");
+});
+
+test("2.8.0 painel: duplicados de antes da regra continuam; renomear um deles para nome livre funciona (critério 19)", async (t) => {
+  const ctx = await setup(t);
+  const T = ctx.clock.t;
+  ctx.store.state.devices = { a: dispositivo("a", "NoteWin", T), b: dispositivo("b", "NoteWin", T + 1) };
+  const { s } = await webLogin(ctx, ADMIN);
+  let r = await call(ctx, "GET", "/web/api/state", { s });
+  assert.equal(r.json.devices.filter((d) => d.name === "NoteWin").length, 2);
+  r = await call(ctx, "PATCH", "/web/api/devices/b", { s, body: { name: "NoteWin (sala)" } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(ctx.store.state.devices.a.name, "NoteWin");
+});
+
+test("2.8.0 painel: nome de 55 caracteres renomeado para outro de 55 é aceito (critério 24)", async (t) => {
+  const ctx = await setup(t);
+  ctx.store.state.devices = { a: dispositivo("a", "x".repeat(55), ctx.clock.t) };
+  const { s } = await webLogin(ctx, ADMIN);
+  const r = await call(ctx, "PATCH", "/web/api/devices/a", { s, body: { name: "y".repeat(55) } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(ctx.store.state.devices.a.name, "y".repeat(55));
+});
+
+test("2.8.0 painel: estáticos com gzip, ETag e 304; API sem compressão (critérios 25–27)", async (t) => {
+  const zlib = require("node:zlib");
+  const ctx = await setup(t);
+  const cru = (p, headers) =>
+    new Promise((resolve, reject) => {
+      const req = http.request({ host: "127.0.0.1", port: ctx.api, method: "GET", path: p, headers, agent: false }, (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  const arquivos = { "/": INDEX_HTML, "/static/app.js": APP_JS, "/static/app.css": APP_CSS };
+  for (const [p, texto] of Object.entries(arquivos)) {
+    const g = await cru(p, { "accept-encoding": "gzip, deflate, br" });
+    assert.equal(g.status, 200);
+    assert.equal(g.headers["content-encoding"], "gzip", p);
+    assert.equal(g.headers.vary, "Accept-Encoding");
+    assert.equal(g.headers["cache-control"], "no-cache");
+    assert.match(g.headers.etag, /^"sha256-[0-9a-f]{16}"$/);
+    assert.ok(g.headers["content-security-policy"], "cabeçalhos de segurança continuam");
+    assert.equal(zlib.gunzipSync(g.body).toString("utf8"), texto);
+    // Sem Accept-Encoding (ou gzip;q=0): sem compressão, mesmo ETag.
+    for (const h of [{}, { "accept-encoding": "gzip;q=0" }]) {
+      const n = await cru(p, h);
+      assert.equal(n.headers["content-encoding"], undefined);
+      assert.equal(n.body.toString("utf8"), texto);
+      assert.equal(n.headers.etag, g.headers.etag);
+    }
+    // Reabertura: 304 sem corpo.
+    for (const inm of [g.headers.etag, `W/${g.headers.etag}`, `"outro", ${g.headers.etag}`]) {
+      const c = await cru(p, { "if-none-match": inm, "accept-encoding": "gzip" });
+      assert.equal(c.status, 304, inm);
+      assert.equal(c.body.length, 0);
+      assert.equal(c.headers.etag, g.headers.etag);
+    }
+    assert.equal((await cru(p, { "if-none-match": '"sha256-0000000000000000"' })).status, 200);
+  }
+  // Arquivo mudou no disco → conteúdo e ETag novos (cache recarrega pelo mtime).
+  const antes = (await cru("/static/app.js", {})).headers.etag;
+  const novo = "console.log('novo');\n";
+  const arq = path.join(ctx.config.webDir, "app.js");
+  fs.writeFileSync(arq, novo);
+  const fut = new Date(Date.now() + 5000);
+  fs.utimesSync(arq, fut, fut);
+  const depois = await cru("/static/app.js", { "if-none-match": antes });
+  assert.equal(depois.status, 200);
+  assert.equal(depois.body.toString("utf8"), novo);
+  assert.notEqual(depois.headers.etag, antes);
+  // A API nunca comprime (leva acesso das contas).
+  for (const p of ["/v1/health", "/web/api/state"]) {
+    const r = await cru(p, { "accept-encoding": "gzip" });
+    assert.equal(r.headers["content-encoding"], undefined, p);
+  }
 });

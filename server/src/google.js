@@ -181,8 +181,11 @@ class LoginSessions {
    *   ua        User-Agent do navegador (web)
    *   bindHash  sha256 do cookie que prende o login ao navegador que começou (web)
    *   next      aba do painel para onde voltar depois do login (web; quem chama já conferiu o valor)
+   *   replacesId / replacesHash  serviço que esta conexão substitui (reconexão do mesmo serviço) e o sha256
+   *             do token dele (só o hash; o token antigo nunca fica aqui) (device)
+   *   nameTakenStatus  quem pediu entende o status "name_taken" no poll (device; extensão 3.6+, cliente 1.2+)
    */
-  create({ kind = "device", name, platform, ip, ua = null, bindHash = null, next = null }) {
+  create({ kind = "device", name, platform, ip, ua = null, bindHash = null, next = null, replacesId = null, replacesHash = null, nameTakenStatus = false }) {
     if (!LOGIN_KINDS.has(kind)) throw new Error(`tipo de login desconhecido: ${kind}`);
     if (this.countOf(kind) >= this.max) return null;
     const t = this.now();
@@ -203,9 +206,12 @@ class LoginSessions {
       ua: ua || null,
       bindHash: bindHash || null,
       next: next || null,
+      replacesId: replacesId || null,
+      replacesHash: replacesHash || null,
+      nameTakenStatus: !!nameTakenStatus,
       createdAt: t,
       expiresAt: t + this.ttlMs,
-      result: null, // device: { deviceId, token, email } | web: { web: true, email } | { denied: email }
+      result: null, // device: { deviceId, token, email } | { nameTaken: true } | web: { web: true, email } | { denied: email }
       busy: false,
     };
     this.byId.set(id, session);

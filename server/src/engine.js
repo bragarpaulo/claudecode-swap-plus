@@ -46,7 +46,7 @@ const crypto = require("crypto");
 const { RULE_DEFAULTS, STRATEGY_LABELS, CAND_STALE_SEC, MODEL_EFFORTS, MODEL_ID_RE, modelLine, limitNameOf, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
 
-const VERSION = "2.7.0";
+const VERSION = "2.8.0";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
 // Presença (para mostrar e, desde a 2.5.5, para saber quem segura cada conta: holders): contato = qualquer pedido autenticado do serviço. Quem falou com

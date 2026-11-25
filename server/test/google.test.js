@@ -875,3 +875,91 @@ test("logins: com Google só o serviço do administrador envia; conta liberada q
   assert.ok(logText.includes('login recusado de "PC da Bia"'), "registrado no log");
   for (const seg of [SEGREDO, bia.token, dono.token]) assert.ok(!logText.includes(seg), "nada de token no log");
 });
+
+// ---------------------------------------------------------------------------
+// 2.8.0: nome único também no login com Google; reconexão (replaces) pela sessão
+// ---------------------------------------------------------------------------
+
+const NOME_EM_USO = "Já existe um serviço com este nome; escolha outro ou desconecte o antigo no painel.";
+
+async function conectaComGoogle(ctx, name, extra = {}) {
+  const r = await request(ctx.api, "POST", "/v1/login/start", { body: { name, platform: "linux", caps: ["name_taken"], ...extra } });
+  assert.equal(r.status, 200, r.text);
+  const b = await browserLogin(ctx, r.json, "ana@exemplo.com");
+  assertPage(b.page, 200);
+  const p = await poll(ctx, r.json);
+  assert.equal(p.json.status, "ok", p.text);
+  return p.json;
+}
+
+test("2.8.0 Google: nome repetido → 409 já no login/start (critério 15)", async (t) => {
+  const ctx = await setup(t);
+  await allow(ctx, "ana@exemplo.com");
+  await conectaComGoogle(ctx, "NoteWin");
+  const r = await request(ctx.api, "POST", "/v1/login/start", { body: { name: "notewin", platform: "linux" } });
+  assert.equal(r.status, 409, r.text);
+  assert.deepEqual(r.json, { error: "name_taken", message: NOME_EM_USO });
+  assert.equal(Object.keys(ctx.store.state.devices).length, 1);
+});
+
+test("2.8.0 Google: conflito no retorno → página com a mensagem, nenhum serviço novo e poll name_taken (critério 15)", async (t) => {
+  const ctx = await setup(t);
+  await allow(ctx, "ana@exemplo.com");
+  // As duas sessões começam com o nome livre; a primeira conclui antes.
+  const novo = await loginStart(ctx, { name: "NoteWin" });
+  const velho = (await request(ctx.api, "POST", "/v1/login/start", { body: { name: "NOTEWIN", platform: "linux" } })).json; // extensão 3.5 (sem caps)
+  const a = (await request(ctx.api, "POST", "/v1/login/start", { body: { name: "notewin", platform: "linux", caps: ["name_taken"] } })).json;
+  const primeiro = await browserLogin(ctx, novo, "ana@exemplo.com");
+  assertPage(primeiro.page, 200);
+
+  const b = await browserLogin(ctx, a, "ana@exemplo.com");
+  assertPage(b.page, 409);
+  assert.ok(b.page.text.includes(NOME_EM_USO), b.page.text);
+  assert.equal(Object.keys(ctx.store.state.devices).length, 1, "nenhum serviço novo");
+  // Recarregar a página mostra a mesma mensagem, sem ir ao Google.
+  const antes = ctx.fake.authCalls.length;
+  const again = await request(ctx.api, "GET", pathOf(a.authUrl));
+  assertPage(again, 409);
+  assert.equal(ctx.fake.authCalls.length, antes);
+
+  let r = await poll(ctx, a);
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json, { status: "name_taken", message: NOME_EM_USO });
+  r = await poll(ctx, a);
+  assert.equal(r.status, 404, "entregue uma vez: a sessão acabou");
+
+  // Extensão 3.5 / cliente 1.1 (sem caps): 409 com a mensagem (eles mostram a mensagem do servidor), não fica esperando.
+  const bv = await browserLogin(ctx, velho, "ana@exemplo.com");
+  assertPage(bv.page, 409);
+  r = await poll(ctx, velho);
+  assert.equal(r.status, 409, r.text);
+  assert.deepEqual(r.json, { error: "name_taken", message: NOME_EM_USO });
+  assert.equal(Object.keys(ctx.store.state.devices).length, 1);
+});
+
+test("2.8.0 Google: replaces pela sessão — reconectar com o mesmo nome troca o antigo; só o hash fica na memória (critério 16)", async (t) => {
+  const ctx = await setup(t);
+  await allow(ctx, "ana@exemplo.com");
+  const antigo = await conectaComGoogle(ctx, "NoteWin");
+  const s = await request(ctx.api, "POST", "/v1/login/start", {
+    body: { name: "NoteWin", platform: "linux", caps: ["name_taken"], replaces: { deviceId: antigo.deviceId, token: antigo.token } },
+  });
+  assert.equal(s.status, 200, s.text);
+  const b = await browserLogin(ctx, s.json, "ana@exemplo.com");
+  assertPage(b.page, 200);
+  const p = await poll(ctx, s.json);
+  assert.equal(p.json.status, "ok", p.text);
+  const devs = Object.values(ctx.store.state.devices);
+  assert.equal(devs.length, 1);
+  assert.equal(devs[0].id, p.json.deviceId);
+  assert.ok(!cofreEmDisco(ctx).devices[antigo.deviceId]);
+  assert.equal((await request(ctx.api, "GET", "/v1/state", { headers: bearer(antigo.token) })).status, 401);
+  assert.equal((await request(ctx.api, "GET", "/v1/state", { headers: bearer(p.json.token) })).status, 200);
+  assert.ok(ctx.engine.history.some((h) => h.text === 'Serviço "NoteWin" reconectado: o acesso anterior deixou de valer'));
+
+  // replaces inválido: ignorado, e o nome continua em uso.
+  const r = await request(ctx.api, "POST", "/v1/login/start", {
+    body: { name: "NoteWin", platform: "linux", replaces: { deviceId: p.json.deviceId, token: antigo.token } },
+  });
+  assert.equal(r.status, 409, r.text);
+});

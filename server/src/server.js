@@ -47,8 +47,9 @@ const {
 } = require("./google");
 const { createWeb, webReplacer, uaSummary } = require("./web");
 const access = require("./access");
+const { cortar, nomeEmUso, NOME_EM_USO_MSG } = require("./nomes");
 
-const VERSION = "2.7.0";
+const VERSION = "2.8.0";
 const MAX_BODY = 256 * 1024; // corpo máximo aceito
 const HARD_BODY = MAX_BODY * 4; // acima disso nem lê o resto: responde 413 e fecha
 const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -150,14 +151,14 @@ const responseReplacer = (k, v) => (NEVER_SEND.has(k) ? undefined : v);
 // Em log, nenhum campo com "token" no nome.
 const logReplacer = (k, v) => (/token/i.test(k) ? undefined : v);
 
-/** Texto livre vindo do cliente: sem caracteres de controle, aparado e curto. */
+/** Texto livre vindo do cliente: sem caracteres de controle, aparado e curto (`max` em pontos de código: nunca meio emoji). */
 function cleanText(v, max) {
   if (typeof v !== "string") return "";
-  return v
-    .replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g, "")
-    .trim()
-    .slice(0, max);
+  return cortar(v.replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g, "").trim(), max).trim();
 }
+
+/** 409 da regra do nome único (pareamento, login com Google e renomear no painel). */
+const nameTakenError = () => new HttpError(409, "name_taken", NOME_EM_USO_MSG);
 
 /** "AAAA-MM-DD" no fuso do servidor. */
 function localDay(ms) {
@@ -333,8 +334,10 @@ function loadConfig(env = process.env) {
 /** Página HTML, arquivo do painel ou redirecionamento (RawReply), sempre com os cabeçalhos de segurança. */
 function sendRaw(res, r) {
   if (res.headersSent || res.destroyed || res.writableEnded) return;
-  const body = Buffer.isBuffer(r.body) ? r.body : Buffer.from(String(r.body || ""), "utf8");
-  res.writeHead(r.status, { ...PAGE_HEADERS, "Content-Length": body.length, ...(r.headers || {}) });
+  const body = r.status === 304 ? Buffer.alloc(0) : Buffer.isBuffer(r.body) ? r.body : Buffer.from(String(r.body || ""), "utf8");
+  const head = { ...PAGE_HEADERS, "Content-Length": body.length, ...(r.headers || {}) };
+  if (r.status === 304) delete head["Content-Length"]; // 304: sem corpo (o tamanho seria o do arquivo, não 0)
+  res.writeHead(r.status, head);
   res.end(body);
 }
 
@@ -771,16 +774,55 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
         discarded ? "código errado vezes demais; ele foi descartado — gere um novo no servidor" : "código de pareamento errado"
       );
     }
-    // Uso único: some antes de qualquer await.
-    st.pairing = null;
     const name = cleanText(body.name, 60) || "serviço";
     const platform = cleanText(body.platform, 20) || "desconhecido";
+    // Nome único: conferido aqui, na mesma parte síncrona do createDevice (dois pedidos ao mesmo tempo: um passa,
+    // o outro recebe 409). Recusado, o código NÃO é gasto (dá para tentar de novo com outro nome).
+    const old = replacedByToken(body.replaces);
+    if (nomeEmUso(st.devices, name, old ? [old.id] : [])) {
+      ctx.name = name;
+      log.info(`[pareamento] nome "${name}" já em uso: recusado (o código continua valendo), de ${ip}`);
+      throw nameTakenError();
+    }
+    // Uso único: some antes de qualquer await.
+    st.pairing = null;
     const { id, token } = createDevice({ name, platform, googleEmail: null });
     ctx.name = name;
     pushHistory("device", `Serviço "${name}" conectado`, id);
+    replaceOld(st, old, id);
     await store.save();
     log.info(`[pareamento] serviço "${name}" (${platform}) conectado, id ${id}, de ${ip}`);
     return { deviceId: id, token };
+  }
+
+  /**
+   * `replaces: { deviceId, token }` do pedido de conexão (o acesso antigo deste mesmo serviço) → o serviço
+   * antigo, se o token confere; senão null (inválido é ignorado sem erro e a regra do nome vale normalmente).
+   */
+  function replacedByToken(rep) {
+    if (!isObj(rep)) return null;
+    const tok = typeof rep.token === "string" && rep.token.length <= 200 ? rep.token : "";
+    return tok ? replacedByHash(rep.deviceId, sha256hex(tok)) : null;
+  }
+
+  /** Mesmo que replacedByToken, com o sha256 do token já calculado (o login com Google guarda só o hash na sessão). */
+  function replacedByHash(id, hash) {
+    if (typeof id !== "string" || !id || !hasOwn(state().devices, id)) return null;
+    const d = state().devices[id];
+    return isObj(d) && sameHash(hash, d.tokenHash) ? d : null;
+  }
+
+  /**
+   * Reconexão do mesmo serviço: o acesso antigo sai na MESMA gravação do cofre que cria o novo (não depende
+   * do DELETE que o VS Code manda depois e que pode falhar sem rede). → o serviço removido (para desfazer) ou null.
+   */
+  function replaceOld(st, old, newId) {
+    if (!old || old.id === newId || st.devices[old.id] !== old) return null;
+    delete st.devices[old.id];
+    forgetDevice(st, old.id, old.name);
+    pushHistory("device", `Serviço "${old.name}" reconectado: o acesso anterior deixou de valer`, newId);
+    log.info(`[dispositivos] "${old.name}" (${old.id}) substituído pela reconexão (${newId})`);
+    return old;
   }
 
   /**
@@ -948,7 +990,22 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     await sweepLogins();
     const name = cleanText(body.name, 60) || "serviço";
     const platform = cleanText(body.platform, 20) || "desconhecido";
-    const made = logins.create({ name, platform, ip });
+    // Nome único: resposta rápida aqui; a conferência definitiva é no retorno do Google (deviceCallback).
+    const old = replacedByToken(body.replaces);
+    if (nomeEmUso(state().devices, name, old ? [old.id] : [])) {
+      ctx.name = name;
+      throw nameTakenError();
+    }
+    // Quem sabe tratar o status "name_taken" do poll diz em caps (extensão 3.6+, cliente 1.2+).
+    const caps = Array.isArray(body.caps) ? body.caps.filter((c) => typeof c === "string").slice(0, 10) : [];
+    const made = logins.create({
+      name,
+      platform,
+      ip,
+      replacesId: old ? old.id : null,
+      replacesHash: old ? old.tokenHash : null, // só o hash: o token antigo nunca fica na memória
+      nameTakenStatus: caps.includes("name_taken"),
+    });
     if (!made) {
       const wait = Math.max(1000, logins.nextExpiry("device") - now());
       throw new HttpError(429, "too_many_logins", "logins com Google em andamento demais neste servidor; tente de novo em alguns minutos", {
@@ -979,6 +1036,12 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
     const r = s.result;
     if (!r) return { status: "pending" };
     if (r.denied) return { status: "denied", email: r.denied };
+    if (r.nameTaken) {
+      logins.remove(s);
+      // Extensão 3.5 / cliente 1.1 não conhecem o status: um 409 com a mensagem (eles mostram a mensagem do servidor).
+      if (!s.nameTakenStatus) throw nameTakenError();
+      return { status: "name_taken", message: NOME_EM_USO_MSG };
+    }
     // Entrega UMA vez e apaga a sessão.
     logins.remove(s);
     if (!hasOwn(state().devices, r.deviceId)) throw expiredLogin(); // revogado antes de buscar
@@ -1017,6 +1080,16 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
       title: "Conta não liberada",
       heading: "Conta não liberada",
       lines: [["A conta Google ", { b: email }, " não está liberada neste servidor."], "Peça ao dono para liberar."],
+    });
+  }
+
+  /** O nome escolhido já é de outro serviço (decidido no retorno do Google). */
+  function nameTakenPage() {
+    return pageReply(409, {
+      tone: "aviso",
+      title: "Nome em uso",
+      heading: "Nome em uso",
+      lines: [NOME_EM_USO_MSG, "Volte ao programa que pediu a conexão (VS Code ou cliente) e escolha outro nome."],
     });
   }
 
@@ -1067,6 +1140,7 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
       if (!r.denied) return new RawReply(302, { Location: panelHome(s) }, "");
       return r.notAdmin ? panelNotAdminPage(r.denied) : panelDeniedPage(r.denied);
     }
+    if (s.result.nameTaken) return nameTakenPage();
     return s.result.denied ? deniedPage(s.result.denied) : successPage(s.name, s.result.email);
   }
 
@@ -1166,13 +1240,23 @@ function createApp({ store, engine, config, now = Date.now, log = createLogger()
       log.warn(`[google] a conta Google ${email} não está liberada (serviço "${s.name}", de ${ip})`);
       return deniedPage(email);
     }
+    // Nome único, conferência definitiva: na mesma parte síncrona do createDevice (sem await entre as duas).
+    const st = state();
+    const old = s.replacesId ? replacedByHash(s.replacesId, s.replacesHash) : null;
+    if (nomeEmUso(st.devices, s.name, old ? [old.id] : [])) {
+      logins.settle(s, { nameTaken: true });
+      log.warn(`[google] nome "${s.name}" já em uso: serviço não criado (conta Google ${email}, de ${ip})`);
+      return nameTakenPage();
+    }
     const { id: deviceId, token } = createDevice({ name: s.name, platform: s.platform, googleEmail: email });
     pushHistory("device", `Serviço "${s.name}" conectado com a conta Google ${email}`, deviceId);
+    const replaced = replaceOld(st, old, deviceId);
     try {
       await store.save();
     } catch (e) {
       delete state().devices[deviceId];
       forgetDevice(state(), deviceId, s.name, { quiet: true }); // nunca chegou a valer: sem aviso no histórico
+      if (replaced && !hasOwn(state().devices, replaced.id)) state().devices[replaced.id] = replaced; // o acesso antigo volta a valer
       throw e;
     }
     logins.settle(s, { deviceId, token, email });

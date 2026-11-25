@@ -24,11 +24,41 @@ const readline = require("readline");
 const { spawn, spawnSync } = require("child_process");
 
 const RAIZ = path.resolve(__dirname, "..");
-const DADOS = path.join(__dirname, ".dados");
 const SEM_INTERNET = path.join(__dirname, "sem-internet.js");
-const PORTA_API = 3008;
-const PORTA_ADMIN = 3009;
-const PORTA_FORA = 3010;
+const PORTAS_PADRAO = [3008, 3009, 3010];
+
+/**
+ * Portas: API + painel, admin e Anthropic/Google falso. Padrão 3008,3009,3010; outras com --portas 3018,3019,3020
+ * (em qualquer posição) ou SWAP_PLUS_PORTAS=3018,3019,3020 — para dois ambientes na mesma pasta.
+ */
+function lerPortas(argv, env) {
+  let txt = env.SWAP_PLUS_PORTAS || "";
+  const i = argv.indexOf("--portas");
+  if (i >= 0) txt = argv[i + 1] || "";
+  const eq = argv.find((a) => a.startsWith("--portas="));
+  if (eq) txt = eq.slice("--portas=".length);
+  if (!String(txt).trim()) return PORTAS_PADRAO;
+  const lista = String(txt).split(",").map((x) => Number(x.trim()));
+  if (lista.length !== 3 || lista.some((n) => !Number.isInteger(n) || n < 1024 || n > 65535) || new Set(lista).size !== 3) {
+    console.error(`--portas / SWAP_PLUS_PORTAS inválido: "${txt}". Use três portas diferentes de 1024 a 65535, ex.: --portas 3018,3019,3020`);
+    process.exit(2);
+  }
+  return lista;
+}
+/** Tira o --portas (e o valor) dos argumentos dos subcomandos. */
+function semPortas(argv) {
+  const out = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--portas") i++;
+    else if (!argv[i].startsWith("--portas=")) out.push(argv[i]);
+  }
+  return out;
+}
+const [PORTA_API, PORTA_ADMIN, PORTA_FORA] = lerPortas(process.argv.slice(2), process.env);
+const PORTAS_SAO_PADRAO = PORTA_API === PORTAS_PADRAO[0] && PORTA_ADMIN === PORTAS_PADRAO[1] && PORTA_FORA === PORTAS_PADRAO[2];
+// Tudo o que o ambiente grava. Com outras portas, numa subpasta própria (outro cofre, outro perfil do VS Code).
+const DADOS_RAIZ = path.join(__dirname, ".dados");
+const DADOS = PORTAS_SAO_PADRAO ? DADOS_RAIZ : path.join(DADOS_RAIZ, `portas-${PORTA_API}`);
 const URL_PAINEL = `http://127.0.0.1:${PORTA_API}`;
 const ADMIN_EMAIL = "admin@local.test";
 const { CLIENT_ID } = require("./simulado/fora-falso");
@@ -198,6 +228,7 @@ async function subir() {
   }
   const pc = await pedir("POST", `http://127.0.0.1:${PORTA_ADMIN}/admin/pair-code`);
   const seg = ((Date.now() - t0) / 1000).toFixed(1);
+  const op = PORTAS_SAO_PADRAO ? "" : ` --portas ${PORTA_API},${PORTA_ADMIN},${PORTA_FORA}`;
   console.log(`
 ==================================================================================
  Swap Plus — ambiente local no ar em ${seg} s (servidor ${ok.json && ok.json.version}; dados SIMULADOS)
@@ -212,8 +243,10 @@ async function subir() {
  Mudar o uso de uma conta ao vivo (ex.: conta 1 a 95% na sessão):
    curl -s -X POST http://127.0.0.1:${PORTA_FORA}/_simular/uso -H 'Content-Type: application/json' \\
         -d '{"conta":1,"sessao":95}'
- Outro terminal:      node dev/ambiente-local.js cliente   |   node dev/ambiente-local.js vscode
- Dados em:            ${rel(DADOS)}/  (apagar: node dev/ambiente-local.js limpar)
+   O servidor relê o uso no ritmo de verdade (orçamento da Anthropic): conta em uso perto de uma linha a cada
+   2,5 min, longe das linhas a cada 10 min, as outras a cada 20 min. O número novo pode levar até 10 min.
+ Outro terminal:      node dev/ambiente-local.js cliente${op}   |   node dev/ambiente-local.js vscode${op}
+ Dados em:            ${rel(DADOS)}/  (apagar: node dev/ambiente-local.js limpar${op})
  Ctrl+C encerra tudo.
 ==================================================================================
 `);
@@ -399,8 +432,8 @@ function perfilVscode() {
   try {
     atual = JSON.parse(fs.readFileSync(settings, "utf8"));
   } catch {}
-  if (atual && typeof atual === "object" && Object.keys(padrao).some((k) => !(k in atual))) {
-    fs.writeFileSync(settings, JSON.stringify({ ...padrao, ...atual }, null, 2) + "\n");
+  if (atual && typeof atual === "object" && (Object.keys(padrao).some((k) => !(k in atual)) || atual["swapPlus.server.url"] !== URL_PAINEL)) {
+    fs.writeFileSync(settings, JSON.stringify({ ...padrao, ...atual, "swapPlus.server.url": URL_PAINEL }, null, 2) + "\n");
   }
   return { userDir, extDir, home, claude, tmp };
 }
@@ -441,7 +474,7 @@ async function limpar(args) {
     console.log(`Nada a apagar (${rel(DADOS)}/ não existe).`);
     return 0;
   }
-  if (path.basename(DADOS) !== ".dados" || path.dirname(DADOS) !== __dirname) throw new Error("pasta de dados inesperada; nada apagado");
+  if (!(DADOS === DADOS_RAIZ || path.dirname(DADOS) === DADOS_RAIZ) || path.dirname(DADOS_RAIZ) !== __dirname) throw new Error("pasta de dados inesperada; nada apagado");
   if (!args.includes("--sim")) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const resp = await new Promise((r) => rl.question(`Apagar ${rel(DADOS)}/ (cofre simulado, logins simulados, VS Code isolado, medidas)? [s/N] `, r));
@@ -463,11 +496,13 @@ const AJUDA = `Uso: node dev/ambiente-local.js [subir|testes|medir|cliente|vscod
   testes    todas as suítes offline, com o resumo e os bloqueios de rede
   medir     desempenho antes (origin/main) × depois
   cliente   Swap Plus Cliente contra o servidor local [--dados dev/.dados/<pasta>] [--nome <nome>]
+  --portas A,B,C   (em qualquer subcomando; ou SWAP_PLUS_PORTAS) outras portas para API, admin e falso — dados em
+                   dev/.dados/portas-A/ (dois ambientes na mesma pasta)
   vscode    Extension Development Host com plus/, isolado em dev/.dados/ (precisa do VS Code)
   limpar    apaga dev/.dados/ [--sim]`;
 
 async function main(argv) {
-  const [cmd = "subir", ...args] = argv;
+  const [cmd = "subir", ...args] = semPortas(argv);
   switch (cmd) {
     case "subir":
       return subir();

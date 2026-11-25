@@ -75,6 +75,13 @@ painel, um **código de conexão** e como mudar o uso de uma conta ao vivo (`POS
 - **F5 no VS Code** (com este repositório aberto) abre a extensão de `plus/` no mesmo perfil isolado
   (`.vscode/launch.json`, "Swap Plus (plus/) — ambiente local"). Rode `node dev/ambiente-local.js` antes: ele cria as
   configurações desse perfil (servidor local, atualizações desligadas).
+- **Outras portas** (dois ambientes na mesma pasta): `--portas 3018,3019,3020` em qualquer subcomando (ou
+  `SWAP_PLUS_PORTAS=3018,3019,3020`). Os dados desse ambiente ficam em `dev/.dados/portas-3018/`; use o mesmo `--portas`
+  no `cliente`, no `vscode` e no `limpar` dele.
+- **O uso muda no ritmo de verdade:** depois de um `POST /_simular/uso`, o servidor só relê a conta no próximo ciclo
+  dela (conta em uso perto de uma linha: 2,5 min; longe das linhas: 10 min; as outras: 20 min).
+- **Conferir a compressão:** a API não responde `HEAD` (`curl -I` recebe 405); use GET mostrando os cabeçalhos:
+  `curl -s -D - -o /dev/null -H 'Accept-Encoding: gzip' http://127.0.0.1:3008/static/app.js`.
 - Tudo o que o ambiente grava fica em `dev/.dados/` (fora do git).
 
 ## Como o projeto está organizado

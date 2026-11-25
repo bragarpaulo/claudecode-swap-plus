@@ -456,9 +456,10 @@ Todos no ambiente local, nesta máquina ou em outra com Node ≥ 22. "Repo" = a 
 
 **Duplicidade**
 
-12. Dado um serviço "NoteWin" conectado, quando pareio outro computador com o nome "notewin", " NoteWin ", "NOTEWIN" ou
-    "NoteWin", então recebo 409 `name_taken` com a mensagem "Já existe um serviço com este nome; escolha outro ou
-    desconecte o antigo no painel." Nenhum serviço é criado e o código de conexão continua valendo para outra tentativa.
+12. Dado um serviço "NoteWin" conectado, quando pareio outro computador com o nome "notewin", " NoteWin " ou "NOTEWIN",
+    então recebo 409 `name_taken` com a mensagem "Já existe um serviço com este nome; escolha outro ou desconecte o antigo
+    no painel." Nenhum serviço é criado e o código de conexão continua valendo para outra tentativa. O mesmo vale para
+    "Note  Win" (dois espaços) com um "Note Win" conectado.
 13. Dado um serviço "Σίσυφος", quando pareio com "ΣΊΣΥΦΟΣ" ou "σίσυφοσ", então recebo 409. Pareando com "Sisyphos" ou
     "Σισυφος" (sem acento), conecta.
 14. Dado um serviço "José", quando pareio com "Jose", então conecta. Pareando com "Jose" + U+0301 (acento decomposto), recebo

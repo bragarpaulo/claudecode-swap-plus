@@ -338,7 +338,7 @@ async function testes() {
 // ---------------------------------------------------------------- medir
 
 function medir(args) {
-  const r = spawnSync(process.execPath, [path.join(__dirname, "medir-desempenho.js"), ...args], { cwd: RAIZ, stdio: "inherit", env: envFilho() });
+  const r = spawnSync(process.execPath, [path.join(__dirname, "medir-desempenho.js"), ...args], { cwd: RAIZ, stdio: "inherit", env: envFilho({ MEDIDAS_DIR: DADOS }) });
   return r.status === null ? 1 : r.status;
 }
 
@@ -463,8 +463,40 @@ Em máquina sem tela: xvfb-run -a node dev/ambiente-local.js vscode --no-sandbox
     runtime = path.join("/tmp", `swap-plus-vscode-${typeof process.getuid === "function" ? process.getuid() : "u"}`);
     garantirPasta(runtime);
   }
-  const p = spawn(code, cmd, { stdio: "inherit", env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claude, TMPDIR: tmp, XDG_RUNTIME_DIR: runtime, VSCODE_CLI: undefined } });
+  // Linux sem o ajudante de sandbox do Chromium instalado como root (VS Code em .tar.gz, sem root): sem --no-sandbox ele
+  // não abre.
+  if (precisaNoSandbox(code) && !cmd.includes("--no-sandbox")) cmd.push("--no-sandbox");
+  // Variáveis que o VS Code de onde isto foi chamado (F5, terminal integrado) deixa no ambiente. Com elas, o `code` mandaria
+  // abrir a janela no VS Code que já está aberto — no perfil DELE — e o --user-data-dir seria ignorado.
+  const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claude, TMPDIR: tmp, XDG_RUNTIME_DIR: runtime };
+  for (const k of Object.keys(env)) if (/^(VSCODE_|ELECTRON_)/.test(k)) delete env[k];
+  console.log(`Perfil do VS Code: ${userDir}`);
+  const p = spawn(code, cmd, { stdio: "inherit", env });
+  const parar = () => {
+    if (p.exitCode === null) p.kill("SIGTERM");
+  };
+  process.once("SIGINT", parar);
+  process.once("SIGTERM", parar);
   return new Promise((resolve) => p.on("exit", (c) => resolve(c === null ? 1 : c)));
+}
+
+/** O Chromium do VS Code precisa de --no-sandbox? (Linux, chrome-sandbox ao lado do executável sem setuid root.) */
+function precisaNoSandbox(code) {
+  if (process.platform !== "linux") return false;
+  let real;
+  try {
+    real = fs.realpathSync(code);
+  } catch {
+    return false;
+  }
+  for (const dir of [path.dirname(real), path.dirname(path.dirname(real))]) {
+    const sb = path.join(dir, "chrome-sandbox");
+    try {
+      const st = fs.statSync(sb);
+      return !(st.uid === 0 && st.mode & 0o4000);
+    } catch {}
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------- limpar
@@ -483,6 +515,17 @@ async function limpar(args) {
       console.log("Nada apagado.");
       return 0;
     }
+  }
+  if (DADOS === DADOS_RAIZ) {
+    // Padrão: tudo de dev/.dados/ MENOS os ambientes de outras portas (dev/.dados/portas-*), que têm o limpar deles.
+    const ficam = [];
+    for (const nome of fs.readdirSync(DADOS)) {
+      if (/^portas-\d+$/.test(nome)) ficam.push(nome);
+      else fs.rmSync(path.join(DADOS, nome), { recursive: true, force: true });
+    }
+    if (!ficam.length) fs.rmSync(DADOS, { recursive: true, force: true });
+    console.log(`Apagado: ${rel(DADOS)}/${ficam.length ? ` (ficaram os ambientes de outras portas: ${ficam.join(", ")}; apague cada um com limpar --portas)` : ""}`);
+    return 0;
   }
   fs.rmSync(DADOS, { recursive: true, force: true });
   console.log(`Apagado: ${rel(DADOS)}/`);

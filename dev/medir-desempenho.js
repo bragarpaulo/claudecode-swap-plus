@@ -14,7 +14,7 @@
 // 3. Painel web: bytes na primeira abertura (index.html + app.js + app.css, com Accept-Encoding: gzip) e numa
 //    reabertura (com If-None-Match), contra os dois servidores de verdade em portas livres (127.0.0.1, sem rede).
 //
-// Resultado: tabela no terminal e dev/.dados/medidas.json.
+// Resultado: tabela no terminal e <pasta do ambiente>/medidas.json (dev/.dados/ ou dev/.dados/portas-A/).
 // Uso: node dev/medir-desempenho.js [--antes <ref>] [--projetos 300] [--arquivos 40] [--vezes 10]
 
 const fs = require("fs");
@@ -26,7 +26,7 @@ const crypto = require("crypto");
 const { spawn, spawnSync, execFileSync } = require("child_process");
 
 const RAIZ = path.resolve(__dirname, "..");
-const DADOS = path.join(__dirname, ".dados");
+const DADOS = process.env.MEDIDAS_DIR || path.join(__dirname, ".dados"); // o ambiente-local passa a pasta do ambiente (--portas)
 
 function opcao(args, nome, padrao) {
   const i = args.indexOf(nome);

@@ -2,25 +2,34 @@
   "version": "0.2.0",
   "configurations": [
     {
-      // F5: a extensão Swap Plus (plus/), isolada em dev/.dados/: perfil próprio do VS Code (nunca o seu, que pode ter
-      // o acesso do servidor de verdade), login do Claude Code e temporários de mentira.
-      // Antes, suba o ambiente local num terminal: node dev/ambiente-local.js (ele cria as configurações desse perfil:
-      // servidor http://127.0.0.1:3008 e atualizações desligadas).
+      // F5: abre a extensão Swap Plus (plus/) num VS Code SEPARADO, com perfil próprio em dev/.dados/vscode/
+      // (--user-data-dir e --extensions-dir), HOME, CLAUDE_CONFIG_DIR e TMPDIR de mentira. Não é uma janela deste
+      // VS Code: um "extensionHost" comum abre o Extension Development Host como janela nova do VS Code que já está
+      // aberto, e ele herda o perfil (configurações, segredos) dele — inclusive o acesso de um servidor de verdade.
+      // Quem abre é o "node dev/ambiente-local.js vscode" (mesmo perfil do subcomando), com este VS Code como binário.
+      // Outras portas: defina SWAP_PLUS_PORTAS=3018,3019,3020 no ambiente antes de abrir este VS Code.
+      // Antes, suba o ambiente num terminal: node dev/ambiente-local.js
+      // Para parar em breakpoints, use "Swap Plus (plus/) — ambiente local + depurador" (abre e se anexa ao host).
       "name": "Swap Plus (plus/) — ambiente local",
-      "type": "extensionHost",
+      "type": "node",
       "request": "launch",
-      "runtimeExecutable": "${execPath}",
-      "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}/plus",
-        "--user-data-dir=${workspaceFolder}/dev/.dados/vscode/user-data",
-        "--extensions-dir=${workspaceFolder}/dev/.dados/vscode/extensions",
-        "--disable-extensions"
-      ],
+      "program": "${workspaceFolder}/dev/ambiente-local.js",
+      "args": ["vscode", "--inspect-extensions=9339"],
       "env": {
-        "HOME": "${workspaceFolder}/dev/.dados/home",
-        "CLAUDE_CONFIG_DIR": "${workspaceFolder}/dev/.dados/home/.claude",
-        "TMPDIR": "${workspaceFolder}/dev/.dados/tmp"
-      }
+        "CODE_BIN": "${execPath}",
+        "SWAP_PLUS_PORTAS": "${env:SWAP_PLUS_PORTAS}"
+      },
+      "console": "internalConsole",
+      "autoAttachChildProcesses": false
+    },
+    {
+      "name": "Swap Plus — anexar ao host isolado (porta 9339)",
+      "type": "node",
+      "request": "attach",
+      "port": 9339,
+      "timeout": 60000,
+      "continueOnAttach": true,
+      "skipFiles": ["<node_internals>/**"]
     },
     {
       "name": "Original (claude-swap-status, só referência)",
@@ -34,6 +43,14 @@
         "${workspaceFolder}/dist/**/*.js"
       ],
       "preLaunchTask": "${defaultBuildTask}"
+    }
+  
+  ],
+  "compounds": [
+    {
+      "name": "Swap Plus (plus/) — ambiente local + depurador",
+      "configurations": ["Swap Plus (plus/) — ambiente local", "Swap Plus — anexar ao host isolado (porta 9339)"],
+      "stopAll": true
     }
   ]
 }

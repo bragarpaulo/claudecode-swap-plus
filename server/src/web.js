@@ -632,15 +632,22 @@ function createWeb(deps) {
     return entry;
   }
 
-  /** O pedido aceita gzip? (Accept-Encoding com "gzip" sem q=0) */
+  /**
+   * O pedido aceita gzip? Accept-Encoding com "gzip" de q > 0; sem "gzip" na lista, vale o "*". Um "gzip;q=0"
+   * explícito ganha do "*" (RFC 9110 12.5.3).
+   */
   function acceptsGzip(req) {
     const h = req && req.headers ? String(req.headers["accept-encoding"] || "") : "";
-    return h.split(",").some((part) => {
+    let gzip = null;
+    let any = null;
+    for (const part of h.split(",")) {
       const [enc, ...params] = part.trim().toLowerCase().split(";");
-      if (enc.trim() !== "gzip" && enc.trim() !== "*") return false;
       const q = params.map((x) => x.trim()).find((x) => x.startsWith("q="));
-      return !q || Number(q.slice(2)) > 0;
-    });
+      const ok = !q || Number(q.slice(2)) > 0;
+      if (enc.trim() === "gzip") gzip = ok;
+      else if (enc.trim() === "*") any = ok;
+    }
+    return gzip !== null ? gzip : any === true;
   }
 
   /** If-None-Match bate com o ETag? (lista separada por vírgulas, W/ aceito, "*" também) */

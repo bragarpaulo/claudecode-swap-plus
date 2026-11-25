@@ -2318,12 +2318,14 @@ test("2.8.0 painel: estáticos com gzip, ETag e 304; API sem compressão (crité
     assert.ok(g.headers["content-security-policy"], "cabeçalhos de segurança continuam");
     assert.equal(zlib.gunzipSync(g.body).toString("utf8"), texto);
     // Sem Accept-Encoding (ou gzip;q=0): sem compressão, mesmo ETag.
-    for (const h of [{}, { "accept-encoding": "gzip;q=0" }]) {
+    for (const h of [{}, { "accept-encoding": "gzip;q=0" }, { "accept-encoding": "gzip;q=0, *;q=1" }, { "accept-encoding": "*;q=1, gzip;q=0" }, { "accept-encoding": "br, deflate" }]) {
       const n = await cru(p, h);
       assert.equal(n.headers["content-encoding"], undefined);
       assert.equal(n.body.toString("utf8"), texto);
       assert.equal(n.headers.etag, g.headers.etag);
     }
+    // Sem "gzip" na lista, o "*" vale.
+    assert.equal((await cru(p, { "accept-encoding": "br;q=1, *;q=0.5" })).headers["content-encoding"], "gzip");
     // Reabertura: 304 sem corpo.
     for (const inm of [g.headers.etag, `W/${g.headers.etag}`, `"outro", ${g.headers.etag}`]) {
       const c = await cru(p, { "if-none-match": inm, "accept-encoding": "gzip" });

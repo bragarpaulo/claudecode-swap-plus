@@ -65,7 +65,9 @@ function createInventory({ ttlMs = TTL_MS, parallel = PARALLEL, now = Date.now }
       return null;
     }
     stats.dirReads++;
-    const entries = ents.map((e) => ({ name: e.name, dir: e.isDirectory(), file: e.isFile() }));
+    // Link simbólico: o readdir não diz para onde aponta. Fica como candidato (a arquivo .jsonl ou a pasta) e o stat,
+    // que segue o link, decide — como a versão anterior, que lia as transcrições de subagente atrás de link.
+    const entries = ents.map((e) => ({ name: e.name, dir: e.isDirectory(), file: e.isFile(), link: e.isSymbolicLink() }));
     dirCache.set(dir, { mtimeMs: st.mtimeMs, entries });
     return entries;
   }
@@ -77,7 +79,7 @@ function createInventory({ ttlMs = TTL_MS, parallel = PARALLEL, now = Date.now }
     const candidates = []; // { file, sub }
     const seenDirs = new Set([root]);
     await mapLimit(
-      top.filter((e) => e.dir),
+      top.filter((e) => e.dir || e.link),
       parallel,
       async (proj) => {
         const dir = path.join(root, proj.name);
@@ -85,14 +87,14 @@ function createInventory({ ttlMs = TTL_MS, parallel = PARALLEL, now = Date.now }
         const ents = (await listDir(dir)) || [];
         const sessions = [];
         for (const e of ents) {
-          if (e.file && e.name.endsWith(".jsonl")) candidates.push({ file: path.join(dir, e.name), sub: false });
-          else if (e.dir) sessions.push(path.join(dir, e.name, "subagents"));
+          if ((e.file || e.link) && e.name.endsWith(".jsonl")) candidates.push({ file: path.join(dir, e.name), sub: false });
+          else if (e.dir || e.link) sessions.push(path.join(dir, e.name, "subagents"));
         }
         for (const sub of sessions) {
           const sents = await listDir(sub);
           if (!sents) continue;
           seenDirs.add(sub);
-          for (const e of sents) if (e.file && e.name.endsWith(".jsonl")) candidates.push({ file: path.join(sub, e.name), sub: true });
+          for (const e of sents) if ((e.file || e.link) && e.name.endsWith(".jsonl")) candidates.push({ file: path.join(sub, e.name), sub: true });
         }
       }
     );
@@ -100,8 +102,8 @@ function createInventory({ ttlMs = TTL_MS, parallel = PARALLEL, now = Date.now }
     for (const d of dirCache.keys()) if ((d === root || d.startsWith(root + path.sep)) && !seenDirs.has(d)) dirCache.delete(d);
     const files = await mapLimit(candidates, parallel, async (c) => {
       try {
-        const st = await fs.promises.stat(c.file);
-        return { file: c.file, mtimeMs: st.mtimeMs, size: st.size, sub: c.sub };
+        const st = await fs.promises.stat(c.file); // segue link simbólico
+        return st.isFile() ? { file: c.file, mtimeMs: st.mtimeMs, size: st.size, sub: c.sub } : null;
       } catch {
         return null;
       }

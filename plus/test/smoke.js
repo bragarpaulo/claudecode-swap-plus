@@ -314,6 +314,45 @@ async function partI() {
     fs.rmSync(cfgDir, { recursive: true, force: true });
   }
 
+  // Links simbólicos (regressão achada no teste da 3.6.0): a versão anterior lia as transcrições atrás de link (o stat
+  // segue o link); o inventário também tem de ler — subagente, transcrição do projeto e pasta de projeto por link.
+  if (process.platform !== "win32") {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-link-"));
+    try {
+      const now = Date.now();
+      const fora = path.join(base, "fora");
+      fs.mkdirSync(path.join(fora, "proj-real"), { recursive: true });
+      const erro = (t) => JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", timestamp: new Date(now - 1000).toISOString(), message: { content: [{ type: "text", text: t }] } }) + "\n";
+      const alvo = path.join(fora, "agente.jsonl");
+      fs.writeFileSync(alvo, erro("You've hit your weekly limit"));
+      const projects = path.join(base, "projects");
+      fs.mkdirSync(path.join(projects, "p", "sessao", "subagents"), { recursive: true });
+      fs.symlinkSync(alvo, path.join(projects, "p", "sessao", "subagents", "agent.jsonl"));
+      T.transcripts.invalidate();
+      let hit = await T.scanLimitErrors(now - 60000, projects);
+      check("link simbólico: erro de limite em subagente atrás de link é achado", !!hit && T.limitLabel(hit.text) === "limite semanal", hit ? hit.file : "null");
+      // Transcrição do projeto por link e pasta de projeto por link.
+      const conversa = path.join(fora, "conversa.jsonl");
+      fs.writeFileSync(conversa, JSON.stringify({ type: "assistant", timestamp: new Date(now).toISOString(), message: { model: "claude-fable-5-2" } }) + "\n");
+      fs.symlinkSync(conversa, path.join(projects, "p", "link.jsonl"));
+      fs.writeFileSync(path.join(fora, "proj-real", "s.jsonl"), erro("You've hit your 5-hour limit"));
+      fs.symlinkSync(path.join(fora, "proj-real"), path.join(projects, "proj-link"));
+      fs.symlinkSync(path.join(base, "nao-existe.jsonl"), path.join(projects, "p", "quebrado.jsonl")); // link quebrado: ignorado
+      fs.mkdirSync(path.join(fora, "pasta.jsonl"));
+      fs.symlinkSync(path.join(fora, "pasta.jsonl"), path.join(projects, "p", "pasta.jsonl")); // link para pasta: ignorado
+      T.transcripts.invalidate();
+      const lista = await T.transcripts.list(projects);
+      const nomes = lista.map((x) => path.relative(projects, x.file)).sort();
+      check("link simbólico: transcrições do projeto, de subagente e de pasta de projeto por link entram", JSON.stringify(nomes) === JSON.stringify(["p/link.jsonl", "p/sessao/subagents/agent.jsonl", "proj-link/s.jsonl"]), JSON.stringify(nomes));
+      const models = await T.detectModels(now, projects);
+      check("link simbólico: modelo em uso lido pela transcrição atrás de link", models.some((m) => m.id === "claude-fable-5-2"), JSON.stringify(models));
+      hit = await T.scanLimitErrors(now - 60000, projects);
+      check("link simbólico: varredura segue achando o erro (link quebrado e link para pasta não atrapalham)", !!hit);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  }
+
   // Inventário isolado: varredura em andamento é aproveitada (sem empilhar) e o resultado vale até o TTL.
   const { createInventory, mapLimit } = require(path.join(root, "transcricoes.js"));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-inv-"));

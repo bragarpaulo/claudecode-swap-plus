@@ -61,20 +61,23 @@ painel, um **código de conexão** e como mudar o uso de uma conta ao vivo (`POS
 
 | Comando | O que faz |
 | --- | --- |
-| `node dev/ambiente-local.js` (ou `subir`) | sobe o ambiente (portas fixas 3008, 3009 e 3010; porta ocupada: diz qual e sai) |
+| `node dev/ambiente-local.js` (ou `subir`) | sobe o ambiente (portas 3008, 3009 e 3010, ou as de `--portas`; porta ocupada: diz qual e sai) |
 | `node dev/ambiente-local.js testes` | roda tudo offline: `node --check`, `plus/test/smoke.js --unit`, as suítes da extensão, do servidor e do cliente e a conferência de design (`dev/conferir-design.js`). Resumo por suíte, com quantas conexões para fora foram bloqueadas (o esperado é 0) |
-| `node dev/ambiente-local.js medir` | medidas de desempenho antes (`origin/main`) × depois (este código), na mesma execução; grava `dev/.dados/medidas.json` |
+| `node dev/ambiente-local.js medir` | medidas de desempenho antes (`origin/main`) × depois (este código), na mesma execução; grava `medidas.json` na pasta do ambiente (`dev/.dados/` ou `dev/.dados/portas-A/`) |
 | `node dev/ambiente-local.js cliente` | o Swap Plus Cliente contra o servidor local: pareia e faz um ciclo, com `HOME` e `CLAUDE_CONFIG_DIR` em `dev/.dados/cliente/` (`--dados dev/.dados/<outra>` e `--nome <nome>` mudam a pasta e o nome) |
 | `node dev/ambiente-local.js vscode` | abre o VS Code (Extension Development Host) com a extensão de `plus/`, com perfil, `HOME`, `CLAUDE_CONFIG_DIR` e `TMPDIR` em `dev/.dados/` e o servidor local nas configurações. Precisa do VS Code (`code` no PATH ou `CODE_BIN=<pasta>/bin/code`); sem ele, mostra como instalar e sai com código 2. Sem tela: `xvfb-run -a node dev/ambiente-local.js vscode --no-sandbox` |
-| `node dev/ambiente-local.js limpar` | apaga `dev/.dados/` (pede confirmação; `--sim` pula). Não mexe em mais nada |
+| `node dev/ambiente-local.js limpar` | apaga `dev/.dados/` (pede confirmação; `--sim` pula), menos os ambientes de outras portas (`dev/.dados/portas-*`, que se apagam com `limpar --portas …`). Não mexe em mais nada |
 
 - **Nada sai para a internet:** todo processo Node iniciado pelo ambiente carrega [`dev/sem-internet.js`](dev/sem-internet.js),
   que recusa (`ENETUNREACH`) qualquer conexão fora de `127.0.0.1`, `::1` e `localhost` e anota cada tentativa
   (`[sem-internet] bloqueado: <host>:<porta>`). Para usar em outro comando:
   `NODE_OPTIONS=--require=./dev/sem-internet.js node ...` (ou `NODE_OPTIONS="--require ./dev/sem-internet.js"`, com aspas).
-- **F5 no VS Code** (com este repositório aberto) abre a extensão de `plus/` no mesmo perfil isolado
-  (`.vscode/launch.json`, "Swap Plus (plus/) — ambiente local"). Rode `node dev/ambiente-local.js` antes: ele cria as
-  configurações desse perfil (servidor local, atualizações desligadas).
+- **F5 no VS Code** (com este repositório aberto, configuração "Swap Plus (plus/) — ambiente local") abre a extensão de
+  `plus/` num **VS Code separado**, com o mesmo perfil isolado do subcomando `vscode` (`--user-data-dir` e
+  `--extensions-dir` em `dev/.dados/vscode/`) — nunca como janela do VS Code em que você apertou F5, que herdaria o seu
+  perfil (configurações e segredos, inclusive o acesso de um servidor de verdade). Para parar em breakpoints, use
+  "Swap Plus (plus/) — ambiente local + depurador" (anexa ao host pela porta 9339). Outras portas: defina
+  `SWAP_PLUS_PORTAS` antes de abrir o VS Code. Suba o ambiente (`node dev/ambiente-local.js`) antes de conectar.
 - **Outras portas** (dois ambientes na mesma pasta): `--portas 3018,3019,3020` em qualquer subcomando (ou
   `SWAP_PLUS_PORTAS=3018,3019,3020`). Os dados desse ambiente ficam em `dev/.dados/portas-3018/`; use o mesmo `--portas`
   no `cliente`, no `vscode` e no `limpar` dele.

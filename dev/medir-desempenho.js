@@ -149,7 +149,7 @@ function montarTranscricoes(raiz, projetos, arquivos) {
   // 5 recentes: conversas de agora (modelo em uso), uma delas com o erro de limite.
   const agora = new Date();
   for (let r = 0; r < 5; r++) {
-    const dir = path.join(raiz, `-home-pessoa-projeto-${String(r * 7).padStart(3, "0")}`);
+    const dir = path.join(raiz, `-home-pessoa-projeto-${String((r * 7) % projetos).padStart(3, "0")}`);
     const linhas = [JSON.stringify({ type: "assistant", timestamp: agora.toISOString(), message: { model: r % 2 ? "claude-fable-5-2" : "claude-opus-5-5", content: [{ type: "text", text: "ok" }] } })];
     if (r === 4) {
       linhas.push(JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", timestamp: agora.toISOString(), message: { model: "<synthetic>", content: [{ type: "text", text: "You've hit your 5-hour limit" }] } }));

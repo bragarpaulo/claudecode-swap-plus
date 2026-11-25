@@ -327,3 +327,23 @@ test("API + motor: presença — ler o estado sem batimento marca contato; o pai
   assert.deepEqual(Object.keys(painel()).sort(), ["Robô", "VS Code do Paulo"]);
   assert.equal(ctx.anthropic.calls, 0, "nada falou com a Anthropic");
 });
+
+test("API + motor (2.8.0): apelido com emoji pela API sai sem surrogate solto no estado e no cofre (critério 23)", async (t) => {
+  const ctx = await setup(t);
+  const mac = await pairDevice(ctx, "Mac");
+  const alias = "x" + "😀".repeat(30);
+  let r = await request(ctx, ctx.api, "PATCH", "/v1/accounts/1", { token: mac.token, body: { alias } });
+  assert.equal(r.status, 200, r.text);
+  r = await request(ctx, ctx.api, "GET", "/v1/state", { token: mac.token });
+  const rec = r.json.records["1"] || {};
+  const pub = r.json.list.accounts.find((a) => a.number === 1) || {};
+  const visto = rec.alias !== undefined ? rec.alias : pub.alias;
+  assert.equal(visto, alias, r.text.slice(0, 300)); // 31 pontos de código: cabe inteiro (antes: 40 unidades e meio emoji)
+  assert.ok(!/\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f])/i.test(r.text), "a resposta JSON não leva surrogate solto (\\udXXX)");
+  // Mais de 40 pontos de código: 40, sem meio emoji.
+  r = await request(ctx, ctx.api, "PATCH", "/v1/accounts/1", { token: mac.token, body: { alias: "x" + "😀".repeat(50) } });
+  assert.equal(r.status, 200, r.text);
+  const gravado = cofreEmDisco(ctx).accounts["1"].alias;
+  assert.equal(gravado, "x" + "😀".repeat(39));
+  assert.ok(!/[\uD800-\uDFFF]/u.test(gravado), "surrogate solto no cofre");
+});

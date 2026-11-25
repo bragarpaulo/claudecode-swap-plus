@@ -698,6 +698,7 @@ function loginNovo(tag, email, org) {
 }
 
 function escreverTranscricao(pasta, nome, linhas) {
+  T.transcripts.invalidate(); // 3.6.0: o inventário vale por 10 s; o arquivo novo tem de aparecer já no próximo ciclo
   const dir = path.join(CLAUDE_DIR, "projects", pasta);
   fs.mkdirSync(dir, { recursive: true });
   const f = path.join(dir, nome);
@@ -1038,7 +1039,7 @@ test("2. conectar com Google: navegador, pending → ok; negado; cancelado sem s
     const start = calls.filter(is("POST", "/v1/login/start"));
     assert.equal(start.length, 1);
     assert.equal(start[0].auth, null);
-    assert.deepEqual(start[0].body, { name: "PC Google", platform: process.platform });
+    assert.deepEqual(start[0].body, { name: "PC Google", platform: process.platform, caps: ["name_taken"] });
     assert.equal(opened.length, o0 + 1);
     assert.equal(opened[opened.length - 1], fake.lastAuthUrl, "openExternal recebeu o authUrl do servidor");
     const polls = calls.filter(is("POST", "/v1/login/poll"));

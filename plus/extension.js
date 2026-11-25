@@ -36,6 +36,8 @@ const {
 } = require("./rules");
 const modelSwitch = require("./modelSwitch");
 const resume = require("./resume");
+const travas = require("./travas");
+const { createInventory } = require("./transcricoes");
 
 const NS = "swapPlus";
 const HISTORY_KEY = "swapPlus.autoHistory";
@@ -229,52 +231,55 @@ async function readTail(p, bytes) {
   }
 }
 
+// Inventário das transcrições (transcricoes.js): um só para a procura do limite e para o modelo em uso.
+const transcripts = createInventory();
+
+/** <pasta de config do Claude Code>/projects, calculado na hora (respeita CLAUDE_CONFIG_DIR). Teste: setLimitRoot. */
+let projectsRootOverride = null;
+function projectsRoot() {
+  return projectsRootOverride || path.join(claudeConfigDir(), "projects");
+}
+
 /**
  * Modelos usados pelo Claude Code nos últimos 30 minutos, do mais recente para
- * o mais antigo. Lê só o fim das transcrições locais (~/.claude/projects).
+ * o mais antigo. Lê só o fim das transcrições locais (<config>/projects; as de subagente não contam).
  */
-async function detectModels(now = Date.now()) {
-  const root = path.join(os.homedir(), ".claude", "projects");
+async function detectModels(now = Date.now(), root = projectsRoot()) {
   const seen = new Map();
-  let dirs = [];
-  try {
-    dirs = await fs.promises.readdir(root, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  for (const d of dirs) {
-    if (!d.isDirectory()) continue;
-    const dir = path.join(root, d.name);
-    let files = [];
+  const files = (await transcripts.list(root)).filter((f) => !f.sub && now - f.mtimeMs <= MODEL_WINDOW_MS);
+  for (const f of files) {
+    let tail = "";
     try {
-      files = await fs.promises.readdir(dir);
+      tail = await readTail(f.file, 256 * 1024);
     } catch {
       continue;
     }
-    for (const f of files) {
-      if (!f.endsWith(".jsonl")) continue;
-      const p = path.join(dir, f);
-      let st;
-      try {
-        st = await fs.promises.stat(p);
-      } catch {
-        continue;
-      }
-      if (now - st.mtimeMs > MODEL_WINDOW_MS) continue;
-      let tail = "";
-      try {
-        tail = await readTail(p, 256 * 1024);
-      } catch {
-        continue;
-      }
-      const re = /"model":"(claude-[^"]+)"/g;
-      let m;
-      let last = null;
-      while ((m = re.exec(tail))) last = m[1];
-      if (last && (!seen.has(last) || seen.get(last) < st.mtimeMs)) seen.set(last, st.mtimeMs);
-    }
+    const re = /"model":"(claude-[^"]+)"/g;
+    let m;
+    let last = null;
+    while ((m = re.exec(tail))) last = m[1];
+    if (last && (!seen.has(last) || seen.get(last) < f.mtimeMs)) seen.set(last, f.mtimeMs);
   }
   return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([id, ts]) => ({ id, label: modelLabel(id), ts }));
+}
+
+/**
+ * Modelos em uso para o ciclo: a janela dona varre e deixa o resultado num arquivo do temporário; as outras janelas
+ * leem esse arquivo (sem varrer de novo) enquanto ele estiver em dia. Sem dona viva ou arquivo velho: varre aqui.
+ */
+async function modelsForCycle() {
+  const f = modelsShareFile();
+  if (!isOwnerNow()) {
+    const shared = readJsonFile(f);
+    if (shared && Array.isArray(shared.models) && Date.now() - Number(shared.at || 0) < 2 * HEARTBEAT_MS) {
+      return shared.models.filter((m) => m && typeof m.id === "string").map((m) => ({ id: m.id, label: modelLabel(m.id), ts: Number(m.ts) || 0 }));
+    }
+  }
+  const models = await detectModels();
+  try {
+    writeJsonAtomic(f, { at: Date.now(), models: models.map((m) => ({ id: m.id, ts: m.ts })) });
+  } catch {}
+  return models;
 }
 
 /**
@@ -515,6 +520,7 @@ function alertSettings() {
 
 /** "Chegou a X% → avisar": uma notificação por conta, janela e ciclo de renovação. */
 async function checkAlerts() {
+  if (!isOwnerNow()) return; // só a janela dona avisa (as outras veem o histórico e a barra)
   const list = state.list;
   if (!list) return;
   const acc = list.accounts.find((a) => a.number === list.activeAccountNumber);
@@ -534,6 +540,8 @@ async function checkAlerts() {
     const alerted = extContext.globalState.get(ALERTED_KEY) || [];
     if (alerted.includes(key)) continue;
     await extContext.globalState.update(ALERTED_KEY, [key, ...alerted].slice(0, 200));
+    // Uma vez por computador: outra janela (que foi dona antes) pode já ter avisado e o globalState daqui não viu.
+    if (!travas.claimOnce(alertsClaimDir(), key)) continue;
     const r = resetIn(ch.w.resetsAt);
     const text = `Conta ${acc.number} chegou a ${fmtPct(ch.w.pct)} ${ch.label}${r ? ` (renova em ${r})` : ""}`;
     await pushHistory([{ ts: new Date().toISOString(), kind: "alert", text }]);
@@ -1003,7 +1011,6 @@ const LIMIT_KEY = "swapPlus.lastLimitHit";
 const LIMIT_LOCK = path.join(os.tmpdir(), "swap-plus-limit.lock");
 const LIMIT_SCAN_S = 15;
 let limitTimer = null;
-let limitRoot = path.join(os.homedir(), ".claude", "projects");
 
 function limitLabel(text) {
   const t = String(text || "");
@@ -1020,42 +1027,10 @@ function limitLabel(text) {
  * Code grava quando a conta bate o limite: mensagem marcada isApiErrorMessage com
  * error "rate_limit". Texto de conversa comum que cite o erro não conta.
  */
-async function scanLimitErrors(sinceMs, root = limitRoot) {
+async function scanLimitErrors(sinceMs, root = projectsRoot()) {
   let latest = null;
-  const files = [];
-  let dirs = [];
-  try {
-    dirs = await fs.promises.readdir(root, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  for (const d of dirs) {
-    if (!d.isDirectory()) continue;
-    const dir = path.join(root, d.name);
-    let entries = [];
-    try {
-      entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const e of entries) {
-      if (e.isFile() && e.name.endsWith(".jsonl")) files.push(path.join(dir, e.name));
-      else if (e.isDirectory()) {
-        const sub = path.join(dir, e.name, "subagents");
-        try {
-          for (const f of await fs.promises.readdir(sub)) if (f.endsWith(".jsonl")) files.push(path.join(sub, f));
-        } catch {}
-      }
-    }
-  }
-  for (const f of files) {
-    let st;
-    try {
-      st = await fs.promises.stat(f);
-    } catch {
-      continue;
-    }
-    if (st.mtimeMs <= sinceMs) continue;
+  const files = (await transcripts.list(root)).filter((x) => x.mtimeMs > sinceMs);
+  for (const { file: f, mtimeMs } of files) {
     let tail;
     try {
       tail = await readTail(f, 128 * 1024);
@@ -1071,7 +1046,7 @@ async function scanLimitErrors(sinceMs, root = limitRoot) {
         continue;
       }
       if (d.isApiErrorMessage !== true || d.error !== "rate_limit") continue;
-      const ts = Date.parse(d.timestamp) || st.mtimeMs;
+      const ts = Date.parse(d.timestamp) || mtimeMs;
       if (ts <= sinceMs) continue;
       const c = d.message && d.message.content;
       const text = Array.isArray(c) ? c.map((x) => (x && x.text) || "").join(" ") : String(c || "");
@@ -1087,23 +1062,42 @@ async function scanLimitErrors(sinceMs, root = limitRoot) {
   return latest;
 }
 
-/** Trava entre janelas: só uma reage a cada erro. */
+/**
+ * Trava entre janelas: só uma reage a cada erro. Ler → comparar → gravar dentro da trava de pasta (mkdir atômico):
+ * duas janelas que veem o mesmo erro no mesmo instante não passam as duas. Trava ocupada = outra janela está
+ * reivindicando agora: esta não reivindica.
+ */
 function claimLimit(ts) {
-  try {
-    let last = 0;
+  const r = travas.withDirLock(`${LIMIT_LOCK}.d`, () => {
     try {
-      last = Number(fs.readFileSync(LIMIT_LOCK, "utf8")) || 0;
-    } catch {}
-    if (last >= ts) return false;
-    fs.writeFileSync(LIMIT_LOCK, String(ts));
-    return true;
-  } catch {
-    return true;
+      let last = 0;
+      try {
+        last = Number(fs.readFileSync(LIMIT_LOCK, "utf8")) || 0;
+      } catch {}
+      if (last >= ts) return false;
+      fs.writeFileSync(LIMIT_LOCK, String(ts));
+      return true;
+    } catch {
+      return true;
+    }
+  });
+  return r === true;
+}
+
+let limitScanning = false;
+
+/** Procura o limite batido. Só a janela dona varre (as outras não); varredura em andamento: este tique é pulado. */
+async function checkLimitErrors() {
+  if (!swapOn() || !isOwnerNow() || limitScanning) return null;
+  limitScanning = true;
+  try {
+    return await checkLimitErrorsNow();
+  } finally {
+    limitScanning = false;
   }
 }
 
-async function checkLimitErrors() {
-  if (!swapOn()) return null;
+async function checkLimitErrorsNow() {
   const now = Date.now();
   const since = Math.max(extContext.globalState.get(LIMIT_KEY) || 0, extContext.globalState.get(LAST_SWITCH_KEY) || 0, now - 10 * 60 * 1000);
   const hit = await scanLimitErrors(since);
@@ -1479,6 +1473,10 @@ function localTag() {
 const ownerFile = () => path.join(os.tmpdir(), `swap-plus-owner-${localTag()}.json`);
 const ownerLockDir = () => path.join(os.tmpdir(), `swap-plus-owner-${localTag()}.lock`);
 const spentFile = () => path.join(os.tmpdir(), `swap-plus-spent-${localTag()}.json`);
+const modelsShareFile = () => path.join(os.tmpdir(), `swap-plus-modelos-${localTag()}.json`);
+// "Chegou a X%": cada aviso é reivindicado por um arquivo aqui (uma notificação por computador, não por janela).
+const alertsClaimDir = () => path.join(os.tmpdir(), `swap-plus-avisos-${localTag()}`);
+const ALERT_CLAIM_MAX_AGE_MS = 8 * 24 * 60 * 60 * 1000;
 const uploadLockDir = (key) => path.join(os.tmpdir(), `swap-plus-upload-${hashKey(`lock|${localTag()}|${key}`).slice(0, 24)}.lock`);
 
 /** Grava JSON atômico (temporário ao lado + rename), só para o seu usuário. false se não deu. */
@@ -1880,32 +1878,9 @@ function readOwner() {
   return readJsonFile(ownerFile());
 }
 
-/** Roda fn sob a trava da dona. null = trava ocupada agora. */
+/** Roda fn sob a trava da dona. null = trava ocupada agora. (Trava de pasta: travas.withDirLock.) */
 function withOwnerLock(fn) {
-  const lock = ownerLockDir();
-  let made = false;
-  try {
-    fs.mkdirSync(lock, { mode: 0o700 });
-    made = true;
-  } catch (e) {
-    if (e.code !== "EEXIST") return fn(); // sem como travar (ex.: sem permissão no temporário): segue sem a trava
-    try {
-      // Trava esquecida (janela fechada no meio): toma.
-      if (Date.now() - fs.statSync(lock).mtimeMs > 5000) {
-        fs.rmdirSync(lock);
-        fs.mkdirSync(lock, { mode: 0o700 });
-        made = true;
-      }
-    } catch {}
-    if (!made) return null;
-  }
-  try {
-    return fn();
-  } finally {
-    try {
-      fs.rmdirSync(lock);
-    } catch {}
-  }
+  return travas.withDirLock(ownerLockDir(), fn);
 }
 
 /** Esta janela é (ou passa a ser) a dona? take = assumir mesmo com outra dona viva (a pessoa agiu nesta janela). */
@@ -2406,7 +2381,7 @@ async function retryOnce(fn) {
  * grava a conta escolhida. Outras janelas: só leem o estado.
  */
 async function serverSync() {
-  const models = await detectModels();
+  const models = await modelsForCycle();
   state = { ...state, models };
   if (srv.hold || !swapOn()) return finishSync(); // conexão, desligar, desconectar... em andamento
   let client = null;
@@ -2899,17 +2874,41 @@ async function pickConnectMethod() {
   return c ? c.method : undefined;
 }
 
-/** Nome deste computador na lista do servidor (sugestão: o nome da máquina). undefined = desistiu. */
-async function askDeviceName() {
+/**
+ * Nome deste computador na lista do servidor (sugestão: o nome da máquina). undefined = desistiu.
+ * `taken`: o nome que o servidor recusou (já é de outro serviço): a caixa reabre com ele e com a mensagem.
+ */
+async function askDeviceName(taken) {
+  const again = typeof taken === "string";
   const name = await vscode.window.showInputBox({
     title: "Swap Plus: nome deste computador",
-    prompt: "Como este computador aparece na lista de computadores do servidor.",
-    value: defaultDeviceName(),
+    prompt: again
+      ? `${serverLib().NAME_TAKEN_MSG || "Já existe um serviço com este nome."} Digite outro nome.`
+      : "Como este computador aparece na lista de computadores do servidor.",
+    value: again ? taken : defaultDeviceName(),
     ignoreFocusOut: true,
     validateInput: (v) => (String(v || "").trim().length > 60 ? "Use até 60 caracteres." : null),
   });
   if (name === undefined) return undefined;
   return name.trim() || defaultDeviceName();
+}
+
+/**
+ * Acesso atual deste computador para mandar como `replaces` ao conectar de novo: só para a MESMA origem do servidor
+ * em que o token foi emitido (outro servidor não conhece este token e nem deve recebê-lo). → { deviceId, token } | null
+ */
+async function replacesFor(lib, url) {
+  const meta = serverMeta();
+  const token = await serverToken();
+  if (!token || !meta.deviceId || meta.revokedAt) return null;
+  const a = lib.originOf(meta.url);
+  return a && a === lib.originOf(url) ? { deviceId: meta.deviceId, token } : null;
+}
+
+/** O servidor recusou o nome (já é de outro serviço): avisa e pergunta outro. → nome novo | undefined (desistiu) */
+async function askNameAgain(name, message) {
+  vscode.window.showWarningMessage(`Swap Plus: ${message || serverLib().NAME_TAKEN_MSG}`);
+  return askDeviceName(name);
 }
 
 /**
@@ -2942,18 +2941,28 @@ async function connectByCode(lib, deviceName) {
     vscode.window.showErrorMessage(`Swap Plus: código de conexão inválido: ${safeErr(e)}`);
     return null;
   }
-  const name = deviceName || (await askDeviceName());
+  let name = deviceName || (await askDeviceName());
   if (name === undefined) return null;
   const url = String(parsed.url || "").replace(/\/+$/, "");
+  const replaces = await replacesFor(lib, url);
   let res;
-  try {
-    res = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `Swap Plus: conectando a ${serverHost(url)}...`, cancellable: false },
-      () => lib.pair({ url, fp: parsed.fp || null, code: parsed.code, name, platform: process.platform })
-    );
-  } catch (e) {
-    vscode.window.showErrorMessage(`Swap Plus: ${pairErrorText(e, url)}`);
-    return null;
+  for (;;) {
+    try {
+      res = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Swap Plus: conectando a ${serverHost(url)}...`, cancellable: false },
+        () => lib.pair({ url, fp: parsed.fp || null, code: parsed.code, name, platform: process.platform, replaces })
+      );
+      break;
+    } catch (e) {
+      if (e && e.code === "name_taken") {
+        // O código continua valendo: só o nome precisa mudar.
+        name = await askNameAgain(name, e.message);
+        if (name === undefined) return null;
+        continue;
+      }
+      vscode.window.showErrorMessage(`Swap Plus: ${pairErrorText(e, url)}`);
+      return null;
+    }
   }
   if (!res || !res.token || !res.deviceId) {
     vscode.window.showErrorMessage("Swap Plus: o servidor não devolveu o acesso deste computador.");
@@ -3100,19 +3109,20 @@ async function waitGoogleLogin(lib, url, start, progress, ct) {
       say();
       continue;
     }
-    return v; // ok | denied | expired
+    return v; // ok | denied | expired | name_taken
   }
 }
 
 /** Uma tentativa de entrar com Google: inicia no servidor, abre o navegador e espera o resultado. */
-async function googleAttempt(lib, url, name) {
+async function googleAttempt(lib, url, name, replaces = null) {
   let start;
   try {
     start = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Swap Plus: conectando a ${serverHost(url)}...`, cancellable: false },
-      () => lib.loginStart({ url, fp: null, name, platform: process.platform })
+      () => lib.loginStart({ url, fp: null, name, platform: process.platform, replaces })
     );
   } catch (e) {
+    if (e && e.code === "name_taken") return { status: "name_taken", message: e.message };
     return e && e.code === "google_off" ? { status: "google_off" } : { status: "error", error: e };
   }
   if (!(await openInBrowser(start.authUrl))) {
@@ -3136,11 +3146,17 @@ async function connectByGoogle(lib, { askUrl = false } = {}) {
     url = await askServerUrl(lib, url);
     if (!url) return null;
   }
-  const name = await askDeviceName();
+  let name = await askDeviceName();
   if (name === undefined) return null;
+  const replaces = await replacesFor(lib, url);
   for (;;) {
-    const r = await googleAttempt(lib, url, name);
+    const r = await googleAttempt(lib, url, name, replaces);
     if (r.status === "ok") return { url, fp: null, deviceId: r.deviceId, token: r.token, name, via: "google" };
+    if (r.status === "name_taken") {
+      name = await askNameAgain(name, r.message);
+      if (name === undefined) return null;
+      continue;
+    }
     if (r.status === "google_off") {
       const c = await vscode.window.showWarningMessage(
         `Swap Plus: o servidor ${serverHost(url)} não está com o login do Google ligado. Conecte com o código de conexão gerado no servidor (comando pair).`,
@@ -3898,6 +3914,7 @@ function activate(context) {
   updater.start();
 
   setupLimitWatch();
+  travas.sweepClaims(alertsClaimDir(), ALERT_CLAIM_MAX_AGE_MS); // avisos com mais de 8 dias
   syncResume();
   // De 10 em 10 min confere de novo: se outro programa regravou o settings.json sem o gancho, ele volta.
   resumeTimer = setInterval(syncResume, RESUME_CHECK_MS);
@@ -3952,7 +3969,12 @@ module.exports = {
     resumeTip,
     resumeState: () => resumeState,
     limitLabel,
-    setLimitRoot: (r) => (limitRoot = r),
+    setLimitRoot: (r) => (projectsRootOverride = r),
+    transcripts,
+    claimLimit,
+    alertsClaimDir,
+    modelsShareFile,
+    checkAlerts,
     modelStatus,
     checkModelSwitch,
     modelLimitHit,

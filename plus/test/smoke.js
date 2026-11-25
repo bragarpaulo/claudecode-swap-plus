@@ -220,6 +220,8 @@ function partA() {
 }
 
 // ------------------------------------------------------------ parte L: erro de limite nas transcrições
+// 3.6.0: o inventário das transcrições vale por 10 s; aqui cada varredura começa do zero (arquivo novo aparece na hora).
+const scanFresh = (since, dir) => (T.transcripts.invalidate(), T.scanLimitErrors(since, dir));
 async function partL() {
   console.log("\n# L. Erro de limite nas transcrições (arquivos temporários)");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-tr-"));
@@ -230,28 +232,28 @@ async function partL() {
   const chat = (ms, text) => JSON.stringify({ type: "assistant", timestamp: iso(ms), message: { model: "claude-fable-5-2", content: [{ type: "text", text }] } });
   const f = path.join(dir, "proj", "conversa.jsonl");
   fs.writeFileSync(f, [chat(now - 5000, "o print mostra You've hit your 5-hour limit · resets 10:20pm"), JSON.stringify({ type: "user", isApiErrorMessage: true, error: "rate_limit", timestamp: iso(now - 4000) }).replace('"isApiErrorMessage":true,', "")].join("\n") + "\n");
-  let hit = await T.scanLimitErrors(now - 60000, dir);
+  let hit = await scanFresh(now - 60000, dir);
   check("texto de conversa citando o erro não conta", hit === null, hit ? hit.text : "");
   fs.appendFileSync(f, apiErr(now - 120000 * 10, "You've hit your 5-hour limit · resets 8:00pm") + "\n");
-  hit = await T.scanLimitErrors(now - 60000, dir);
+  hit = await scanFresh(now - 60000, dir);
   check("erro antigo (antes do período) não conta", hit === null);
   fs.appendFileSync(f, apiErr(now - 2000, "You've hit your 5-hour limit · resets 10:20pm (America/Sao_Paulo)") + "\n");
-  hit = await T.scanLimitErrors(now - 60000, dir);
+  hit = await scanFresh(now - 60000, dir);
   check("erro de limite do Claude Code é detectado", !!hit && /5-hour/.test(hit.text) && T.limitLabel(hit.text) === "limite da sessão de 5h");
   const sub = path.join(dir, "proj", "sess", "subagents", "agente.jsonl");
   fs.writeFileSync(sub, apiErr(now - 1000, "You've hit your weekly limit") + "\n");
-  hit = await T.scanLimitErrors(now - 60000, dir);
+  hit = await scanFresh(now - 60000, dir);
   check("erro num subagente também é detectado", !!hit && hit.file === sub && T.limitLabel(hit.text) === "limite semanal");
   const reset = Math.floor((now + 2 * 24 * 3600e3) / 1000);
   const fableErr = JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", apiErrorStatus: 429, timestamp: iso(now - 500), quotaLimits: { status: "rejected", resetsAt: reset, rateLimitType: "seven_day_overage_included" }, message: { model: "<synthetic>", content: [{ type: "text", text: "You've hit your Fable limit · resets Nov 18, 12pm (America/Sao_Paulo). Switch to another model to continue." }] } });
   fs.appendFileSync(f, fableErr + "\n");
-  hit = await T.scanLimitErrors(now - 60000, dir);
+  hit = await scanFresh(now - 60000, dir);
   check("limite do Fable: lê o tipo e a renovação gravados pelo Claude Code", !!hit && hit.rateLimitType === "seven_day_overage_included" && hit.resetsAt === reset * 1000 && T.limitLabel(hit.text) === null && M.limitModel(hit.text, hit.rateLimitType) === "Fable");
   check("…e esse não é o erro de “créditos de uso”", hit.code === null && !M.needsCredits(hit.text, hit.code));
   // 3.4.1: a conta não tem o modelo. O registro é o que o Claude Code 2.1.330 gravou em 21/11/2026.
   const creditos = JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", apiError: "model_requires_usage_credits", apiErrorStatus: 429, apiErrorCode: "credits_required", apiErrorType: "rate_limit_error", timestamp: iso(now - 100), apiErrorParams: { rate_limit_info: { status: "rejected", overageDisabledReason: "org_level_disabled", isUsingOverage: false, errorCode: "credits_required", canUserPurchaseCredits: false } }, message: { model: "<synthetic>", content: [{ type: "text", text: "Fable 5.2 requires usage credits. Switch to another model to continue." }] } });
   fs.appendFileSync(f, creditos + "\n");
-  hit = await T.scanLimitErrors(now - 60000, dir);
+  hit = await scanFresh(now - 60000, dir);
   check("“Fable 5.2 requires usage credits”: lê o código do erro (a conta não tem o modelo)", !!hit && hit.code === "credits_required" && hit.rateLimitType === null && hit.resetsAt === null && T.limitLabel(hit.text) === null && M.limitModel(hit.text, hit.rateLimitType) === "Fable" && M.needsCredits(hit.text, hit.code));
   fs.rmSync(dir, { recursive: true, force: true });
 }

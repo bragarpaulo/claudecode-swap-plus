@@ -5,7 +5,7 @@
   --ok: var(--vscode-charts-green, #3fb950);
   --warn: var(--vscode-charts-yellow, #d29922);
   --bad: var(--vscode-charts-red, #f85149);
-  --green: #2ea043;
+  --green: var(--vscode-charts-green, #2ea043);
   --accent: var(--vscode-button-background, #0e639c);
   --line: var(--vscode-contrastBorder, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
   --soft: var(--vscode-descriptionForeground, var(--vscode-foreground));
@@ -71,7 +71,7 @@ b { font-weight: 600; }
   transition: transform 0.15s;
 }
 .onoff input:checked + .slider { background: var(--green); border-color: var(--vscode-contrastBorder, var(--green)); }
-.onoff input:checked + .slider::before { transform: translateX(20px); background: #fff; }
+.onoff input:checked + .slider::before { transform: translateX(20px); background: var(--vscode-button-foreground, #fff); }
 .onoff input:focus-visible + .slider { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
 .onoff input:disabled + .slider { opacity: 0.5; }
 

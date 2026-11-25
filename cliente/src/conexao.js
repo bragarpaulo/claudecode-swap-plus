@@ -34,6 +34,31 @@ async function revogar(lib, con) {
   }
 }
 
+function origem(url) {
+  try {
+    return new URL(String(url)).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Acesso atual deste cliente para mandar como `replaces` ao conectar de novo ao MESMO servidor (mesma origem): o
+ * servidor troca o acesso antigo pelo novo e o nome não dá conflito com ele mesmo. Outro servidor: null.
+ */
+function substitui(estado, url) {
+  const con = conexaoAtual(estado);
+  if (!con || con.revogadoEm || !con.deviceId || !con.token) return null;
+  const a = origem(con.url);
+  return a && a === origem(url) ? { deviceId: con.deviceId, token: con.token } : null;
+}
+
+/** O servidor recusou o nome (já é de outro serviço): erro com a mensagem dele e como escolher outro nome. */
+function nomeEmUso(cfg, mensagem) {
+  const msg = String(mensagem || "Já existe um serviço com este nome; escolha outro ou desconecte o antigo no painel.").replace(/\.?$/, ".");
+  return erro("nome_em_uso", `${msg} Nome usado: "${cfg.nome}". Rode de novo com --nome <outro nome> (ou SWAP_PLUS_NOME=<outro nome>).`);
+}
+
 async function guardar({ lib, estado, cfg, agora }, novo) {
   const antes = conexaoAtual(estado);
   if (antes && antes.deviceId !== novo.deviceId) await revogar(lib, antes);
@@ -47,21 +72,29 @@ async function guardar({ lib, estado, cfg, agora }, novo) {
 async function conectarPorCodigo(deps, codigo) {
   const { lib, cfg } = deps;
   const p = lib.parseConnectCode(String(codigo || ""));
-  const r = await lib.pair({ url: p.url, fp: p.fp, code: p.code, name: cfg.nome, platform: process.platform });
+  let r;
+  try {
+    r = await lib.pair({ url: p.url, fp: p.fp, code: p.code, name: cfg.nome, platform: process.platform, replaces: substitui(deps.estado, p.url) });
+  } catch (e) {
+    if (e && e.code === "name_taken") throw nomeEmUso(cfg, e.message); // o código continua valendo para outro nome
+    throw e;
+  }
   return guardar(deps, { url: p.url, fp: p.fp, deviceId: r.deviceId, token: r.token, via: "codigo" });
 }
 
 /**
  * Conecta com login do Google. `mostrar(authUrl, expiraEm)` é chamado uma vez com o endereço para a pessoa abrir.
- * → conexão gravada; lança `google_negado` (com .email), `google_expirou`, `google_desligado`, `cancelado`.
+ * → conexão gravada; lança `google_negado` (com .email), `google_expirou`, `google_desligado`, `cancelado`,
+ * `nome_em_uso` (o nome já é de outro serviço no servidor).
  */
 async function entrarComGoogle(deps, { url, mostrar, parar = null }) {
   const { lib, cfg, agora, espera } = deps;
   if (!url) throw erro("sem_url", "Diga o endereço do servidor: --url https://... (ou SWAP_PLUS_URL).");
   let inicio;
   try {
-    inicio = await lib.loginStart({ url, fp: null, name: cfg.nome, platform: process.platform });
+    inicio = await lib.loginStart({ url, fp: null, name: cfg.nome, platform: process.platform, replaces: substitui(deps.estado, url) });
   } catch (e) {
+    if (e && e.code === "name_taken") throw nomeEmUso(cfg, e.message);
     if (e && e.code === "google_off") throw erro("google_desligado", "O login com Google está desligado neste servidor. Use o código de conexão (swap-plus-cliente conectar).");
     throw e;
   }
@@ -79,8 +112,10 @@ async function entrarComGoogle(deps, { url, mostrar, parar = null }) {
       if (r.status === "ok") return guardar(deps, { url, fp: null, deviceId: r.deviceId, token: r.token, via: "google" });
       if (r.status === "denied") throw erro("google_negado", `A conta Google ${r.email || "usada"} não está liberada neste servidor. Peça ao administrador para liberar.`, { email: r.email || null });
       if (r.status === "expired") throw erro("google_expirou", "O tempo para entrar acabou. Rode o comando de novo.");
+      if (r.status === "name_taken") throw nomeEmUso(cfg, r.message);
     } catch (e) {
-      if (e && ["google_negado", "google_expirou"].includes(e.code)) throw e;
+      if (e && ["google_negado", "google_expirou", "nome_em_uso"].includes(e.code)) throw e;
+      if (e && e.code === "name_taken") throw nomeEmUso(cfg, e.message); // servidor 2.8.0 respondendo 409 no poll
       const status = Number(e && e.status) || 0;
       if (status === 429) intervalo = GOOGLE_429_MS;
       else if (status === 0 || status >= 500) {

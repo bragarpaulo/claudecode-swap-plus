@@ -804,3 +804,164 @@ test("logins: só os serviços do administrador enviam (Google com e-mail de ADM
   r = await request(api3.port, "GET", "/v1/state", { token: codigo.token });
   assert.equal(r.json.device.canUploadLogins, true);
 });
+
+// ---------------------------------------------------------------------------
+// 2.8.0: nome único dos serviços, reconexão (replaces) e cortes por ponto de código
+// ---------------------------------------------------------------------------
+
+const NOME_EM_USO = "Já existe um serviço com este nome; escolha outro ou desconecte o antigo no painel.";
+const historico = (ctx) => ctx.engine.calls.filter((c) => c.name === "pushHistory").map((c) => c.args[1]);
+
+test("2.8.0: nome repetido no pareamento → 409 name_taken, nada criado e o código continua valendo (critério 12)", async (t) => {
+  const ctx = await setup(t);
+  await pairDevice(ctx, "NoteWin");
+  const { code } = await pairCode(ctx);
+  for (const name of ["notewin", " NoteWin ", "NOTEWIN"]) {
+    const r = await request(ctx.api, "POST", "/v1/pair", { body: { code, name, platform: "linux" } });
+    assert.equal(r.status, 409, `${name}: ${r.text}`);
+    assert.deepEqual(r.json, { error: "name_taken", message: NOME_EM_USO });
+  }
+  assert.equal(Object.keys(ctx.store.state.devices).length, 1);
+  assert.ok(ctx.store.state.pairing, "o código não foi gasto");
+  assert.equal(ctx.store.state.pairing.attempts || 0, 0, "nome repetido não conta como código errado");
+  // O mesmo código serve para outro nome.
+  const ok = await request(ctx.api, "POST", "/v1/pair", { body: { code, name: "Note Win", platform: "linux" } });
+  assert.equal(ok.status, 200, ok.text);
+  // "Note  Win" (dois espaços) com "Note Win" conectado.
+  const c2 = (await pairCode(ctx)).code;
+  const r = await request(ctx.api, "POST", "/v1/pair", { body: { code: c2, name: "Note  Win" } });
+  assert.equal(r.status, 409);
+  // Nome vazio vira "serviço": o segundo vazio também é repetido.
+  const c3 = (await pairCode(ctx)).code;
+  assert.equal((await request(ctx.api, "POST", "/v1/pair", { body: { code: c3, name: "" } })).status, 200);
+  const c4 = (await pairCode(ctx)).code;
+  assert.equal((await request(ctx.api, "POST", "/v1/pair", { body: { code: c4, name: "  " } })).status, 409);
+});
+
+test("2.8.0: Σίσυφος / José — caixa não conta em nenhum alfabeto, acento conta (critérios 13 e 14)", async (t) => {
+  const ctx = await setup(t);
+  await pairDevice(ctx, "Σίσυφος");
+  await pairDevice(ctx, "José");
+  const tenta = async (name) => (await request(ctx.api, "POST", "/v1/pair", { body: { code: (await pairCode(ctx)).code, name } })).status;
+  assert.equal(await tenta("ΣΊΣΥΦΟΣ"), 409);
+  assert.equal(await tenta("σίσυφοσ"), 409);
+  assert.equal(await tenta("José"), 409);
+  assert.equal(await tenta("Sisyphos"), 200);
+  assert.equal(await tenta("Σισυφος"), 200);
+  assert.equal(await tenta("Jose"), 200);
+});
+
+test("2.8.0: dois pareamentos simultâneos com o mesmo nome → um 200 e um 409 (critério 17)", async (t) => {
+  const ctx = await setup(t);
+  const { code } = await pairCode(ctx);
+  // Mesmo código nos dois: o primeiro gasta; o segundo tem de dar 409 (nome) ou 401 (código já usado) — nunca dois serviços.
+  const rs = await Promise.all([1, 2].map(() => request(ctx.api, "POST", "/v1/pair", { body: { code, name: "Gêmeo" } })));
+  assert.equal(rs.filter((r) => r.status === 200).length, 1);
+  assert.equal(Object.values(ctx.store.state.devices).filter((d) => d.name === "Gêmeo").length, 1);
+
+  // Com o código ainda valendo (o nome já existe): os dois pedidos simultâneos de "gêmeo" → 409, código intacto.
+  const c2 = (await pairCode(ctx)).code;
+  const r2 = await Promise.all([1, 2].map(() => request(ctx.api, "POST", "/v1/pair", { body: { code: c2, name: "gêmeo" } })));
+  assert.deepEqual(r2.map((r) => r.status), [409, 409]);
+  assert.ok(ctx.store.state.pairing);
+
+  // Nome novo, mesmo código, simultâneos: exatamente um 200 e o outro recusado; um serviço só com o nome.
+  const r3 = await Promise.all([1, 2].map(() => request(ctx.api, "POST", "/v1/pair", { body: { code: c2, name: "Trigêmeo" } })));
+  assert.deepEqual(r3.map((r) => r.status).sort(), [200, 401]);
+  assert.equal(Object.values(ctx.store.state.devices).filter((d) => d.name === "Trigêmeo").length, 1);
+});
+
+test("2.8.0: dois pareamentos simultâneos com códigos válidos e o mesmo nome → exatamente um 200 e um 409 (critério 17)", async (t) => {
+  const ctx = await setup(t);
+  // Só há um código ativo por vez; para isolar a regra do nome, o código "nunca acaba" neste teste (o cofre devolve
+  // sempre um código válido): os dois pedidos chegam com código bom e só o nome decide.
+  const st = ctx.store.state;
+  delete st.pairing;
+  Object.defineProperty(st, "pairing", {
+    configurable: true,
+    enumerable: false,
+    get: () => ({ codeHash: sha256("AAAAABBBBB"), expiresAt: ctx.clock.t + 60000, attempts: 0 }),
+    set: () => {},
+  });
+  t.after(() => {
+    delete st.pairing;
+    st.pairing = null;
+  });
+  const body = { code: "AAAAABBBBB", name: "Corrida" };
+  const [p1, p2] = [request(ctx.api, "POST", "/v1/pair", { body }), request(ctx.api, "POST", "/v1/pair", { body: { ...body, name: "corrida" } })];
+  const rs = await Promise.all([p1, p2]);
+  assert.deepEqual(rs.map((r) => r.status).sort(), [200, 409]);
+  assert.equal(Object.values(ctx.store.state.devices).filter((d) => d.name === "Corrida").length, 1);
+});
+
+test("2.8.0: replaces — reconectar o mesmo serviço com o mesmo nome troca o antigo na mesma gravação (critério 16)", async (t) => {
+  const ctx = await setup(t);
+  const antigo = await pairDevice(ctx, "NoteWin");
+  const { code } = await pairCode(ctx);
+  const r = await request(ctx.api, "POST", "/v1/pair", {
+    body: { code, name: "NoteWin", platform: "linux", replaces: { deviceId: antigo.deviceId, token: antigo.token } },
+  });
+  assert.equal(r.status, 200, r.text);
+  const devs = Object.values(ctx.store.state.devices);
+  assert.equal(devs.length, 1);
+  assert.equal(devs[0].id, r.json.deviceId);
+  assert.ok(!cofreEmDisco(ctx).devices[antigo.deviceId], "o antigo saiu do cofre em disco");
+  assert.ok(cofreEmDisco(ctx).devices[r.json.deviceId]);
+  assert.equal((await request(ctx.api, "GET", "/v1/state", { token: antigo.token })).status, 401);
+  assert.equal((await request(ctx.api, "GET", "/v1/state", { token: r.json.token })).status, 200);
+  assert.ok(historico(ctx).includes('Serviço "NoteWin" reconectado: o acesso anterior deixou de valer'), historico(ctx).join("\n"));
+  assert.ok(ctx.engine.calls.some((c) => c.name === "forgetContact" && c.args[0] === antigo.deviceId));
+});
+
+test("2.8.0: replaces inválido é ignorado sem erro e a regra do nome vale", async (t) => {
+  const ctx = await setup(t);
+  const a = await pairDevice(ctx, "NoteWin");
+  const b = await pairDevice(ctx, "Outro");
+  const tenta = async (replaces, name = "NoteWin") =>
+    request(ctx.api, "POST", "/v1/pair", { body: { code: (await pairCode(ctx)).code, name, replaces } });
+  for (const rep of [{ deviceId: a.deviceId, token: TOKEN_FALSO }, { deviceId: a.deviceId, token: b.token }, { deviceId: "nao-existe", token: a.token }, "lixo", { deviceId: a.deviceId }, { token: a.token }]) {
+    const r = await tenta(rep);
+    assert.equal(r.status, 409, `${JSON.stringify(rep)}: ${r.text}`);
+  }
+  assert.equal(Object.keys(ctx.store.state.devices).length, 2);
+  // replaces válido com nome livre: conecta e o antigo sai do mesmo jeito.
+  const r = await tenta({ deviceId: b.deviceId, token: b.token }, "Outro novo");
+  assert.equal(r.status, 200, r.text);
+  assert.ok(!ctx.store.state.devices[b.deviceId]);
+  assert.equal(Object.keys(ctx.store.state.devices).length, 2);
+});
+
+test("2.8.0: cofre com dois serviços de mesmo nome (de antes da regra) fica intacto (critério 19)", async (t) => {
+  const ctx = await setup(t);
+  const a = await pairDevice(ctx, "NoteWin");
+  const b = await pairDevice(ctx, "Temp");
+  ctx.store.state.devices[b.deviceId].name = "NoteWin"; // montado como se viesse da 2.7.0
+  await ctx.store.save();
+  for (const tk of [a.token, b.token]) {
+    assert.equal((await request(ctx.api, "GET", "/v1/state", { token: tk })).status, 200);
+    assert.equal((await request(ctx.api, "POST", "/v1/heartbeat", { token: tk, body: {} })).status, 200);
+  }
+  const lista = await request(ctx.admin, "GET", "/admin/devices");
+  assert.equal(lista.status, 200);
+  assert.equal(Object.values(ctx.store.state.devices).filter((d) => d.name === "NoteWin").length, 2);
+  assert.equal(Object.keys(cofreEmDisco(ctx).devices).length, 2);
+  // Um terceiro "NoteWin" continua recusado.
+  const r = await request(ctx.api, "POST", "/v1/pair", { body: { code: (await pairCode(ctx)).code, name: "notewin" } });
+  assert.equal(r.status, 409);
+});
+
+test("2.8.0: nome e apelido cortados por ponto de código, sem meio emoji (critério 23)", async (t) => {
+  const ctx = await setup(t);
+  const longo = "NoteWin 😀".repeat(8); // passa de 60 e a posição 60 cai no meio de um emoji em UTF-16
+  const dev = await pairDevice(ctx, longo);
+  const name = ctx.store.state.devices[dev.deviceId].name;
+  assert.ok([...name].length <= 60, `${[...name].length} pontos de código`);
+  assert.ok(!/[\uD800-\uDFFF]/u.test(name.normalize()), "surrogate solto no nome");
+  assert.ok(longo.startsWith(name));
+
+  const r = await request(ctx.api, "PATCH", "/v1/accounts/1", { token: dev.token, body: { alias: "Conta 😀".repeat(10) } });
+  assert.equal(r.status, 200, r.text);
+  const alias = ctx.engine.last("updateAccount").args[1].alias;
+  assert.ok([...alias].length <= 40);
+  assert.ok(!/[\uD800-\uDFFF]/u.test(alias.normalize()), "surrogate solto no apelido");
+});

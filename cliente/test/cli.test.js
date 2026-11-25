@@ -386,7 +386,7 @@ test("entrar --url: mostra o endereço para abrir no navegador, consulta até o 
   assert.ok(iConectado > iEndereco, "só diz que conectou depois");
   assert.match(r.saida[r.saida.length - 1], /^Situação: {2}em dia/);
 
-  assert.deepEqual(c.corpos("POST", "/v1/login/start"), [{ name: "cliente-cli", platform: process.platform }]);
+  assert.deepEqual(c.corpos("POST", "/v1/login/start"), [{ name: "cliente-cli", platform: process.platform, caps: ["name_taken"] }]);
   assert.deepEqual(c.corpos("POST", "/v1/login/poll"), [
     { sessionId: "sessao-0123456789", pollToken: "consulta-SEGREDO-0123456789" },
     { sessionId: "sessao-0123456789", pollToken: "consulta-SEGREDO-0123456789" },

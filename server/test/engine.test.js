@@ -2971,3 +2971,23 @@ test("presença: depois de um reinício (motor novo no mesmo cofre) o contato re
   assert.equal(presenceRow(e2, "em-uso").presence, "none");
   assert.equal(presenceRow(e2, "ocioso").presence, "connected", "o contato dele foi há 3 min");
 });
+
+test("2.8.0: apelido da conta cortado em 40 pontos de código, sem meio emoji (critério 23, motor de verdade)", async (t) => {
+  const { engine, fake, disk } = setup(t);
+  await engine.addLogin(fake.login("ana@x.com"));
+  const soltos = /[\uD800-\uDFFF]/u; // com a flag u, só casa surrogate SOLTO
+  // O caso do teste: "x" + 30 emojis = 31 pontos de código (61 unidades UTF-16). Antes, o motor cortava em 40
+  // unidades e sobrava meio emoji; agora cabe inteiro.
+  let r = await engine.updateAccount(1, { alias: "x" + "😀".repeat(30) });
+  assert.equal(r.alias, "x" + "😀".repeat(30));
+  assert.ok(!soltos.test(r.alias), "surrogate solto no apelido");
+  assert.equal(disk().accounts["1"].alias, r.alias, "gravado no cofre igual");
+  // Mais de 40 pontos de código: corta em 40, sem meio emoji.
+  r = await engine.updateAccount(1, { alias: "x" + "😀".repeat(50) });
+  assert.equal(r.alias, "x" + "😀".repeat(39));
+  assert.equal([...r.alias].length, 40);
+  assert.ok(!soltos.test(r.alias), "surrogate solto no apelido");
+  // Espaço que sobra no fim depois do corte sai; texto curto passa inteiro.
+  assert.equal((await engine.updateAccount(1, { alias: "a".repeat(39) + " 😀" })).alias, "a".repeat(39));
+  assert.equal((await engine.updateAccount(1, { alias: " Trabalho 😀 " })).alias, "Trabalho 😀");
+});

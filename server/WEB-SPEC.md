@@ -68,7 +68,7 @@ Imagem: `server/web/` vai para `/app/server/web/` (Dockerfile + .dockerignore).
 | rota | o que faz |
 |---|---|
 | `GET /` | `web/index.html` (sem sessão a própria página mostra a tela de login com o botão "Entrar com Google") |
-| `GET /static/app.js`, `/static/app.css` | arquivos do painel |
+| `GET /static/app.js`, `/static/app.css` | arquivos do painel. 2.8.0: os 3 arquivos (com `GET /`) ficam em memória com o gzip (nível 9) e um ETag `"sha256-<16 hex>"`, recarregados quando o mtime muda; `Content-Encoding: gzip` + `Vary: Accept-Encoding` quando o pedido aceita gzip e **304** sem corpo quando `If-None-Match` bate (`Cache-Control: no-cache` continua). As respostas da API nunca são comprimidas (levam acesso das contas) |
 | `GET /web/login`, `POST /web/logout` | acima |
 | `GET /web/api/me` | `{ email, admin: true, csrf, expiresAt }` ou 401 |
 | `GET /web/api/state` | PanelState (abaixo) |
@@ -163,7 +163,7 @@ state.defaults = { newAccessAccounts: null | [n...] }   // contas destinadas a u
 | `POST /web/api/allowed` `{ email, accounts?, profileId? }` | cria acesso (contas padrão = `defaults.newAccessAccounts`) |
 | `PUT /web/api/access/:email` `{ accounts?, profileId? }` | edita acesso |
 | `DELETE /web/api/allowed/:email` | remove acesso (como hoje; admin → 409) |
-| `PATCH /web/api/devices/:id` `{ name }` | renomeia computador |
+| `PATCH /web/api/devices/:id` `{ name }` | renomeia computador (2.8.0: 1 a 60 caracteres, como no pareamento; nome de outro serviço → 409 `name_taken`) |
 PanelState ganha: `ruleProfiles: [ { id, name, rules, usedBy: [email] } ]`, `access: [ { email, admin, accounts, profileId, devices: [id] } ]`,
 `defaults: { rules, autoSwitch, newAccessAccounts }`; cada computador ganha `email` do acesso e `profileId` efetivo.
 

@@ -20,10 +20,14 @@
 //   impressão digital — é o caso do servidor com certificado próprio.
 //   Sem `fp`, validação TLS normal (servidor atrás de proxy com certificado público).
 // - parseConnectCode("swapplus1:...") → { url, code, fp }
-// - pair({ url, fp, code, name, platform }) → { deviceId, token }
-// - loginStart({ url, fp, name, platform }) → { sessionId, pollToken, authUrl, expiresAt }
+// - pair({ url, fp, code, name, platform, replaces }) → { deviceId, token }
+// - loginStart({ url, fp, name, platform, replaces }) → { sessionId, pollToken, authUrl, expiresAt }
 // - loginPoll({ url, fp, sessionId, pollToken }) → { status: "pending" } |
 //   { status: "ok", deviceId, token } | { status: "denied", email } | { status: "expired" }
+//   | { status: "name_taken", message } (servidor 2.8.0+)
+// - replaces: { deviceId, token } do acesso antigo DESTE computador no mesmo servidor (reconexão: o servidor troca o
+//   antigo pelo novo e o nome não dá conflito com ele mesmo). Nome já usado por outro serviço: erro com
+//   code "name_taken" (409) no pair/loginStart, ou o status "name_taken" no poll.
 //   (entrar com a conta Google: o navegador abre authUrl e a extensão consulta o resultado)
 //
 // Toda requisição leva User-Agent "SwapPlus-VSCode/<versão>" e Accept JSON: o
@@ -59,6 +63,8 @@ try {
   const v = require("./package.json").version;
   if (v) userAgent += "/" + v;
 } catch {}
+
+const NAME_TAKEN_MSG = "Já existe um serviço com este nome; escolha outro ou desconecte o antigo no painel.";
 
 function fail(code, message, status, extra) {
   const e = new Error(message);
@@ -354,9 +360,9 @@ function parseConnectCode(str) {
  * endereço junto e passe-o como tokenOrigin no createServerClient.
  * Lança bad_url (http:// fora do localhost) ou o erro do request (ex.: código vencido/errado).
  */
-async function pair({ url, fp = null, code, name, platform }) {
+async function pair({ url, fp = null, code, name, platform, replaces = null }) {
   const client = createServerClient({ url, fp });
-  const r = await client.request("POST", "/v1/pair", { code, name, platform });
+  const r = await client.request("POST", "/v1/pair", { code, name, platform, ...replacesField(replaces) });
   if (!r || typeof r.deviceId !== "string" || !r.deviceId || typeof r.token !== "string" || !r.token) {
     throw fail("bad_response", "O servidor não devolveu o acesso deste computador.", 200);
   }
@@ -364,6 +370,11 @@ async function pair({ url, fp = null, code, name, platform }) {
 }
 
 const isText = (v) => typeof v === "string" && v.length > 0;
+
+/** { replaces } para o corpo do pedido, só se vier completo (deviceId e token em texto). */
+function replacesField(rep) {
+  return rep && isText(rep.deviceId) && isText(rep.token) ? { replaces: { deviceId: rep.deviceId, token: rep.token } } : {};
+}
 
 /** Horário vindo do servidor (ms ou texto ISO) em ms; null se não der para ler. */
 function toMs(v) {
@@ -379,9 +390,10 @@ function toMs(v) {
  * (http:// fora do localhost) ou o erro do request (ex.: code "google_off",
  * status 503, quando o servidor não está com o login do Google ligado).
  */
-async function loginStart({ url, fp = null, name, platform }) {
+async function loginStart({ url, fp = null, name, platform, replaces = null }) {
   const client = createServerClient({ url, fp });
-  const r = await client.request("POST", "/v1/login/start", { name, platform });
+  // caps: este cliente entende o status "name_taken" no poll (senão o servidor 2.8.0 responde 409).
+  const r = await client.request("POST", "/v1/login/start", { name, platform, caps: ["name_taken"], ...replacesField(replaces) });
   if (!r || !isText(r.sessionId) || !isText(r.pollToken) || !isText(r.authUrl)) {
     throw fail("bad_response", "O servidor não devolveu o endereço para entrar com o Google.", 200);
   }
@@ -423,7 +435,8 @@ async function loginPoll({ url, fp = null, sessionId, pollToken }) {
   }
   if (st === "denied") return { status: "denied", email: isText(r.email) ? r.email : null };
   if (st === "expired") return { status: "expired" };
+  if (st === "name_taken") return { status: "name_taken", message: isText(r.message) ? r.message : NAME_TAKEN_MSG };
   throw fail("bad_response", "O servidor respondeu algo inesperado ao login com Google.", 200);
 }
 
-module.exports = { createServerClient, parseConnectCode, pair, loginStart, loginPoll, normalizeFingerprint, originOf, isLoopbackHost, TIMEOUT_MS };
+module.exports = { createServerClient, parseConnectCode, pair, loginStart, loginPoll, normalizeFingerprint, originOf, isLoopbackHost, TIMEOUT_MS, NAME_TAKEN_MSG };

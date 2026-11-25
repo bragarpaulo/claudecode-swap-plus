@@ -32,10 +32,12 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const zlib = require("zlib");
 const { RULE_DEFAULTS } = require("../../plus/rules");
 const { emailKey } = require("./google");
 const { createClaudeLogin, cleanLoginHint } = require("./claudelogin");
 const access = require("./access");
+const { nomeEmUso, NOME_EM_USO_MSG } = require("./nomes");
 
 const SESSION_COOKIE = "sp_sess";
 const LOGIN_COOKIE = "sp_login"; // prende o login com Google ao navegador que começou (10 min)
@@ -49,7 +51,7 @@ const LOGIN_WARN_MS = 3 * 24 * 60 * 60 * 1000; // aviso quando o login vence em 
 const HISTORY_IN_PANEL = 100;
 const DEFAULT_WEB_DIR = path.join(__dirname, "..", "web"); // repo: server/web · imagem: /app/server/web
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/; // 32 bytes em base64url
-const DEVICE_NAME_MAX = 40; // nome do serviço (renomear pelo painel): 1 a 40 caracteres
+const DEVICE_NAME_MAX = 60; // nome do serviço (renomear pelo painel): 1 a 60 caracteres, igual ao pareamento e ao Google
 // Caracteres de controle, separadores de linha e os de direção do texto (que enganam a leitura do nome).
 const DEVICE_NAME_BAD = /[\p{Cc}\u2028\u2029\u202a-\u202e\u2066-\u2069]/u;
 // Presença de um serviço no PanelState: ativo agora · conectado (sem uso) · aguardando contato (o servidor acabou de subir) · sem contato.
@@ -613,13 +615,58 @@ function createWeb(deps) {
 
   // ----- arquivos da página -----
 
-  async function staticFile(name) {
+  // Arquivos do painel em memória: conteúdo, gzip e ETag de cada um, recarregados quando o mtime muda.
+  // Só os 3 estáticos: as respostas da API continuam sem compressão (levam acesso das contas).
+  const staticCache = new Map(); // nome → { mtimeMs, size, body, gz, etag }
+
+  async function loadStatic(name) {
+    const file = path.join(webDir, name);
+    const st = await fs.promises.stat(file);
+    const hit = staticCache.get(name);
+    if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit;
+    const body = await fs.promises.readFile(file);
+    const gz = zlib.gzipSync(body, { level: 9 });
+    const etag = `"sha256-${crypto.createHash("sha256").update(body).digest("hex").slice(0, 16)}"`;
+    const entry = { mtimeMs: st.mtimeMs, size: st.size, body, gz, etag };
+    staticCache.set(name, entry);
+    return entry;
+  }
+
+  /**
+   * O pedido aceita gzip? Accept-Encoding com "gzip" de q > 0; sem "gzip" na lista, vale o "*". Um "gzip;q=0"
+   * explícito ganha do "*" (RFC 9110 12.5.3).
+   */
+  function acceptsGzip(req) {
+    const h = req && req.headers ? String(req.headers["accept-encoding"] || "") : "";
+    let gzip = null;
+    let any = null;
+    for (const part of h.split(",")) {
+      const [enc, ...params] = part.trim().toLowerCase().split(";");
+      const q = params.map((x) => x.trim()).find((x) => x.startsWith("q="));
+      const ok = !q || Number(q.slice(2)) > 0;
+      if (enc.trim() === "gzip") gzip = ok;
+      else if (enc.trim() === "*") any = ok;
+    }
+    return gzip !== null ? gzip : any === true;
+  }
+
+  /** If-None-Match bate com o ETag? (lista separada por vírgulas, W/ aceito, "*" também) */
+  function etagMatches(req, etag) {
+    const h = req && req.headers ? req.headers["if-none-match"] : undefined;
+    if (typeof h !== "string" || !h) return false;
+    return h.split(",").some((t) => {
+      const v = t.trim().replace(/^W\//, "");
+      return v === "*" || v === etag;
+    });
+  }
+
+  async function staticFile(name, req) {
     const type = STATIC_FILES[name];
     if (!type) throw new HttpError(404, "not_found", "arquivo não encontrado");
     if (name === "index.html" && !panelOn) throw panelOffError();
-    let body;
+    let f;
     try {
-      body = await fs.promises.readFile(path.join(webDir, name));
+      f = await loadStatic(name);
     } catch {
       if (name === "index.html") {
         throw pageError(503, "no_panel", "Painel não instalado", [
@@ -629,7 +676,10 @@ function createWeb(deps) {
       }
       throw new HttpError(404, "not_found", "arquivo não encontrado");
     }
-    return new RawReply(200, { ...PANEL_HEADERS, "Content-Type": type, "Cache-Control": "no-cache" }, body);
+    const headers = { ...PANEL_HEADERS, "Content-Type": type, "Cache-Control": "no-cache", ETag: f.etag, Vary: "Accept-Encoding" };
+    if (etagMatches(req, f.etag)) return new RawReply(304, headers, "");
+    if (acceptsGzip(req)) return new RawReply(200, { ...headers, "Content-Encoding": "gzip" }, f.gz);
+    return new RawReply(200, headers, f.body);
   }
 
   // ----- rotas -----
@@ -763,6 +813,8 @@ function createWeb(deps) {
     const len = [...name].length;
     if (len < 1 || len > DEVICE_NAME_MAX) throw bad(`o nome do serviço precisa ter de 1 a ${DEVICE_NAME_MAX} caracteres`);
     if (DEVICE_NAME_BAD.test(name)) throw bad("o nome do serviço não pode ter quebra de linha, tabulação nem caracteres de controle");
+    // Nome único: conflito com OUTRO serviço é recusado; o próprio com outra caixa ("notewin" → "NoteWin") pode.
+    if (nomeEmUso(store.state.devices, name, [id])) throw new HttpError(409, "name_taken", NOME_EM_USO_MSG);
     const old = dev.name;
     if (old !== name) {
       dev.name = name;
@@ -1007,8 +1059,8 @@ function createWeb(deps) {
 
   const change = { change: true };
   const routes = [
-    { m: "GET", p: /^\/$/, fn: () => staticFile("index.html") },
-    { m: "GET", p: /^\/static\/(app\.js|app\.css)$/, fn: ({ params }) => staticFile(params[0]) },
+    { m: "GET", p: /^\/$/, fn: ({ req }) => staticFile("index.html", req) },
+    { m: "GET", p: /^\/static\/(app\.js|app\.css)$/, fn: ({ params, req }) => staticFile(params[0], req) },
     { m: "POST", p: /^\/web\/logout$/, body: true, fn: logout },
     {
       m: "GET",

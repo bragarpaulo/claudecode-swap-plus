@@ -284,3 +284,58 @@ test("revogar: true só quando o servidor confirmou; id com caracteres especiais
 
   assert.equal(await conexao.revogar(lib, conexaoDe(c.servidor, { token: "token-errado" })), false, "401 do servidor: não revogou");
 });
+
+// ------------------------------------------------------------------ 1.2.0: nome único e reconexão (replaces)
+
+const NOME_EM_USO = "Já existe um serviço com este nome; escolha outro ou desconecte o antigo no painel.";
+
+test("1.2.0: conectar de novo no MESMO servidor manda replaces com o acesso antigo; outro servidor não", async (t) => {
+  const c = await cenario(t);
+  await c.estado.gravarConexao(conexaoDe(c.servidor, { deviceId: "dev-antigo", token: "tok-antigo-0123456789" }));
+  await conexao.conectarPorCodigo(c.deps, c.servidor.codigoDeConexao());
+  assert.deepEqual(c.servidor.pareado.replaces, { deviceId: "dev-antigo", token: "tok-antigo-0123456789" });
+
+  // Pelo Google também.
+  await c.estado.gravarConexao(conexaoDe(c.servidor, { deviceId: "dev-antigo2", token: "tok-antigo2-0123456789" }));
+  c.servidor.google.respostas = [{ status: "ok" }];
+  await c.entrar();
+  const start = c.servidor.chamadas.filter((x) => x.caminho === "/v1/login/start").at(-1);
+  assert.deepEqual(start.corpo.replaces, { deviceId: "dev-antigo2", token: "tok-antigo2-0123456789" });
+  assert.deepEqual(start.corpo.caps, ["name_taken"]);
+
+  // Outro servidor: o token antigo não vai para ele.
+  const novo = await servidorFalso();
+  t.after(() => novo.fechar());
+  await c.estado.gravarConexao(conexaoDe(c.servidor, { deviceId: "dev-x", token: "tok-x-0123456789" }));
+  await conexao.conectarPorCodigo(c.deps, novo.codigoDeConexao());
+  assert.equal(novo.pareado.replaces, undefined);
+  assert.ok(!JSON.stringify(novo.chamadas).includes("tok-x-0123456789"));
+
+  // Conexão revogada: sem replaces.
+  await c.estado.gravarConexao(conexaoDe(c.servidor, { deviceId: "dev-r", token: "tok-r-0123456789", revogadoEm: 1 }));
+  await conexao.conectarPorCodigo(c.deps, c.servidor.codigoDeConexao());
+  assert.equal(c.servidor.pareado.replaces, undefined);
+});
+
+test("1.2.0: nome já usado no servidor → erro nome_em_uso com a mensagem e a dica de --nome (código, Google e poll)", async (t) => {
+  const c = await cenario(t);
+  c.servidor.nomesUsados.add("cliente-de-teste");
+  const confere = (e) => {
+    assert.equal(e.code, "nome_em_uso");
+    assert.ok(e.message.includes(NOME_EM_USO), e.message);
+    assert.match(e.message, /--nome <outro nome>/);
+    assert.match(e.message, /SWAP_PLUS_NOME/);
+    return true;
+  };
+  await assert.rejects(conexao.conectarPorCodigo(c.deps, c.servidor.codigoDeConexao()), confere);
+  await assert.rejects(c.entrar(), confere);
+  assert.equal(c.estado.conexao(), null, "nada guardado");
+
+  // Recusado no fim (status do poll) e com o 409 de um servidor que não viu o caps.
+  c.servidor.nomesUsados.clear();
+  c.servidor.google.respostas = [{ status: "pending" }, { status: "name_taken", message: NOME_EM_USO }];
+  await assert.rejects(c.entrar(), confere);
+  c.servidor.google.respostas = [{ http: 409, corpo: { error: "name_taken", message: NOME_EM_USO } }];
+  await assert.rejects(c.entrar(), confere);
+  assert.equal(c.estado.conexao(), null);
+});

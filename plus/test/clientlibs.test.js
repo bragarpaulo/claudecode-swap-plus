@@ -981,6 +981,8 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
+const NOME_EM_USO = "Já existe um serviço com este nome; escolha outro ou desconecte o antigo no painel.";
+
 /** Servidor de mentira: registra o que recebeu e responde como a API. */
 function handler(seen) {
   return (req, res) => {
@@ -996,14 +998,23 @@ function handler(seen) {
       if (route === "/v1/health") return send(200, { ok: true, version: "teste" });
       if (route === "/v1/pair" && req.method === "POST") {
         const b = JSON.parse(body || "{}");
+        if (b.name === "repetido") return send(409, { error: "name_taken", message: NOME_EM_USO });
         if (b.code === "ABCDEFGHJK") return send(200, { deviceId: "dev-1", token: "tok-1" });
         return send(401, { error: "bad_code", message: "Código de pareamento inválido ou vencido." });
       }
       if (route === "/v1/login/start" && req.method === "POST") {
         const b = JSON.parse(body || "{}");
+        if (b.name === "repetido") return send(409, { error: "name_taken", message: NOME_EM_USO });
         const authUrl =
           b.name === "http-fora" ? "http://login.exemplo.com/entrar" : b.name === "http-local" ? "http://127.0.0.1:1/entrar" : "https://accounts.google.com/o/oauth2/v2/auth?x=1";
         return send(200, { sessionId: "s-1", pollToken: "p-1", authUrl, expiresAt: Date.now() + 600000 });
+      }
+      if (route === "/v1/login/poll" && req.method === "POST") {
+        const b = JSON.parse(body || "{}");
+        if (b.sessionId === "nome") return send(200, { status: "name_taken", message: NOME_EM_USO });
+        if (b.sessionId === "nome-sem-msg") return send(200, { status: "name_taken" });
+        if (b.sessionId === "nome-409") return send(409, { error: "name_taken", message: NOME_EM_USO });
+        return send(200, { status: "pending" });
       }
       if (route === "/v1/credential") return send(409, { error: "no_account", message: "Nenhuma conta atribuída a este computador." });
       if (route === "/v1/echo") return send(200, { got: JSON.parse(body || "null") });
@@ -1048,6 +1059,21 @@ test("serverClient (http): JSON, prefixo de caminho, erros com .status e .code, 
     assert.equal(ls.authUrl, "https://accounts.google.com/o/oauth2/v2/auth?x=1");
     assert.equal((await loginStart({ url, name: "http-local", platform: "linux" })).authUrl, "http://127.0.0.1:1/entrar");
     await assert.rejects(loginStart({ url, name: "http-fora", platform: "linux" }), { code: "bad_response" }, "authUrl http:// fora do localhost");
+
+    // 3.6.0: loginStart diz que entende "name_taken" (caps); replaces só vai completo; nome repetido → code name_taken.
+    await loginStart({ url, name: "ok", platform: "linux" });
+    assert.deepEqual(JSON.parse(seen.at(-1).body), { name: "ok", platform: "linux", caps: ["name_taken"] });
+    await loginStart({ url, name: "ok", platform: "linux", replaces: { deviceId: "dev-0", token: "tok-0" } });
+    assert.deepEqual(JSON.parse(seen.at(-1).body), { name: "ok", platform: "linux", caps: ["name_taken"], replaces: { deviceId: "dev-0", token: "tok-0" } });
+    await pair({ url, code: "ABCDEFGHJK", name: "Mac", platform: "darwin", replaces: { deviceId: "dev-0", token: "tok-0" } });
+    assert.deepEqual(JSON.parse(seen.at(-1).body), { code: "ABCDEFGHJK", name: "Mac", platform: "darwin", replaces: { deviceId: "dev-0", token: "tok-0" } });
+    await pair({ url, code: "ABCDEFGHJK", name: "Mac", platform: "darwin", replaces: { deviceId: "dev-0" } });
+    assert.deepEqual(JSON.parse(seen.at(-1).body), { code: "ABCDEFGHJK", name: "Mac", platform: "darwin" }, "replaces incompleto não vai");
+    await assert.rejects(pair({ url, code: "ABCDEFGHJK", name: "repetido", platform: "linux" }), (e) => e.status === 409 && e.code === "name_taken" && e.message === NOME_EM_USO);
+    await assert.rejects(loginStart({ url, name: "repetido", platform: "linux" }), (e) => e.status === 409 && e.code === "name_taken" && e.message === NOME_EM_USO);
+    assert.deepEqual(await loginPoll({ url, sessionId: "nome", pollToken: "p" }), { status: "name_taken", message: NOME_EM_USO });
+    assert.deepEqual(await loginPoll({ url, sessionId: "nome-sem-msg", pollToken: "p" }), { status: "name_taken", message: NOME_EM_USO });
+    await assert.rejects(loginPoll({ url, sessionId: "nome-409", pollToken: "p" }), (e) => e.status === 409 && e.code === "name_taken");
   } finally {
     await closeServer(server);
   }
@@ -1146,5 +1172,64 @@ test("serverClient (https com certificado próprio): impressão digital fixada",
     });
   } finally {
     await closeServer(server);
+  }
+});
+
+// ---------------------------------------------------------------- 3.6.0: travas entre processos (travas.js)
+
+test("travas.withDirLock: 8 processos reivindicam o mesmo erro ao mesmo tempo → exatamente 1 passa (ler → comparar → gravar atômico)", async () => {
+  const { execFile } = require("node:child_process");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-corrida-"));
+  try {
+    const arq = path.join(dir, "limit.lock");
+    const travas = path.join(__dirname, "..", "travas.js");
+    // Cada processo: espera o mesmo instante, lê o último ts, "pensa" 30 ms (janela da corrida) e grava.
+    const script = `
+      const fs = require("fs");
+      const { withDirLock } = require(${JSON.stringify(travas)});
+      const arq = ${JSON.stringify(arq)};
+      const ts = 1000;
+      const at = Number(process.argv[1]);
+      while (Date.now() < at) {}
+      let r = null;
+      for (let i = 0; i < 200 && r === null; i++) {
+        r = withDirLock(arq + ".d", () => {
+          let last = 0;
+          try { last = Number(fs.readFileSync(arq, "utf8")) || 0; } catch {}
+          const t0 = Date.now(); while (Date.now() - t0 < 30) {}
+          if (last >= ts) return false;
+          fs.writeFileSync(arq, String(ts));
+          return true;
+        });
+        if (r === null) { const t1 = Date.now(); while (Date.now() - t1 < 5) {} }
+      }
+      process.stdout.write(String(r));
+    `;
+    const at = Date.now() + 800;
+    const runs = await Promise.all(
+      Array.from({ length: 8 }, () => new Promise((resolve, reject) => execFile(process.execPath, ["-e", script, String(at)], (e, out) => (e ? reject(e) : resolve(out.trim())))))
+    );
+    assert.equal(runs.filter((x) => x === "true").length, 1, runs.join(","));
+    assert.equal(runs.filter((x) => x === "false").length, 7, runs.join(","));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("travas.claimOnce: a mesma chave passa uma vez só; sweepClaims apaga as velhas", () => {
+  const { claimOnce, sweepClaims, claimFile } = require("../travas");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-avisos-"));
+  try {
+    assert.equal(claimOnce(dir, "1|5h|80|2026-11-25T10"), true);
+    assert.equal(claimOnce(dir, "1|5h|80|2026-11-25T10"), false);
+    assert.equal(claimOnce(dir, "1|7d|70|2026-11-30T10"), true);
+    const velho = claimFile(dir, "1|5h|80|2026-11-25T10");
+    const antigo = new Date(Date.now() - 9 * 24 * 3600e3);
+    fs.utimesSync(velho, antigo, antigo);
+    assert.equal(sweepClaims(dir, 8 * 24 * 3600e3), 1);
+    assert.equal(fs.existsSync(velho), false);
+    assert.equal(claimOnce(dir, "1|5h|80|2026-11-25T10"), true, "depois de apagado, vale de novo");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

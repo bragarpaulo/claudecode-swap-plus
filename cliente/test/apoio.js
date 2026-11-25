@@ -87,6 +87,7 @@ async function servidorFalso(agora = Date.now) {
     chamadas: [],
     revogados: [],
     google: null, // { sessionId, pollToken, respostas: [{ status } | { http: 429 }, ..] } — uma resposta por consulta
+    nomesUsados: new Set(), // servidor 2.8.0+: nomes já usados por outro serviço → 409 name_taken
   };
   s.novaConta = (n, extra = {}) => {
     s.contas[n] = { gen: 1, accessToken: `sk-ant-oat01-ACESSO-conta${n}-g1`, expiresAt: agora() + 6 * 3600 * 1000, publica: conta(n, extra) };
@@ -141,9 +142,12 @@ async function servidorFalso(agora = Date.now) {
         res.end(JSON.stringify(obj));
       };
       const rota = `${req.method} ${caminho}`;
+      if ((rota === "POST /v1/pair" || rota === "POST /v1/login/start") && corpo && s.nomesUsados.has(corpo.name)) {
+        return responder(409, { error: "name_taken", message: "Já existe um serviço com este nome; escolha outro ou desconecte o antigo no painel." });
+      }
       if (rota === "POST /v1/pair") {
         if (!corpo || corpo.code !== s.codigo) return responder(403, { error: "bad_code", message: "Código inválido ou vencido." });
-        s.pareado = { name: corpo.name, platform: corpo.platform };
+        s.pareado = { name: corpo.name, platform: corpo.platform, ...(corpo.replaces ? { replaces: corpo.replaces } : {}) };
         return responder(200, { deviceId: s.deviceId, token: s.token });
       }
       if (rota === "POST /v1/login/start") {

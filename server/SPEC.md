@@ -459,7 +459,7 @@ acontecem se o motor tiver o método (`typeof … === "function"`). O que o moto
 | método e caminho | corpo | resposta |
 |---|---|---|
 | `GET /v1/health` (sem auth) | — | `{ ok: true, version }` |
-| `POST /v1/pair` (sem auth) | `{ code, name, platform }` | `{ deviceId, token }` — código de uso único, 10 min, 5 erros descartam o código |
+| `POST /v1/pair` (sem auth) | `{ code, name, platform, replaces?: { deviceId, token } }` | `{ deviceId, token }` — código de uso único, 10 min, 5 erros descartam o código. 2.8.0: nome já usado por outro serviço → 409 `name_taken` (o código **não** é gasto); ver "Nome único" |
 | `POST /v1/heartbeat` | `{ models: [id], live: { email, orgUuid, expiresAt } \| null, defaultModel?: string \| null }` (2.7.0: `models` = modelos das conversas dos últimos 30 min; o servidor escolhe a conta por eles — ver `NOVIDADES-3.5.md`) | StateResponse (2.7.0: `features`, `device.want`, `device.modelBlock`) |
 | `GET /v1/state` | — | StateResponse |
 | `GET /v1/credential` | — | `{ number, gen, claudeAiOauth: { accessToken, expiresAt, scopes, subscriptionType, rateLimitTier, refreshTokenExpiresAt? }, oauthAccount }` (nunca `refreshToken`) ou 409 `{error:"no_account"}` |
@@ -471,10 +471,34 @@ acontecem se o motor tiver o método (`typeof … === "function"`). O que o moto
 | `PUT /v1/rules` | `{ rules?, autoSwitch? }` | StateResponse |
 | `GET /v1/devices` | — | `[ { id, name, platform, googleEmail, createdAt, lastSeen, assigned, current } ]` |
 | `DELETE /v1/devices/:id` | — | `{ ok: true }` |
-| `POST /v1/login/start` (sem auth) | `{ name, platform }` | `{ sessionId, pollToken, authUrl, expiresAt }` |
-| `POST /v1/login/poll` (sem auth) | `{ sessionId, pollToken }` | `{ status: "pending" }` \| `{ status: "ok", deviceId, token }` (uma vez) \| `{ status: "denied", email }` \| 404 `expired` |
+| `POST /v1/login/start` (sem auth) | `{ name, platform, caps?: ["name_taken"], replaces?: { deviceId, token } }` | `{ sessionId, pollToken, authUrl, expiresAt }`; 2.8.0: nome já usado → 409 `name_taken` |
+| `POST /v1/login/poll` (sem auth) | `{ sessionId, pollToken }` | `{ status: "pending" }` \| `{ status: "ok", deviceId, token }` (uma vez) \| `{ status: "denied", email }` \| (2.8.0, com `caps`) `{ status: "name_taken", message }` (uma vez) \| (2.8.0, sem `caps`) 409 `name_taken` \| 404 `expired` |
 | `GET /auth/google/start?s=<id>` (navegador) | — | 302 para o Google (ou página HTML de erro) |
 | `GET /auth/google/callback?code&state` (navegador) | — | página HTML (pronto / conta não liberada / erro) |
+
+### Nome único dos serviços (2.8.0)
+
+Dois serviços não podem ter o mesmo nome. Pedido com nome repetido → **409** `{ error: "name_taken", message: "Já existe um
+serviço com este nome; escolha outro ou desconecte o antigo no painel." }`.
+- "Mesmo nome" = `chaveNome` (`server/src/nomes.js`): NFC, espaços repetidos viram um e as pontas saem, depois
+  `toUpperCase().toLowerCase()` (maiúsculas não contam em nenhum alfabeto: NoteWin = notewin, Σ = σ = ς, ß = SS). O acento conta
+  (José ≠ Jose); a forma composta e a decomposta do mesmo acento são iguais.
+- Onde vale: `POST /v1/pair` (conferido na mesma parte síncrona do `createDevice`: dois pedidos ao mesmo tempo → um passa, o outro
+  409; o código continua valendo), `POST /v1/login/start` (resposta rápida) e o retorno do Google (conferência definitiva, logo antes
+  de criar o serviço: conflito → página "Nome em uso" com a mesma mensagem, nenhum serviço criado e o `poll` responde
+  `name_taken`), e `PATCH /web/api/devices/:id` (renomear no painel: conflito com **outro** serviço → 409; o próprio com outra
+  caixa pode). A CLI do admin não cria serviços.
+- `replaces: { deviceId, token }` (opcional): o acesso antigo **deste mesmo** serviço. Se `sha256(token)` bate com o `tokenHash`
+  daquele serviço, ele fica fora da conferência do nome e, quando o novo é criado, sai **na mesma gravação do cofre**
+  (`forgetDevice`), com a linha `Serviço "<nome>" reconectado: o acesso anterior deixou de valer` no histórico. `replaces`
+  inválido é ignorado sem erro (e a regra do nome vale). No Google, a sessão em memória guarda só o id e o hash do token.
+- `caps: ["name_taken"]` no `login/start`: quem manda (extensão 3.6+, cliente 1.2+) entende o status `name_taken` no `poll`.
+  Sem `caps` (extensão 3.5, cliente 1.1), o `poll` responde 409 `name_taken` com a mensagem, que esses clientes já mostram
+  ("o servidor recusou o pedido: …") — eles não ficam esperando até a sessão vencer. O `denied` não serve para isso: a 3.5
+  mostraria "a conta Google <mensagem> não está liberada".
+- Serviços que já estavam duplicados ficam como estão (nada é apagado, desconectado nem renomeado). Renomear um deles para
+  um nome livre funciona.
+- `name` e `alias` (e os outros textos livres) são cortados por **ponto de código** (`cortar`), nunca no meio de um emoji.
 
 ### Login com Google ("login de dispositivo")
 

@@ -45,8 +45,9 @@
 const crypto = require("crypto");
 const { RULE_DEFAULTS, STRATEGY_LABELS, CAND_STALE_SEC, MODEL_EFFORTS, MODEL_ID_RE, modelLine, limitNameOf, decide, windows, linesFor } = require("../../plus/rules");
 const access = require("./access");
+const { cortar } = require("./nomes"); // cortes por ponto de código (nunca meio emoji)
 
-const VERSION = "2.7.0";
+const VERSION = "2.8.0";
 const TICK_MS = 15 * 1000;
 const ACTIVE_MS = 5 * 60 * 1000; // dispositivo visto nos últimos 5 min = ativo
 // Presença (para mostrar e, desde a 2.5.5, para saber quem segura cada conta: holders): contato = qualquer pedido autenticado do serviço. Quem falou com
@@ -307,7 +308,7 @@ function sanitizeAccess(cred, t) {
 }
 
 function planOf(plan, subscriptionType) {
-  if (isObj(plan) && str(plan.label)) return { label: str(plan.label).slice(0, 40) };
+  if (isObj(plan) && str(plan.label)) return { label: cortar(str(plan.label), 40) };
   const label = PLAN_LABELS[lower(subscriptionType)];
   return label ? { label } : null;
 }
@@ -357,7 +358,7 @@ function checkRule(key, value) {
   }
   if (key === "preferModel") {
     if (typeof value !== "string") throw fail("invalid_rules", "preferModel precisa ser texto");
-    return value.trim().slice(0, 40);
+    return cortar(value.trim(), 40);
   }
   if (MODEL_RULE_KEYS.includes(key)) {
     const id = typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -2509,7 +2510,7 @@ class Engine {
    */
   async limitHit(deviceId, label) {
     const dev = this.needDevice(deviceId);
-    const lbl = str(label) ? str(label).slice(0, 80) : "limite de uso";
+    const lbl = str(label) ? cortar(str(label), 80) : "limite de uso";
     const t = this.now();
     dev.lastSeen = t;
     const acc = this.acc(dev.assigned);
@@ -2889,7 +2890,7 @@ class Engine {
     if ("alias" in patch) {
       const v = patch.alias;
       if (v === null) next.alias = null;
-      else if (typeof v === "string") next.alias = v.trim().slice(0, 40) || null;
+      else if (typeof v === "string") next.alias = cortar(v.trim(), 40).trim() || null;
       else throw fail("invalid", "alias precisa ser texto ou null");
     }
     const wasDisabled = !!acc.disabled;
@@ -3017,7 +3018,7 @@ class Engine {
         const line = this.modelLineOf(eff.primaryModel);
         const name = line ? line[0].toUpperCase() + line.slice(1) : limitNameOf(eff.primaryModel);
         if (name === RULE_DEFAULTS.preferModel) delete nextRules.preferModel;
-        else nextRules.preferModel = name.slice(0, 40);
+        else nextRules.preferModel = cortar(name, 40);
       }
     }
     if (nextRules) {

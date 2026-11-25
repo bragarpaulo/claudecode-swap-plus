@@ -220,6 +220,8 @@ function partA() {
 }
 
 // ------------------------------------------------------------ parte L: erro de limite nas transcrições
+// 3.6.0: o inventário das transcrições vale por 10 s; aqui cada varredura começa do zero (arquivo novo aparece na hora).
+const scanFresh = (since, dir) => (T.transcripts.invalidate(), T.scanLimitErrors(since, dir));
 async function partL() {
   console.log("\n# L. Erro de limite nas transcrições (arquivos temporários)");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-tr-"));
@@ -230,30 +232,157 @@ async function partL() {
   const chat = (ms, text) => JSON.stringify({ type: "assistant", timestamp: iso(ms), message: { model: "claude-fable-5-2", content: [{ type: "text", text }] } });
   const f = path.join(dir, "proj", "conversa.jsonl");
   fs.writeFileSync(f, [chat(now - 5000, "o print mostra You've hit your 5-hour limit · resets 10:20pm"), JSON.stringify({ type: "user", isApiErrorMessage: true, error: "rate_limit", timestamp: iso(now - 4000) }).replace('"isApiErrorMessage":true,', "")].join("\n") + "\n");
-  let hit = await T.scanLimitErrors(now - 60000, dir);
+  let hit = await scanFresh(now - 60000, dir);
   check("texto de conversa citando o erro não conta", hit === null, hit ? hit.text : "");
   fs.appendFileSync(f, apiErr(now - 120000 * 10, "You've hit your 5-hour limit · resets 8:00pm") + "\n");
-  hit = await T.scanLimitErrors(now - 60000, dir);
+  hit = await scanFresh(now - 60000, dir);
   check("erro antigo (antes do período) não conta", hit === null);
   fs.appendFileSync(f, apiErr(now - 2000, "You've hit your 5-hour limit · resets 10:20pm (America/Sao_Paulo)") + "\n");
-  hit = await T.scanLimitErrors(now - 60000, dir);
+  hit = await scanFresh(now - 60000, dir);
   check("erro de limite do Claude Code é detectado", !!hit && /5-hour/.test(hit.text) && T.limitLabel(hit.text) === "limite da sessão de 5h");
   const sub = path.join(dir, "proj", "sess", "subagents", "agente.jsonl");
   fs.writeFileSync(sub, apiErr(now - 1000, "You've hit your weekly limit") + "\n");
-  hit = await T.scanLimitErrors(now - 60000, dir);
+  hit = await scanFresh(now - 60000, dir);
   check("erro num subagente também é detectado", !!hit && hit.file === sub && T.limitLabel(hit.text) === "limite semanal");
   const reset = Math.floor((now + 2 * 24 * 3600e3) / 1000);
   const fableErr = JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", apiErrorStatus: 429, timestamp: iso(now - 500), quotaLimits: { status: "rejected", resetsAt: reset, rateLimitType: "seven_day_overage_included" }, message: { model: "<synthetic>", content: [{ type: "text", text: "You've hit your Fable limit · resets Nov 18, 12pm (America/Sao_Paulo). Switch to another model to continue." }] } });
   fs.appendFileSync(f, fableErr + "\n");
-  hit = await T.scanLimitErrors(now - 60000, dir);
+  hit = await scanFresh(now - 60000, dir);
   check("limite do Fable: lê o tipo e a renovação gravados pelo Claude Code", !!hit && hit.rateLimitType === "seven_day_overage_included" && hit.resetsAt === reset * 1000 && T.limitLabel(hit.text) === null && M.limitModel(hit.text, hit.rateLimitType) === "Fable");
   check("…e esse não é o erro de “créditos de uso”", hit.code === null && !M.needsCredits(hit.text, hit.code));
   // 3.4.1: a conta não tem o modelo. O registro é o que o Claude Code 2.1.330 gravou em 21/11/2026.
   const creditos = JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", apiError: "model_requires_usage_credits", apiErrorStatus: 429, apiErrorCode: "credits_required", apiErrorType: "rate_limit_error", timestamp: iso(now - 100), apiErrorParams: { rate_limit_info: { status: "rejected", overageDisabledReason: "org_level_disabled", isUsingOverage: false, errorCode: "credits_required", canUserPurchaseCredits: false } }, message: { model: "<synthetic>", content: [{ type: "text", text: "Fable 5.2 requires usage credits. Switch to another model to continue." }] } });
   fs.appendFileSync(f, creditos + "\n");
-  hit = await T.scanLimitErrors(now - 60000, dir);
+  hit = await scanFresh(now - 60000, dir);
   check("“Fable 5.2 requires usage credits”: lê o código do erro (a conta não tem o modelo)", !!hit && hit.code === "credits_required" && hit.rateLimitType === null && hit.resetsAt === null && T.limitLabel(hit.text) === null && M.limitModel(hit.text, hit.rateLimitType) === "Fable" && M.needsCredits(hit.text, hit.code));
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// ------------------------------------------------------------ parte I: CLAUDE_CONFIG_DIR e o inventário das transcrições (3.6.0)
+async function partI() {
+  console.log("\n# I. CLAUDE_CONFIG_DIR e o inventário único das transcrições");
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-cfg-"));
+  const antes = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfgDir;
+  T.setLimitRoot(null); // o caminho de verdade: <CLAUDE_CONFIG_DIR>/projects, calculado na hora
+  try {
+    const now = Date.now();
+    const iso = (ms) => new Date(ms).toISOString();
+    fs.mkdirSync(path.join(cfgDir, "projects", "p"), { recursive: true });
+    const f = path.join(cfgDir, "projects", "p", "s.jsonl");
+    fs.writeFileSync(
+      f,
+      [
+        JSON.stringify({ type: "assistant", timestamp: iso(now - 60000), message: { model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }] } }),
+        JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", timestamp: iso(now - 1000), message: { model: "<synthetic>", content: [{ type: "text", text: "You've hit your 5-hour limit" }] } }),
+      ].join("\n") + "\n"
+    );
+    T.transcripts.invalidate();
+    const hit = await T.scanLimitErrors(now - 60000);
+    check("CLAUDE_CONFIG_DIR: o erro de limite em <config>/projects é achado", !!hit && hit.file === f && T.limitLabel(hit.text) === "limite da sessão de 5h");
+    const models = await T.detectModels();
+    check("CLAUDE_CONFIG_DIR: o modelo usado há 1 min é detectado", models.length === 1 && models[0].id === "claude-opus-5-5", JSON.stringify(models));
+    // Subagente: entra na procura do limite, não no "modelo em uso".
+    fs.mkdirSync(path.join(cfgDir, "projects", "p", "sess", "subagents"), { recursive: true });
+    fs.writeFileSync(path.join(cfgDir, "projects", "p", "sess", "subagents", "a.jsonl"), JSON.stringify({ type: "assistant", timestamp: iso(now), message: { model: "claude-haiku-5-5" } }) + "\n");
+    T.transcripts.invalidate();
+    const m2 = await T.detectModels();
+    check("subagente não muda o modelo em uso", m2.length === 1 && m2[0].id === "claude-opus-5-5", JSON.stringify(m2));
+
+    // Inventário único: a procura do limite e o modelo em uso, juntos, fazem UMA varredura (resultado vale 10 s).
+    T.transcripts.invalidate();
+    const s0 = T.transcripts.stats.scans;
+    await Promise.all([T.scanLimitErrors(now - 60000), T.detectModels(), T.scanLimitErrors(now - 60000)]);
+    await T.detectModels();
+    check("inventário único: limite + modelo em uso = 1 varredura", T.transcripts.stats.scans - s0 === 1, String(T.transcripts.stats.scans - s0));
+    // Lista da pasta só é relida quando o mtime dela muda.
+    T.transcripts.invalidate();
+    const r0 = T.transcripts.stats.dirReads;
+    await T.detectModels();
+    check("pastas sem mudança: nenhuma lista relida", T.transcripts.stats.dirReads === r0, String(T.transcripts.stats.dirReads - r0));
+    fs.writeFileSync(path.join(cfgDir, "projects", "p", "novo.jsonl"), "");
+    const fut = new Date(Date.now() + 3000);
+    fs.utimesSync(path.join(cfgDir, "projects", "p"), fut, fut);
+    T.transcripts.invalidate();
+    const list = await T.transcripts.list(path.join(cfgDir, "projects"));
+    check("pasta mudou: arquivo novo aparece", list.some((x) => x.file.endsWith("novo.jsonl")));
+    // Sem sobreposição: o vigia (checkLimitErrors) não roda sem ser a janela dona.
+    check("janela que não é a dona não varre", (await T.checkLimitErrors()) === null);
+  } finally {
+    if (antes === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = antes;
+    fs.rmSync(cfgDir, { recursive: true, force: true });
+  }
+
+  // Links simbólicos (regressão achada no teste da 3.6.0): a versão anterior lia as transcrições atrás de link (o stat
+  // segue o link); o inventário também tem de ler — subagente, transcrição do projeto e pasta de projeto por link.
+  if (process.platform !== "win32") {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-link-"));
+    try {
+      const now = Date.now();
+      const fora = path.join(base, "fora");
+      fs.mkdirSync(path.join(fora, "proj-real"), { recursive: true });
+      const erro = (t) => JSON.stringify({ type: "assistant", isApiErrorMessage: true, error: "rate_limit", timestamp: new Date(now - 1000).toISOString(), message: { content: [{ type: "text", text: t }] } }) + "\n";
+      const alvo = path.join(fora, "agente.jsonl");
+      fs.writeFileSync(alvo, erro("You've hit your weekly limit"));
+      const projects = path.join(base, "projects");
+      fs.mkdirSync(path.join(projects, "p", "sessao", "subagents"), { recursive: true });
+      fs.symlinkSync(alvo, path.join(projects, "p", "sessao", "subagents", "agent.jsonl"));
+      T.transcripts.invalidate();
+      let hit = await T.scanLimitErrors(now - 60000, projects);
+      check("link simbólico: erro de limite em subagente atrás de link é achado", !!hit && T.limitLabel(hit.text) === "limite semanal", hit ? hit.file : "null");
+      // Transcrição do projeto por link e pasta de projeto por link.
+      const conversa = path.join(fora, "conversa.jsonl");
+      fs.writeFileSync(conversa, JSON.stringify({ type: "assistant", timestamp: new Date(now).toISOString(), message: { model: "claude-fable-5-2" } }) + "\n");
+      fs.symlinkSync(conversa, path.join(projects, "p", "link.jsonl"));
+      fs.writeFileSync(path.join(fora, "proj-real", "s.jsonl"), erro("You've hit your 5-hour limit"));
+      fs.symlinkSync(path.join(fora, "proj-real"), path.join(projects, "proj-link"));
+      fs.symlinkSync(path.join(base, "nao-existe.jsonl"), path.join(projects, "p", "quebrado.jsonl")); // link quebrado: ignorado
+      fs.mkdirSync(path.join(fora, "pasta.jsonl"));
+      fs.symlinkSync(path.join(fora, "pasta.jsonl"), path.join(projects, "p", "pasta.jsonl")); // link para pasta: ignorado
+      T.transcripts.invalidate();
+      const lista = await T.transcripts.list(projects);
+      const nomes = lista.map((x) => path.relative(projects, x.file)).sort();
+      check("link simbólico: transcrições do projeto, de subagente e de pasta de projeto por link entram", JSON.stringify(nomes) === JSON.stringify(["p/link.jsonl", "p/sessao/subagents/agent.jsonl", "proj-link/s.jsonl"]), JSON.stringify(nomes));
+      const models = await T.detectModels(now, projects);
+      check("link simbólico: modelo em uso lido pela transcrição atrás de link", models.some((m) => m.id === "claude-fable-5-2"), JSON.stringify(models));
+      hit = await T.scanLimitErrors(now - 60000, projects);
+      check("link simbólico: varredura segue achando o erro (link quebrado e link para pasta não atrapalham)", !!hit);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  }
+
+  // Inventário isolado: varredura em andamento é aproveitada (sem empilhar) e o resultado vale até o TTL.
+  const { createInventory, mapLimit } = require(path.join(root, "transcricoes.js"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swap-plus-inv-"));
+  try {
+    for (let i = 0; i < 5; i++) {
+      fs.mkdirSync(path.join(dir, `p${i}`));
+      for (let j = 0; j < 4; j++) fs.writeFileSync(path.join(dir, `p${i}`, `t${j}.jsonl`), "x");
+    }
+    let t = 1000;
+    const inv = createInventory({ now: () => t });
+    const [a, b2] = await Promise.all([inv.list(dir), inv.list(dir)]);
+    check("varredura em andamento é aproveitada (1 só)", inv.stats.scans === 1 && a === b2 && a.length === 20);
+    await inv.list(dir);
+    check("resultado reaproveitado dentro de 10 s", inv.stats.scans === 1 && inv.stats.cacheHits === 1);
+    t += 10001;
+    await inv.list(dir);
+    check("depois de 10 s varre de novo", inv.stats.scans === 2);
+    check("pasta que não existe → lista vazia", (await inv.list(path.join(dir, "nao-existe"))).length === 0);
+    let max = 0;
+    let cur = 0;
+    await mapLimit([...Array(100).keys()], 32, async () => {
+      cur++;
+      max = Math.max(max, cur);
+      await new Promise((r) => setImmediate(r));
+      cur--;
+    });
+    check("stat em paralelo: no máximo 32 ao mesmo tempo", max === 32, String(max));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // ------------------------------------------------------------ parte V: versão nova instalada por fora
@@ -678,6 +807,7 @@ async function partG() {
   partA();
   partV();
   await partL();
+  await partI();
   partC();
   partE();
   partU();

@@ -149,6 +149,8 @@ for (const m of ["log", "info", "warn", "error", "debug"]) {
 
 // ================================================================ servidor falso
 
+const NOME_EM_USO = "Já existe um serviço com este nome; escolha outro ou desconecte o antigo no painel.";
+
 function criarServidorFalso() {
   const f = { server: null, port: 0, url: "", calls: [] };
   let seq = 0;
@@ -173,6 +175,7 @@ function criarServidorFalso() {
     f.rules = {}; // regras do servidor (o que faltar vale o padrão do rules.js)
     f.features = undefined; // servidor 2.7.0+: ["want_model", "model_missing"] (sem: servidor antigo)
     f.modelBlock = null; // servidor 2.7.0+: nenhuma conta tem o modelo deste computador
+    f.takenNames = new Set(); // servidor 2.8.0+: nomes (em minúsculas) já usados por outro serviço → 409 name_taken
   };
   f.reset();
   f.since = (mark) => f.calls.slice(mark);
@@ -244,6 +247,9 @@ function criarServidorFalso() {
       }
 
       // ---- sem autenticação
+      if ((key === "POST /v1/pair" || key === "POST /v1/login/start") && body && f.takenNames.has(String(body.name || "").toLowerCase())) {
+        return send(409, { error: "name_taken", message: NOME_EM_USO });
+      }
       if (key === "POST /v1/pair") {
         const d = f.pairCodes.get(body && body.code);
         if (!d) return send(401, { error: "bad_code", message: "Código de pareamento inválido ou vencido." });
@@ -266,6 +272,7 @@ function criarServidorFalso() {
         if (typeof next === "function") next = await next(call);
         if (next === "pending") return send(200, { status: "pending" });
         if (next === "denied") return send(200, { status: "denied", email: "negado@exemplo.com" });
+        if (next === "name_taken") return send(200, { status: "name_taken", message: NOME_EM_USO });
         if (next === "ok") {
           const id = `dev-google-${++seq}`;
           const token = segredo("disp-google");
@@ -698,6 +705,7 @@ function loginNovo(tag, email, org) {
 }
 
 function escreverTranscricao(pasta, nome, linhas) {
+  T.transcripts.invalidate(); // 3.6.0: o inventário vale por 10 s; o arquivo novo tem de aparecer já no próximo ciclo
   const dir = path.join(CLAUDE_DIR, "projects", pasta);
   fs.mkdirSync(dir, { recursive: true });
   const f = path.join(dir, nome);
@@ -1038,7 +1046,7 @@ test("2. conectar com Google: navegador, pending → ok; negado; cancelado sem s
     const start = calls.filter(is("POST", "/v1/login/start"));
     assert.equal(start.length, 1);
     assert.equal(start[0].auth, null);
-    assert.deepEqual(start[0].body, { name: "PC Google", platform: process.platform });
+    assert.deepEqual(start[0].body, { name: "PC Google", platform: process.platform, caps: ["name_taken"] });
     assert.equal(opened.length, o0 + 1);
     assert.equal(opened[opened.length - 1], fake.lastAuthUrl, "openExternal recebeu o authUrl do servidor");
     const polls = calls.filter(is("POST", "/v1/login/poll"));
@@ -3044,6 +3052,225 @@ test("22d. tela de verdade × extensão de verdade: o estado desenha e cada cliq
     fake.handlers = {};
     for (const k of ["alerts.weeklyEnabled", "alerts.fiveHourPct", "statusBar.showAccountNumber"]) await cfgApi.update(k, undefined);
     if (store["swapPlus.enabled"] === false) await cfgApi.update("enabled", true);
+    await ciclo();
+  }
+});
+
+
+// ================================================================ 3.6.0: nome único, reconexão e várias janelas
+
+/**
+ * Outra janela do VS Code no mesmo computador: o extension.js carregado de novo (módulo próprio, WINDOW_ID próprio),
+ * mesmo TMPDIR, mesmo cofre de segredos e mesmas configurações; o globalState é uma CÓPIA (cada janela vê o dela —
+ * o pior caso do atraso entre janelas). Os comandos registrados por ela não substituem os desta janela.
+ */
+function novaJanela() {
+  const file = require.resolve(path.join(PLUS, manifest.main));
+  const orig = require.cache[file];
+  delete require.cache[file];
+  let mod;
+  try {
+    mod = require(file);
+  } finally {
+    require.cache[file] = orig;
+  }
+  const mapa = new Map([...gs].map(([k, v]) => [k, JSON.parse(JSON.stringify(v))]));
+  const gsJanela = {
+    get: (k, d) => (mapa.has(k) ? mapa.get(k) : d),
+    update: async (k, v) => {
+      if (v === undefined) mapa.delete(k);
+      else mapa.set(k, JSON.parse(JSON.stringify(v)));
+    },
+    keys: () => [...mapa.keys()],
+    setKeysForSync() {},
+  };
+  const ctx = { ...context, subscriptions: [], globalState: gsJanela };
+  const antes = { ...commands };
+  const timers = [];
+  const st = global.setTimeout;
+  const si = global.setInterval;
+  global.setTimeout = function (...a) {
+    const h = st.apply(this, a);
+    timers.push(h);
+    return h;
+  };
+  global.setInterval = function (...a) {
+    const h = si.apply(this, a);
+    timers.push(h);
+    return h;
+  };
+  try {
+    mod.activate(ctx);
+  } finally {
+    global.setTimeout = st;
+    global.setInterval = si;
+    for (const k of Object.keys(commands)) commands[k] = antes[k];
+  }
+  mod._test.cancelEngineCleanup();
+  return {
+    T: mod._test,
+    mapa,
+    async fechar() {
+      try {
+        await mod.deactivate();
+      } finally {
+        for (const h of timers) clearTimeout(h);
+        for (const x of ctx.subscriptions) {
+          try {
+            if (x && typeof x.dispose === "function") x.dispose();
+          } catch {}
+        }
+      }
+    },
+  };
+}
+
+const linhasChegou = (mapa) => ((mapa ? mapa.get(HISTORY_KEY) : globalState.get(HISTORY_KEY)) || []).filter((h) => /chegou a/.test(h.text));
+
+test("22e. nome repetido (name_taken): pelo código e pelo Google, a mensagem aparece e o nome é pedido de novo", { timeout: T_MAX }, async () => {
+  resetUi();
+  await desconectar();
+  fake.reset();
+  fake.takenNames.add("pc da sala");
+  const restaurar = acelerarConsultas();
+  try {
+    // a) código: o nome é recusado, a caixa reabre com ele e o mesmo código serve para o nome novo
+    fake.pairCodes.set("PAREAR0E01", { id: "dev-nome" });
+    const pedidos = [];
+    ui.input = (o) => {
+      if (!/nome deste computador/.test(o.title || "")) return codigoConexao("PAREAR0E01");
+      pedidos.push({ value: o.value, prompt: o.prompt });
+      return pedidos.length === 1 ? "PC da sala" : "PC da cozinha";
+    };
+    let mark = fake.calls.length;
+    let n0 = notes.length;
+    await commands["swapPlus.connectServer"]("code");
+    const pares = fake.since(mark).filter(is("POST", "/v1/pair"));
+    assert.deepEqual(pares.map((c) => c.body.name), ["PC da sala", "PC da cozinha"]);
+    assert.equal(pedidos.length, 2);
+    assert.equal(pedidos[1].value, "PC da sala", "a caixa reabre com o nome digitado");
+    assert.match(pedidos[1].prompt, /Já existe um serviço com este nome/);
+    assert.ok(notes.slice(n0).some((n) => n.message.includes(NOME_EM_USO)), "mostra a mensagem do servidor");
+    assert.equal(globalState.get(META_KEY).name, "PC da cozinha");
+    assert.equal(T.serverStatus(), "online");
+
+    // b) desistir na segunda caixa: nada conectado de novo
+    await desconectar();
+    fake.pairCodes.set("PAREAR0E02", { id: "dev-nome2" });
+    let vezes = 0;
+    ui.input = (o) => (/nome deste computador/.test(o.title || "") ? (++vezes === 1 ? "pc da SALA" : undefined) : codigoConexao("PAREAR0E02"));
+    await commands["swapPlus.connectServer"]("code");
+    assert.equal(await secrets.get(TOKEN_KEY), undefined);
+    assert.equal(vezes, 2);
+
+    // c) Google: recusado no início (409) e no fim (status do poll) → pede outro nome e tenta de novo
+    resetUi();
+    fake.google = ["pending", "name_taken", "ok"];
+    const nomes = ["PC da sala", "Notebook", "Notebook 2"];
+    const vistos = [];
+    ui.input = (o) => {
+      vistos.push(o.value);
+      return nomes.shift();
+    };
+    mark = fake.calls.length;
+    n0 = notes.length;
+    await commands["swapPlus.connectServer"]("google");
+    const starts = fake.since(mark).filter(is("POST", "/v1/login/start"));
+    assert.deepEqual(starts.map((c) => c.body.name), ["PC da sala", "Notebook", "Notebook 2"]);
+    assert.ok(starts.every((c) => JSON.stringify(c.body.caps) === '["name_taken"]'), "diz que entende o status name_taken");
+    assert.deepEqual(vistos.slice(1), ["PC da sala", "Notebook"], "cada caixa nova vem com o nome recusado");
+    assert.equal(notes.slice(n0).filter((n) => n.message.includes(NOME_EM_USO)).length, 2);
+    assert.equal(globalState.get(META_KEY).name, "Notebook 2");
+    assert.equal(globalState.get(META_KEY).via, "google");
+  } finally {
+    restaurar();
+    resetUi();
+  }
+});
+
+test("22f. reconectar: replaces só vai para a mesma origem do servidor (o token antigo nunca vai para outro endereço)", { timeout: T_MAX }, async () => {
+  await prepararServidor();
+  // a) mesma origem: replaces com o deviceId e o token guardados
+  fake.pairCodes.set("PAREAR0F01", { id: "dev-f1" });
+  ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC de teste" : codigoConexao("PAREAR0F01"));
+  ui.warn = (_m, b) => (b.includes("Conectar de novo") ? "Conectar de novo" : undefined);
+  let mark = fake.calls.length;
+  await commands["swapPlus.connectServer"]("code");
+  let par = fake.since(mark).find(is("POST", "/v1/pair"));
+  assert.deepEqual(par.body.replaces, { deviceId: DEVICE_ID, token: DEVICE_TOKEN });
+  assert.equal(globalState.get(META_KEY).deviceId, "dev-f1");
+
+  // b) outra origem (localhost ≠ 127.0.0.1, mesmo servidor de teste): sem replaces
+  const tokenF1 = await secrets.get(TOKEN_KEY);
+  fake.pairCodes.set("PAREAR0F02", { id: "dev-f2" });
+  ui.input = (o) => (/nome deste computador/.test(o.title || "") ? "PC de teste" : codigoConexao("PAREAR0F02", `http://localhost:${fake.port}`));
+  mark = fake.calls.length;
+  await commands["swapPlus.connectServer"]("code");
+  par = fake.since(mark).find(is("POST", "/v1/pair"));
+  assert.ok(par, "pareou");
+  assert.equal("replaces" in par.body, false, "outra origem: o token antigo não vai");
+  assert.ok(!JSON.stringify(par.body).includes(tokenF1));
+  resetUi();
+  await cfgApi.update("server.url", fake.url); // a conexão em localhost mudou o endereço das configurações
+  await prepararServidor();
+});
+
+test("22g. três janelas no mesmo computador: o aviso “chegou a X%” sai UMA vez (notificação e histórico)", { timeout: T_MAX }, async () => {
+  await prepararServidor();
+  await cfgApi.update("alerts.fiveHourEnabled", true);
+  await cfgApi.update("alerts.fiveHourPct", 5); // a conta 1 está em 10% na sessão
+  await globalState.update("swapPlus.alerted", []);
+  fs.rmSync(T.alertsClaimDir(), { recursive: true, force: true });
+  const n0 = notes.length;
+  const h0 = linhasChegou().length;
+  const j2 = novaJanela();
+  const j3 = novaJanela();
+  try {
+    await Promise.all([ciclo(), j2.T.refreshFresh(), j3.T.refreshFresh()]);
+    await Promise.all([ciclo(), j2.T.refreshFresh(), j3.T.refreshFresh()]);
+    await sleep(100);
+    const avisos = notes.slice(n0).filter((n) => /chegou a 10% na sessão de 5h/.test(n.message));
+    assert.equal(avisos.length, 1, avisos.map((n) => n.message).join("\n"));
+    const linhas = linhasChegou().length - h0 + linhasChegou(j2.mapa).length + linhasChegou(j3.mapa).length - 2 * h0;
+    assert.equal(linhas, 1, "uma linha de “chegou a” no histórico, somando as três janelas");
+
+    // A dona muda (a janela 2 assume, sem ter visto o aviso no globalState dela): o arquivo do aviso segura.
+    fs.rmSync(T.ownerFile(), { force: true });
+    await j2.T.refreshFresh();
+    await Promise.all([ciclo(), j2.T.refreshFresh(), j3.T.refreshFresh()]);
+    await sleep(100);
+    assert.equal(notes.slice(n0).filter((n) => /chegou a 10%/.test(n.message)).length, 1, "nenhum aviso repetido na troca de dona");
+  } finally {
+    await j2.fechar();
+    await j3.fechar();
+    await cfgApi.update("alerts.fiveHourEnabled", undefined);
+    await cfgApi.update("alerts.fiveHourPct", undefined);
+    fs.rmSync(T.ownerFile(), { force: true });
+    await ciclo();
+  }
+});
+
+test("22h. duas janelas veem o mesmo erro de limite ao mesmo tempo: UM POST /v1/events {limit_hit}", { timeout: T_MAX }, async () => {
+  await prepararServidor();
+  await limparLimite();
+  const j2 = novaJanela();
+  const tr = escreverTranscricao("limite-duplo", "conversa.jsonl", [linhaConversa("claude-fable-5-2"), linhaLimite("You've hit your 5-hour limit · resets 10:20pm (America/Sao_Paulo)")]);
+  try {
+    j2.T.transcripts.invalidate();
+    const mark = fake.calls.length;
+    await Promise.all([T.checkLimitErrors(), j2.T.checkLimitErrors(), T.checkLimitErrors(), j2.T.checkLimitErrors()]);
+    await waitFor(() => fake.since(mark).some(isEvents), 5000, "evento de limite");
+    await sleep(200);
+    // Mesmo se as duas janelas fossem donas: a reivindicação do erro é atômica (uma só passa).
+    const ts = Date.now();
+    const quem = [T.claimLimit(ts), j2.T.claimLimit(ts)];
+    assert.deepEqual(quem.filter(Boolean).length, 1);
+    const ev = fake.since(mark).filter(isEvents);
+    assert.equal(ev.length, 1, JSON.stringify(ev.map((e) => e.body)));
+    assert.deepEqual(ev[0].body, { kind: "limit_hit", label: "limite da sessão de 5h" });
+  } finally {
+    fs.rmSync(tr, { force: true });
+    await j2.fechar();
     await ciclo();
   }
 });
